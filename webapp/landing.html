@@ -139,41 +139,45 @@
     }
 
     function openMonoWidget() {
-      const config = {
-        key: MONO_PUBLIC_KEY,
-        onSuccess: async (data) => {
-          try {
-            const resp = await fetch(`${API}/link/mono`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-              },
-              body: JSON.stringify({ code: data.code })
-            });
-            const result = await resp.json();
-            if (resp.ok) {
-              addMessage('cfo', result.message, 'income');
-            } else {
-              addMessage('error', result.error || 'Failed to link account.');
-            }
-          } catch (e) {
-            addMessage('error', 'Network error while linking.');
-          }
-        },
-        onClose: () => console.log('Mono widget closed'),
-        onError: (err) => addMessage('error', 'Mono error: ' + err.message)
-      };
       try {
+        const config = {
+          key: MONO_PUBLIC_KEY,
+          onSuccess: async (data) => {
+            try {
+              const resp = await fetch(`${API}/link/mono`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ code: data.code })
+              });
+              const result = await resp.json();
+              if (resp.ok) {
+                addMessage('cfo', result.message, 'income');
+              } else {
+                addMessage('error', result.error || 'Failed to link account.');
+              }
+            } catch (e) {
+              addMessage('error', 'Network error while linking.');
+            }
+          },
+          onClose: () => console.log('Mono widget closed'),
+          onError: (err) => addMessage('error', 'Mono error: ' + err.message)
+        };
+
         const monoConnect = new window.MonoConnect(config);
         monoConnect.open();
       } catch (e) {
-        addMessage('error', 'Failed to open bank linking. Please refresh and try again.');
+        // Show the actual error in chat
+        addMessage('error', 'MonoInit: ' + (e.message || e));
       }
     }
 
     // --------------- Health Score & Logo ---------------
     async function fetchHealthScore() {
+      if (!token) return;   // <-- stops the 401 error
+
       try {
         const resp = await fetch(`${API}/health`, {
           headers: { 'Authorization': `Bearer ${token}` }

@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from core import *
-from groq_parser import parse_intent_groq
+from groq_parser import parse_intent_groq, classify_query_intent
 
 app = Flask(__name__)
 CORS(app)
@@ -94,16 +94,16 @@ def handle_command():
             response_text = f"Okay, I'll send {amount} {currency} from {source_label} to {dest_label}. Please confirm this transfer."
             return jsonify({"message": response_text, "tone": "neutral", "event_id": event['event_id']})
 
+        raw_date = parsed.get("date")
+        date = normalize_date(raw_date) if raw_date else datetime.utcnow().strftime("%Y-%m-%d")
         # Non‑transfer events
         if event_type == 'intention':
             payload = {
                 "amount": amount,
                 "currency": currency,
-                "date": datetime.utcnow().strftime("%Y-%m-%d"),
-                "description": description,
-                "goal_type": parsed.get("goal_type", "general"),
-                "deadline": parsed.get("deadline"),
-                "target_amount": amount
+                "category": category,
+                "date": date,  # use normalized date
+                "description": description
             }
             event = append_event(user_id, user_id, 'GoalSet', payload)
             response_text = f"Goal set! You want to save {amount} {currency} for {description}. I'll help you stay on track."
@@ -117,7 +117,9 @@ def handle_command():
         elif event_type == 'liability':
             final_type = 'ExpenseLogged'
         elif event_type == 'asset':
-            final_type = 'IncomeReceived'
+            final_type = 'ExpenseLogged'
+            category = 'loan_given'  # override category
+            parsed['category'] = category
         else:
             final_type = event_type
 
@@ -133,7 +135,12 @@ def handle_command():
 
         name = get_user_name(user_id)
         if final_type == 'ExpenseLogged':
-            response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
+            if category == 'loan_given':
+                response_text = f"Understood, {name}. You lent {amount} {currency}. I'll track this as an asset someone owes you."
+                tone = "neutral"
+            else:
+                response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
+
             budget = calculate_daily_budget(user_id)
             if budget:
                 total_budget = sum(budget.values())
@@ -165,19 +172,75 @@ def get_user_name(user_id):
 # --------------- QUERY HANDLER (expanded) ---------------
 def handle_query(text, user_id):
     text_lower = text.lower()
+    now = datetime.utcnow()
+
+    # Try the AI classifier for structured query understanding
+    query_info = classify_query_intent(text)
+    if query_info:
+        intent = query_info.get('intent')
+        params = query_info.get('parameters', {})
+        date_param = params.get('date')         # e.g., "this month", "last month"
+        category = params.get('category')       # e.g., "food", "transport"
+
+        if intent in ('expense', 'income') and (date_param or category):
+            # Build date range
+            start, end, label = extract_date_range(date_param or 'all time')
+            # Build SQL
+            conn = get_conn()
+            cur = conn.cursor()
+            if intent == 'expense':
+                type_filter = "type='expense'"
+            else:
+                type_filter = "type='income'"
+            cat_filter = ""
+            query_params = [user_id, start, end]
+            if category:
+                cat_filter = " AND category = %s"
+                query_params.append(category)
+            cur.execute(f"SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND {type_filter} AND date BETWEEN %s AND %s{cat_filter}", query_params)
+            total = cur.fetchone()[0] or 0
+            conn.close()
+
+            # Human‑friendly reply
+            cat_text = f" on {category}" if category else ""
+            return jsonify({"answer": f"Total {intent}{cat_text} for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+    # Fallback: rule‑based checks
     if any(w in text_lower for w in ['budget', 'limit', 'spend limit']):
         budget = calculate_daily_budget(user_id)
         if not budget:
             return jsonify({"answer": "I don't have enough data yet. Log some income and expenses first.", "tone": "neutral"})
         msg = "Here's your daily budget:\n" + "\n".join([f"• {k.replace('_',' ').title()}: ₦{v:,.2f}" for k,v in budget.items()])
         return jsonify({"answer": msg, "tone": "neutral"})
-    elif 'credit score' in text_lower or 'health score' in text_lower:
+
+    if 'credit score' in text_lower or 'health score' in text_lower:
         score = get_credit_score(user_id)
         msg = f"Your financial health score is {score['score']}/100. You're a {score['logo']}."
         return jsonify({"answer": msg, "tone": "neutral"})
-    elif any(w in text_lower for w in ['spent', 'expense', 'spend']):
-        return jsonify({"answer": "Let me check your recent spending... (we'll build detailed queries soon)", "tone": "neutral"})
-    return jsonify({"answer": "I can help with budgets, spending, or credit score. What would you like to know?", "tone": "neutral"})
+
+    # Simple date‑range expense/income (no category)
+    if any(w in text_lower for w in ['spent', 'expense', 'spend']):
+        start, end, label = extract_date_range(text_lower)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND date BETWEEN %s AND %s", (user_id, start, end))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Total expenses for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+    if any(w in text_lower for w in ['made', 'earned', 'income', 'profit']):
+        start, end, label = extract_date_range(text_lower)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='income' AND date BETWEEN %s AND %s", (user_id, start, end))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Total income for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+    # Final fallback
+    return jsonify({"answer": "I can help with budgets, spending, income, or credit score. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
+
+
 
 # --------------- TRANSFER CONFIRMATION ---------------
 @app.route('/confirm_transfer', methods=['POST'])
@@ -225,6 +288,35 @@ def health():
 @app.route('/')
 def landing():
     return send_from_directory('webapp', 'landing.html')
+
+
+def extract_date_range(date_param=None):
+    today = datetime.utcnow().date()
+    if not date_param:
+        return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
+    dl = date_param.lower()
+    if 'today' in dl:
+        return today.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), "today"
+    if 'yesterday' in dl:
+        y = today - timedelta(days=1)
+        return y.strftime("%Y-%m-%d"), y.strftime("%Y-%m-%d"), "yesterday"
+    if 'this week' in dl:
+        start = today - timedelta(days=today.weekday())
+        return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), "this week"
+    if 'this month' in dl:
+        start = today.strftime("%Y-01")
+        return start, today.strftime("%Y-%m-%d"), "this month"
+    if 'last week' in dl:
+        end = today - timedelta(days=today.weekday()+1)
+        start = end - timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), "last week"
+    if 'last month' in dl:
+        first_day_this_month = today.replace(day=1)
+        last_day_prev_month = first_day_this_month - timedelta(days=1)
+        start_prev = last_day_prev_month.replace(day=1)
+        return start_prev.strftime("%Y-%m-%d"), last_day_prev_month.strftime("%Y-%m-%d"), "last month"
+    # fallback
+    return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Oyinda – Your AI Financial Companion</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+           background: linear-gradient(135deg, #0d1b2a 0%, #1b3a4b 100%); color: white;
+           display: flex; flex-direction: column; min-height: 100vh; }
+    .header { background: rgba(0,0,0,0.3); padding: 15px 20px; display: flex;
+              justify-content: space-between; align-items: center; }
+    .header .logo-area { display: flex; align-items: center; gap: 10px; }
+    .header .logo-icon { font-size: 32px; transition: all 0.3s ease; }
+    .header h1 { font-size: 24px; color: #00d4aa; }
+    .header .buttons { display: flex; gap: 10px; align-items: center; }
+    .btn { padding: 10px 20px; border: none; border-radius: 20px; font-size: 14px;
+           font-weight: bold; cursor: pointer; transition: 0.2s; }
+    .btn-login { background: #00d4aa; color: #0d1b2a; }
+    .btn-register { background: transparent; color: #00d4aa; border: 2px solid #00d4aa; }
+    .btn-logout { background: #e74c3c; color: white; }
+    .btn-confirm { background: #f39c12; color: #0d1b2a; margin-top: 8px; }
+    .btn-confirm:hover { background: #e67e22; }
+    .chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 75%; padding: 12px 16px; border-radius: 16px; font-size: 15px; line-height: 1.4; position: relative; }
+    .msg.user { align-self: flex-end; background: #00d4aa; color: #0d1b2a; }
+    .msg.cfo  { align-self: flex-start; background: rgba(255,255,255,0.1); color: white; }
+    .msg.cfo.warning { border-left: 3px solid #e74c3c; color: #e74c3c; }
+    .msg.cfo.good    { border-left: 3px solid #3498db; color: #3498db; }
+    .msg.cfo.income  { border-left: 3px solid #2ecc71; color: #2ecc71; }
+    .msg.error { align-self: flex-start; background: rgba(231,76,60,0.3); color: #e74c3c; }
+    .input-area { display: flex; padding: 15px 20px; gap: 10px; background: rgba(0,0,0,0.3); }
+    .input-area input { flex:1; padding: 12px 16px; border-radius: 25px; border: none; font-size: 16px; }
+    .input-area button { padding: 12px 20px; border-radius: 25px; border: none; background: #00d4aa;
+                          color: #0d1b2a; font-weight: bold; font-size: 16px; cursor: pointer; }
+    .dialog-overlay { display: none; position: fixed; top:0; left:0; width:100%; height:100%;
+                       background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 10; }
+    .dialog { background: #1b3a4b; padding: 30px; border-radius: 20px; width: 90%; max-width: 400px; }
+    .dialog h2 { margin-bottom: 20px; color: #00d4aa; }
+    .dialog input { width: 100%; padding: 12px; margin-bottom: 12px; border-radius: 10px;
+                    border: none; font-size: 14px; }
+    .dialog .btn { width: 100%; margin-top: 10px; }
+    .pending-transfer { display: flex; flex-direction: column; align-items: flex-start; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo-area">
+      <span class="logo-icon" id="logoIcon">🦋</span>
+      <h1>Oyinda</h1>
+    </div>
+    <div class="buttons" id="headerButtons">
+      <button class="btn btn-login" onclick="showLogin()">Login</button>
+      <button class="btn btn-register" onclick="showRegister()">Register</button>
+    </div>
+  </div>
+  <div class="chat" id="chat"></div>
+  <div class="input-area">
+    <input type="text" id="userInput" placeholder="Type a transaction..." onkeydown="if(event.key==='Enter')sendMessage()">
+    <button onclick="sendMessage()">Send</button>
+  </div>
+
+  <!-- Login Dialog -->
+  <div class="dialog-overlay" id="loginDialog">
+    <div class="dialog">
+      <h2>Login</h2>
+      <input type="email" id="loginEmail" placeholder="Email">
+      <input type="password" id="loginPassword" placeholder="Password">
+      <button class="btn btn-login" onclick="doLogin()">Login</button>
+      <button class="btn btn-register" onclick="hideDialogs()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Register Dialog -->
+  <div class="dialog-overlay" id="registerDialog">
+    <div class="dialog">
+      <h2>Register</h2>
+      <input type="text" id="regName" placeholder="Your name">
+      <input type="email" id="regEmail" placeholder="Email">
+      <input type="password" id="regPassword" placeholder="Password">
+      <button class="btn btn-login" onclick="doRegister()">Register</button>
+      <button class="btn btn-register" onclick="hideDialogs()">Cancel</button>
+    </div>
+  </div>
+
+  <script>
+    const API = 'https://personalcfo-sqtn.onrender.com';
+    let token = localStorage.getItem('oyinda_token') || '';
+    let userName = localStorage.getItem('oyinda_user') || '';
+    let pendingTransfers = {}; // event_id -> {messageDiv, confirmBtn}
+
+    function updateUI() {
+      const btns = document.getElementById('headerButtons');
+      if (userName) {
+        btns.innerHTML = `
+          <span style="color:#00d4aa; margin-right:12px">👤 ${userName}</span>
+          <button class="btn btn-logout" onclick="logout()">Logout</button>`;
+        // fetch health score to update logo
+        fetchHealthScore();
+      } else {
+        btns.innerHTML = `
+          <button class="btn btn-login" onclick="showLogin()">Login</button>
+          <button class="btn btn-register" onclick="showRegister()">Register</button>`;
+        // reset logo to butterfly
+        document.getElementById('logoIcon').textContent = '🦋';
+      }
+    }
+
+    async function fetchHealthScore() {
+      try {
+        const resp = await fetch(`${API}/health`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const logo = data.logo;
+          const icon = document.getElementById('logoIcon');
+          if (logo === 'eagle') {
+            icon.textContent = '🦅';
+          } else if (logo === 'transition') {
+            icon.textContent = '🦋🦅'; // or a transitional emoji, maybe a butterfly with sparkles?
+          } else {
+            icon.textContent = '🦋';
+          }
+        }
+      } catch (e) { /* ignore, keep existing */ }
+    }
+
+    function addMessage(role, content, tone = null, eventId = null) {
+      const chat = document.getElementById('chat');
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      if (role === 'cfo' && tone) {
+        div.classList.add(tone); // warning, good, income
+      }
+      div.textContent = content;
+      chat.appendChild(div);
+
+      // If it's a transfer request, add confirm button
+      if (role === 'cfo' && eventId && (tone === 'neutral' || !tone)) {
+        // Check if message indicates a pending transfer (we can rely on eventId being provided)
+        // But to be safe, we could also check content for "Please confirm" but let's trust eventId.
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'pending-transfer';
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'btn btn-confirm';
+        confirmBtn.textContent = 'Confirm Transfer';
+        confirmBtn.onclick = () => confirmTransfer(eventId, div, confirmBtn);
+        btnContainer.appendChild(confirmBtn);
+        div.appendChild(btnContainer);
+        pendingTransfers[eventId] = { messageDiv: div, confirmBtn };
+      }
+
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('userInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      addMessage('user', text);
+
+      try {
+        const resp = await fetch(`${API}/command`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ text })
+        });
+
+        if (resp.status === 200) {
+          const data = await resp.json();
+          const reply = data.message || data.answer || 'Done.';
+          const tone = data.tone || null;
+          const eventId = data.event_id || null;
+          addMessage('cfo', reply, tone, eventId);
+        } else if (resp.status === 401) {
+          addMessage('error', 'Session expired. Please login again.');
+          logout();
+        } else {
+          const err = await resp.json();
+          addMessage('error', err.error || 'Could not process. Please try again.');
+        }
+      } catch (e) {
+        addMessage('error', 'Network error.');
+      }
+    }
+
+    async function confirmTransfer(eventId, messageDiv, confirmBtn) {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Confirming...';
+      try {
+        const resp = await fetch(`${API}/confirm_transfer`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ event_id: eventId })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          // Update the message to show confirmed
+          messageDiv.textContent = data.message || 'Transfer executed.';
+          messageDiv.classList.add('income'); // green for success
+          // Remove the confirm button (already gone since we replaced text)
+        } else {
+          alert(data.error || 'Transfer confirmation failed.');
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Confirm Transfer';
+        }
+      } catch (e) {
+        alert('Network error.');
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Confirm Transfer';
+      }
+    }
+
+    function showLogin() { document.getElementById('loginDialog').style.display = 'flex'; }
+    function showRegister() { document.getElementById('registerDialog').style.display = 'flex'; }
+    function hideDialogs() {
+      document.getElementById('loginDialog').style.display = 'none';
+      document.getElementById('registerDialog').style.display = 'none';
+    }
+
+    async function doLogin() {
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value.trim();
+      if (!email || !password) return;
+      try {
+        const resp = await fetch(`${API}/login`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ email, password })
+        });
+        if (resp.status === 200) {
+          const data = await resp.json();
+          token = data.token;
+          userName = data.user.name;
+          localStorage.setItem('oyinda_token', token);
+          localStorage.setItem('oyinda_user', userName);
+          updateUI();
+          hideDialogs();
+          addMessage('cfo', `Welcome back ${userName}!`);
+          fetchHealthScore(); // update logo immediately
+        } else {
+          alert('Invalid email or password.');
+        }
+      } catch (e) { alert('Could not reach server.'); }
+    }
+
+    async function doRegister() {
+      const name = document.getElementById('regName').value.trim();
+      const email = document.getElementById('regEmail').value.trim();
+      const password = document.getElementById('regPassword').value.trim();
+      if (!name || !email || !password) return;
+      try {
+        const resp = await fetch(`${API}/register`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name, email, password, account_type: 'personal', address: '' })
+        });
+        if (resp.status === 200) {
+          const data = await resp.json();
+          token = data.token;
+          userName = name;
+          localStorage.setItem('oyinda_token', token);
+          localStorage.setItem('oyinda_user', userName);
+          updateUI();
+          hideDialogs();
+          addMessage('cfo', `Welcome ${userName}! I am your CFO.`);
+          fetchHealthScore();
+        } else {
+          const err = await resp.json();
+          alert(err.error || 'Registration failed.');
+        }
+      } catch (e) { alert('Could not reach server.'); }
+    }
+
+    function logout() {
+      token = ''; userName = '';
+      localStorage.removeItem('oyinda_token');
+      localStorage.removeItem('oyinda_user');
+      updateUI();
+      document.getElementById('chat').innerHTML = '';
+      addMessage('cfo', 'You have been logged out.');
+    }
+
+    updateUI();
+  </script>
+</body>
+</html>

@@ -222,7 +222,7 @@ def health():
 # --------------- FRONTEND ---------------
 @app.route('/')
 def landing():
-    return send_from_directory('webapp', 'landing_page.html')
+    return send_from_directory('webapp', 'landing.html')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

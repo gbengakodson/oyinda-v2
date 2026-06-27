@@ -101,6 +101,8 @@
       if (userName) {
         btns.innerHTML = `
           <span style="color:#00d4aa; margin-right:12px">👤 ${userName}</span>
+          <button class="btn btn-link" onclick="linkExchange()">🏦 Link Exchange</button>
+          <button class="btn btn-link" onclick="linkWallet()">👛 Link Wallet</button>
           <button class="btn btn-link">🔗 Link Bank</button>
           <button class="btn btn-logout" onclick="logout()">Logout</button>`;
         // Attach the click handler *after* the button is in the DOM
@@ -113,13 +115,41 @@
         document.getElementById('logoIcon').textContent = '🦋';
       }
     }
+    function linkExchange() {
+      const provider = prompt('Enter exchange (binance):', 'binance');
+      const apiKey = prompt('Enter API Key:');
+      const apiSecret = prompt('Enter API Secret:');
+      if (!apiKey || !apiSecret) return;
+      fetch(`${API}/link/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ provider, api_key: apiKey, api_secret: apiSecret })
+      }).then(res => res.json()).then(data => {
+        addMessage('cfo', data.message, data.error ? 'error' : 'income');
+      });
+    }
+
+    function linkWallet() {
+      const address = prompt('Enter wallet address:');
+      const network = prompt('Network (TRC20, ERC20):', 'TRC20');
+      if (!address) return;
+      fetch(`${API}/link/wallet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ address, network })
+      }).then(res => res.json()).then(data => {
+        addMessage('cfo', data.message, data.error ? 'error' : 'income');
+      });
+    }
 
     // Attach the click handler when the button becomes visible
     function attachLinkBankHandler() {
-      const linkBtn = document.querySelector('.btn-link');
-      if (linkBtn) {
-        linkBtn.removeEventListener('click', linkBank); // avoid duplicates
-        linkBtn.addEventListener('click', linkBank);
+      const btn = document.querySelector('.btn-link');
+      if (btn) {
+        btn.onclick = function() {
+          if (typeof linkBank === 'function') linkBank();
+          else addMessage('error', 'Bank linking not yet available.');
+        };
       }
     }
 

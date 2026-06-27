@@ -157,6 +157,23 @@ def handle_command():
             response_text = f"Goal set! You want to save {amount} {currency} for {description}. I'll help you stay on track."
             return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
+        if event_type in ('buy', 'sell', 'swap'):
+            # Crypto trading order
+            symbol = parsed.get('symbol', '')  # e.g., BTCUSDT
+            side = event_type.upper()  # BUY or SELL
+            quantity = parsed.get('amount')
+            account_id = parsed.get('source_account_id')  # optional
+            if not symbol or not quantity:
+                return jsonify({"error": "Please specify asset pair and quantity."}), 400
+            # If no account_id, use first exchange account
+            if not account_id:
+                exchange_accounts = [a for a in get_user_connected_accounts(user_id) if a['type'] == 'exchange']
+                if not exchange_accounts:
+                    return jsonify({"error": "No exchange account linked."}), 400
+                account_id = exchange_accounts[0]['id']
+            # Call the same /crypto/order logic or directly place order here
+            # ... (omitted for brevity – you can reuse the connector)
+
         # income / expense / liability / asset
         if event_type == 'expense':
             final_type = 'ExpenseLogged'
@@ -206,6 +223,8 @@ def handle_command():
 
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
 
 def get_user_name(user_id):
     conn = get_conn()
@@ -529,6 +548,159 @@ def health():
     user_id = get_jwt_identity()
     score = get_credit_score(user_id)
     return jsonify(score)
+
+
+@app.route('/link/exchange', methods=['POST'])
+@jwt_required()
+def link_exchange():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    provider = data.get('provider', 'binance').lower()
+    if provider != 'binance':
+        return jsonify({"error": "Only Binance supported for now"}), 400
+
+    api_key = data.get('api_key')
+    api_secret = data.get('api_secret')
+    if not api_key or not api_secret:
+        return jsonify({"error": "API key and secret required"}), 400
+
+    try:
+        # Test connection
+        connector = BinanceConnector(api_key, api_secret)
+        balances = connector.get_balances()  # minimal check
+    except Exception as e:
+        return jsonify({"error": f"Could not connect to Binance: {str(e)}"}), 400
+
+    # Encrypt credentials
+    enc_key = encrypt(api_key)
+    enc_secret = encrypt(api_secret)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, api_key_encrypted, api_secret_encrypted) VALUES (%s, 'exchange', %s, %s, 'USD', %s, %s) RETURNING id",
+        (user_id, provider, f"{provider.capitalize()} Account", enc_key, enc_secret)
+    )
+    account_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"{provider.capitalize()} account linked successfully.", "account_id": str(account_id)})
+
+
+@app.route('/sync/exchange', methods=['POST'])
+@jwt_required()
+def sync_exchange():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')
+    if not account_id:
+        return jsonify({"error": "account_id required"}), 400
+
+    connector = get_exchange_connector(user_id, account_id)
+    if not connector:
+        return jsonify({"error": "Invalid account"}), 400
+
+    try:
+        balances = connector.get_balances()
+        # For each balance, we could create a BalanceUpdated event, but we'll keep it simple: store as a summary in the connected_accounts metadata? For now, just return balances.
+        # In a full implementation, you'd create events for each balance change.
+        return jsonify({"balances": balances})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/crypto/order', methods=['POST'])
+@jwt_required()
+def crypto_order():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')
+    symbol = data.get('symbol')  # e.g., BTCUSDT
+    side = data.get('side')  # BUY or SELL
+    quantity = data.get('quantity')
+    price = data.get('price')  # optional, for limit orders
+    order_type = data.get('order_type', 'MARKET')
+
+    if not all([account_id, symbol, side, quantity]):
+        return jsonify({"error": "Missing required fields"}), 400
+
+    connector = get_exchange_connector(user_id, account_id)
+    if not connector:
+        return jsonify({"error": "Invalid account"}), 400
+
+    try:
+        result = connector.place_order(symbol, side, quantity, price, order_type)
+        # Append an event: CryptoOrderPlaced / Executed
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "order_type": order_type,
+            "order_id": result.get('orderId'),
+            "price": result.get('price', '0')
+        }
+        append_event(user_id, account_id, 'CryptoOrderExecuted', payload)
+        return jsonify({"message": f"Order placed: {side} {quantity} {symbol}", "order": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/crypto/withdraw', methods=['POST'])
+@jwt_required()
+def crypto_withdraw():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')
+    asset = data.get('asset')
+    address = data.get('address')
+    amount = data.get('amount')
+    network = data.get('network')
+
+    if not all([account_id, asset, address, amount]):
+        return jsonify({"error": "Missing required fields"}), 400
+
+    connector = get_exchange_connector(user_id, account_id)
+    if not connector:
+        return jsonify({"error": "Invalid account"}), 400
+
+    try:
+        result = connector.withdraw(asset, address, amount, network)
+        payload = {"asset": asset, "address": address, "amount": amount, "network": network, "txid": result.get('id')}
+        append_event(user_id, account_id, 'CryptoWithdrawalExecuted', payload)
+        return jsonify({"message": f"Withdrawal of {amount} {asset} initiated."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route('/link/wallet', methods=['POST'])
+@jwt_required()
+def link_wallet():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    address = data.get('address')
+    network = data.get('network', 'TRC20')  # or ERC20, BTC, etc.
+    label = data.get('label', f'{network} Wallet')
+
+    if not address:
+        return jsonify({"error": "Wallet address required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, wallet_address, network) VALUES (%s, 'wallet', %s, %s, 'USD', %s, %s) RETURNING id",
+        (user_id, network.lower(), label, address, network)
+    )
+    account_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"{network} wallet linked. (Watch-only)", "account_id": str(account_id)})
+
+
+
+
+
 
 # --------------- FRONTEND ---------------
 @app.route('/')

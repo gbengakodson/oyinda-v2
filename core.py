@@ -3,6 +3,7 @@
 import os, hashlib, json, uuid, psycopg2, psycopg2.extras, secrets
 from datetime import datetime, timedelta, date
 
+
 # --------------- Database Pool ---------------
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -11,6 +12,7 @@ DATABASE_URL = os.environ.get(
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
+
 
 # --------------- Event Hashing ---------------
 def compute_event_hash(stream_id, version, payload, previous_hash=None):

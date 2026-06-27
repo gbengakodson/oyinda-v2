@@ -1,6 +1,7 @@
 # app.py – Oyinda V2 API (non‑custodial, conversational)
 
 import os
+import re
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -43,6 +44,47 @@ def login():
     token = create_access_token(identity=user['id'])
     return jsonify({"message": f"Welcome back, {user['name']}! Ready to take control of your finances?", "user": user, "token": token})
 
+
+def normalize_date(date_str):
+    """Convert human-spoken dates like 'Monday', '3 days ago' to YYYY-MM-DD."""
+    if not date_str:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+        return date_str
+    except ValueError:
+        pass
+
+    today = datetime.utcnow().date()
+    dl = date_str.lower().strip()
+
+    # Relative days ago
+    match = re.match(r'(\d+)\s*days?\s*ago', dl)
+    if match:
+        days = int(match.group(1))
+        return (today - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # Specific weekdays (last occurrence)
+    weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday']
+    if dl in weekdays:
+        target_idx = weekdays.index(dl)
+        current_idx = today.weekday()  # Monday=0
+        days_back = (current_idx - target_idx) % 7
+        if days_back == 0:
+            days_back = 7  # "Monday" on Monday means last Monday
+        return (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    # Common relative names
+    if dl == 'yesterday':
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    if dl == 'today':
+        return today.strftime("%Y-%m-%d")
+    if dl == 'tomorrow':
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")  # unlikely but safe
+
+    # fallback
+    return today.strftime("%Y-%m-%d")
+
 # --------------- COMMAND HANDLER ---------------
 @app.route('/command', methods=['POST'])
 @jwt_required()
@@ -70,6 +112,10 @@ def handle_command():
         category = parsed.get('category', 'other')
         description = parsed.get('description', text)
 
+        # ---- Normalize the date once for all events ----
+        raw_date = parsed.get("date")
+        date = normalize_date(raw_date) if raw_date else datetime.utcnow().strftime("%Y-%m-%d")
+
         if event_type == 'transfer':
             source_id = parsed.get("source_account_id")
             dest_id = parsed.get("destination_account_id")
@@ -83,7 +129,7 @@ def handle_command():
             payload = {
                 "amount": amount,
                 "currency": currency,
-                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "date": date,                # ✅ normalized
                 "description": description,
                 "source_account_id": source_id,
                 "destination_account_id": dest_id
@@ -94,16 +140,16 @@ def handle_command():
             response_text = f"Okay, I'll send {amount} {currency} from {source_label} to {dest_label}. Please confirm this transfer."
             return jsonify({"message": response_text, "tone": "neutral", "event_id": event['event_id']})
 
-        raw_date = parsed.get("date")
-        date = normalize_date(raw_date) if raw_date else datetime.utcnow().strftime("%Y-%m-%d")
-        # Non‑transfer events
+        # ---- Non‑transfer events ----
         if event_type == 'intention':
             payload = {
                 "amount": amount,
                 "currency": currency,
-                "category": category,
-                "date": date,  # use normalized date
-                "description": description
+                "date": date,               # ✅ normalized
+                "description": description,
+                "goal_type": parsed.get("goal_type", "general"),
+                "deadline": parsed.get("deadline"),
+                "target_amount": amount
             }
             event = append_event(user_id, user_id, 'GoalSet', payload)
             response_text = f"Goal set! You want to save {amount} {currency} for {description}. I'll help you stay on track."
@@ -118,7 +164,7 @@ def handle_command():
             final_type = 'ExpenseLogged'
         elif event_type == 'asset':
             final_type = 'ExpenseLogged'
-            category = 'loan_given'  # override category
+            category = 'loan_given'
             parsed['category'] = category
         else:
             final_type = event_type
@@ -127,38 +173,36 @@ def handle_command():
             "amount": amount,
             "currency": currency,
             "category": category,
-            "date": parsed.get("date", datetime.utcnow().strftime("%Y-%m-%d")),
+            "date": date,                   # ✅ normalized, not parsed.get(...)
             "description": description
         }
 
         event = append_event(user_id, user_id, final_type, payload)
 
         name = get_user_name(user_id)
+        # ---- Determine tone and response text ----
+        tone = "neutral"  # default
         if final_type == 'ExpenseLogged':
             if category == 'loan_given':
                 response_text = f"Understood, {name}. You lent {amount} {currency}. I'll track this as an asset someone owes you."
                 tone = "neutral"
             else:
                 response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
-
-            budget = calculate_daily_budget(user_id)
-            if budget:
-                total_budget = sum(budget.values())
-                daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
-                tone = "warning" if amount > daily_limit else "good"
-            else:
-                tone = "neutral"
+                # Check budget only for normal expenses
+                budget = calculate_daily_budget(user_id)
+                if budget:
+                    total_budget = sum(budget.values())
+                    daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
+                    tone = "warning" if amount > daily_limit else "good"
         elif final_type == 'IncomeReceived':
             response_text = f"Great, {name}! You received {amount} {currency}. That's a step forward."
             tone = "income"
         else:
             response_text = f"Logged: {text}"
-            tone = "neutral"
 
         return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
 
     except Exception as e:
-        # Return the actual error so we can see it in the frontend
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 def get_user_name(user_id):
@@ -171,27 +215,43 @@ def get_user_name(user_id):
 
 # --------------- QUERY HANDLER (expanded) ---------------
 def handle_query(text, user_id):
-    text_lower = text.lower()
-    now = datetime.utcnow()
-
-    # Try the AI classifier for structured query understanding
+    # ---- GREETING DETECTION (via Groq classifier) ----
     query_info = classify_query_intent(text)
+    if query_info and query_info.get('intent') == 'greeting':
+        # Get user account type for personalised intro
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT name, account_type FROM users WHERE id=%s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            name, acct_type = row
+            if acct_type == 'personal':
+                intro = f"Hi {name}! I'm Oyinda, your personal assistant for financial inclusion. How can I help you today?"
+            elif acct_type == 'business':
+                intro = f"Hello {name}! I'm Oyinda, your business financial co‑pilot. Ready to optimise your cash flow?"
+            elif acct_type == 'hni':
+                intro = f"Good day {name}. I'm Oyinda, your private wealth coordinator. What shall we review today?"
+            else:
+                intro = f"Welcome back, {name}! I'm your AI CFO. How may I assist you?"
+            return jsonify({"answer": intro, "tone": "neutral"})
+        else:
+            return jsonify({"answer": "Hello! I'm Oyinda, your financial companion. How can I assist?", "tone": "neutral"})
+
+    # ---- SMART QUERIES (expense/income with date & category) ----
+    text_lower = text.lower()
     if query_info:
         intent = query_info.get('intent')
         params = query_info.get('parameters', {})
-        date_param = params.get('date')         # e.g., "this month", "last month"
-        category = params.get('category')       # e.g., "food", "transport"
+        date_param = params.get('date')        # e.g. "last month", "this week"
+        category = params.get('category')      # e.g. "gas", "food"
 
         if intent in ('expense', 'income') and (date_param or category):
-            # Build date range
+            # Convert date parameter to actual date range
             start, end, label = extract_date_range(date_param or 'all time')
-            # Build SQL
             conn = get_conn()
             cur = conn.cursor()
-            if intent == 'expense':
-                type_filter = "type='expense'"
-            else:
-                type_filter = "type='income'"
+            type_filter = "type='expense'" if intent == 'expense' else "type='income'"
             cat_filter = ""
             query_params = [user_id, start, end]
             if category:
@@ -201,11 +261,10 @@ def handle_query(text, user_id):
             total = cur.fetchone()[0] or 0
             conn.close()
 
-            # Human‑friendly reply
             cat_text = f" on {category}" if category else ""
             return jsonify({"answer": f"Total {intent}{cat_text} for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
-    # Fallback: rule‑based checks
+    # ---- FALLBACK RULE‑BASED ----
     if any(w in text_lower for w in ['budget', 'limit', 'spend limit']):
         budget = calculate_daily_budget(user_id)
         if not budget:
@@ -218,7 +277,7 @@ def handle_query(text, user_id):
         msg = f"Your financial health score is {score['score']}/100. You're a {score['logo']}."
         return jsonify({"answer": msg, "tone": "neutral"})
 
-    # Simple date‑range expense/income (no category)
+    # Simple date‑based expense/income queries (fallback)
     if any(w in text_lower for w in ['spent', 'expense', 'spend']):
         start, end, label = extract_date_range(text_lower)
         conn = get_conn()
@@ -237,7 +296,6 @@ def handle_query(text, user_id):
         conn.close()
         return jsonify({"answer": f"Total income for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
-    # Final fallback
     return jsonify({"answer": "I can help with budgets, spending, income, or credit score. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
 
 

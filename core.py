@@ -44,7 +44,7 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
         conn.commit()
 
         # Run projections
-        handle_projection(conn, user_id, stream_id, event_type, payload, new_event_id)
+        handle_projection(conn, user_id, stream_id, event_type, payload, str(new_event_id))
 
         return {"event_id": str(new_event_id), "version": next_version}
 

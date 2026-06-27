@@ -277,6 +277,26 @@ def handle_query(text, user_id):
         msg = f"Your financial health score is {score['score']}/100. You're a {score['logo']}."
         return jsonify({"answer": msg, "tone": "neutral"})
 
+    # ---- Net worth ----
+    if 'net worth' in text_lower or 'networth' in text_lower:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='income'", (user_id,))
+        total_income = cur.fetchone()[0] or 0
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense'", (user_id,))
+        total_expense = cur.fetchone()[0] or 0
+        conn.close()
+        net = total_income - total_expense
+        return jsonify({"answer": f"Your net worth (income minus expenses) is ₦{net:,.2f}.", "tone": "neutral"})
+
+    # ---- Assets / connected accounts ----
+    if any(w in text_lower for w in ['asset', 'account', 'wallet', 'bank', 'what do i own', 'what do i have']):
+        accounts = get_user_connected_accounts(user_id)
+        if not accounts:
+            return jsonify({"answer": "You haven't linked any bank accounts or wallets yet.", "tone": "neutral"})
+        msg = "Your connected accounts:\n" + "\n".join([f"• {a['label']} ({a['currency']})" for a in accounts])
+        return jsonify({"answer": msg, "tone": "neutral"})
+
     # Simple date‑based expense/income queries (fallback)
     if any(w in text_lower for w in ['spent', 'expense', 'spend']):
         start, end, label = extract_date_range(text_lower)
@@ -287,7 +307,7 @@ def handle_query(text, user_id):
         conn.close()
         return jsonify({"answer": f"Total expenses for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
-    if any(w in text_lower for w in ['made', 'earned', 'income', 'profit']):
+    if any(w in text_lower for w in ['made', 'earned', 'income', 'profit', 'generate', 'revenue']):
         start, end, label = extract_date_range(text_lower)
         conn = get_conn()
         cur = conn.cursor()
@@ -295,6 +315,8 @@ def handle_query(text, user_id):
         total = cur.fetchone()[0] or 0
         conn.close()
         return jsonify({"answer": f"Total income for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+
 
     return jsonify({"answer": "I can help with budgets, spending, income, or credit score. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
 
@@ -362,7 +384,7 @@ def extract_date_range(date_param=None):
         start = today - timedelta(days=today.weekday())
         return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), "this week"
     if 'this month' in dl:
-        start = today.strftime("%Y-01")
+        start = today.strftime("%Y-%m") + "-01"
         return start, today.strftime("%Y-%m-%d"), "this month"
     if 'last week' in dl:
         end = today - timedelta(days=today.weekday()+1)

@@ -32,7 +32,7 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
         next_version = last[0] + 1 if last else 1
         previous_hash = last[1] if last else None
 
-        str(new_event_id)
+        new_event_id = uuid.uuid4()
         event_hash = compute_event_hash(stream_id, next_version, payload, previous_hash)
 
         cur.execute(

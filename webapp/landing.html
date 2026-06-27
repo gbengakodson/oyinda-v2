@@ -138,7 +138,8 @@
       chat.appendChild(div);
 
       // If it's a transfer request, add confirm button
-      if (role === 'cfo' && eventId && (tone === 'neutral' || !tone)) {
+      // Only show confirm button if the message contains "Please confirm"
+      if (role === 'cfo' && eventId && content.includes('Please confirm')) {
         // Check if message indicates a pending transfer (we can rely on eventId being provided)
         // But to be safe, we could also check content for "Please confirm" but let's trust eventId.
         const btnContainer = document.createElement('div');

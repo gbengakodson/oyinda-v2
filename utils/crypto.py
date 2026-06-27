@@ -2,15 +2,23 @@
 import os
 from cryptography.fernet import Fernet
 
-# Generate a key once and store in env var: ENCRYPTION_KEY = Fernet.generate_key()
-ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY")
-if not ENCRYPTION_KEY:
-    raise RuntimeError("ENCRYPTION_KEY environment variable not set")
-
-cipher = Fernet(ENCRYPTION_KEY.encode())
+def _get_cipher():
+    key = os.environ.get("ENCRYPTION_KEY")
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode())
+    except Exception:
+        return None
 
 def encrypt(plaintext: str) -> str:
+    cipher = _get_cipher()
+    if cipher is None:
+        raise RuntimeError("ENCRYPTION_KEY not set or invalid")
     return cipher.encrypt(plaintext.encode()).decode()
 
 def decrypt(ciphertext: str) -> str:
+    cipher = _get_cipher()
+    if cipher is None:
+        raise RuntimeError("ENCRYPTION_KEY not set or invalid")
     return cipher.decrypt(ciphertext.encode()).decode()

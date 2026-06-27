@@ -7,6 +7,8 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from core import *
 from groq_parser import parse_intent_groq, classify_query_intent
+from utils.crypto import encrypt, decrypt
+from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer
 
 app = Flask(__name__)
 CORS(app)
@@ -322,6 +324,82 @@ def handle_query(text, user_id):
 
 
 
+@app.route('/link/mono', methods=['POST'])
+@jwt_required()
+def link_mono():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    code = data.get('code')
+    if not code:
+        return jsonify({"error": "Mono auth code required"}), 400
+
+    try:
+        mono_resp = exchange_code(code)
+        mono_account_id = mono_resp['id']
+        # Get account details
+        details = get_account_details(mono_account_id)
+        account_number = details.get('account_number', '')
+        bank_name = details.get('institution', {}).get('name', 'Unknown Bank')
+        currency = details.get('currency', 'NGN')
+
+        # Encrypt access token (if any) – for security
+        # Mono uses secret key, not individual tokens; we can store account id only.
+        # If we later store a user token, encrypt it.
+
+        payload = {
+            "account_number": account_number,
+            "bank_name": bank_name,
+            "currency": currency,
+            "mono_account_id": mono_account_id,
+            "encrypted_token": ""   # not used for Mono now
+        }
+
+        # Append event
+        event = append_event(user_id, user_id, 'BankAccountLinked', payload)
+
+        return jsonify({"message": f"{bank_name} account ending {account_number[-3:]} linked successfully.",
+                        "account_id": mono_account_id, "event_id": event['event_id']})
+    except Exception as e:
+        return jsonify({"error": f"Linking failed: {str(e)}"}), 500
+
+
+
+@app.route('/sync/mono', methods=['POST'])
+@jwt_required()
+def sync_mono():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')   # mono account id
+    if not account_id:
+        return jsonify({"error": "Mono account ID required"}), 400
+
+    try:
+        # Optional: from last sync date
+        last_sync_date = get_last_sync_date(account_id)
+        transactions = get_transactions(account_id, from_date=last_sync_date)
+        count = 0
+        for tx in transactions:
+            # Idempotency: skip if we already have this transaction (by bank_ref)
+            if is_transaction_processed(tx['id']):
+                continue
+            # Convert Mono transaction to our event
+            tx_type = 'IncomeReceived' if tx['type'] == 'credit' else 'ExpenseLogged'
+            tx_payload = {
+                "amount": abs(tx['amount'] / 100),  # kobo to naira
+                "currency": tx.get('currency', 'NGN'),
+                "date": tx['date'][:10],
+                "description": tx['narration'],
+                "category": guess_category(tx['narration']),
+                "bank_ref": tx['id']   # for idempotency
+            }
+            append_event(user_id, account_id, tx_type, tx_payload)
+            count += 1
+
+        update_last_sync_date(account_id)
+        return jsonify({"message": f"Synced {count} new transactions."})
+    except Exception as e:
+        return jsonify({"error": f"Sync failed: {str(e)}"}), 500
+
 # --------------- TRANSFER CONFIRMATION ---------------
 @app.route('/confirm_transfer', methods=['POST'])
 @jwt_required()
@@ -356,6 +434,94 @@ def mock_execute_transfer(payload):
     # Replace with real payment gateway call
     return True, "MOCK-REF-001"
 
+
+@app.route('/statement', methods=['GET'])
+@jwt_required()
+def generate_statement():
+    user_id = get_jwt_identity()
+    from_date = request.args.get('from', '1900-01-01')
+    to_date = request.args.get('to', datetime.utcnow().strftime('%Y-%m-%d'))
+    format = request.args.get('format', 'json')  # json or pdf
+    accounts = request.args.get('accounts', 'all')
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Get transactions
+    if accounts == 'all':
+        cur.execute("""
+            SELECT date, type, amount, currency, category, description
+            FROM transactions_view
+            WHERE user_id=%s AND date BETWEEN %s AND %s
+            ORDER BY date DESC
+        """, (user_id, from_date, to_date))
+    else:
+        # Filter by specific account ids (more complex)
+        cur.execute("""
+            SELECT date, type, amount, currency, category, description
+            FROM transactions_view
+            WHERE user_id=%s AND date BETWEEN %s AND %s AND related_stream_id = ANY(%s)
+            ORDER BY date DESC
+        """, (user_id, from_date, to_date, accounts.split(',')))
+    rows = cur.fetchall()
+    conn.close()
+
+    transactions = [
+        {"date": row[0], "type": row[1], "amount": row[2], "currency": row[3], "category": row[4], "description": row[5]}
+        for row in rows
+    ]
+
+    if format == 'json':
+        return jsonify({"statement": {"from": from_date, "to": to_date, "transactions": transactions}})
+    else:
+        # PDF generation using ReportLab (install package first)
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+        from io import BytesIO
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        elements = []
+        # Build table...
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name='statement.pdf')
+
+
+@app.route('/transactions', methods=['GET'])
+@jwt_required()
+def list_transactions():
+    user_id = get_jwt_identity()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    type_filter = request.args.get('type', '')
+    date_from = request.args.get('date_from', '1900-01-01')
+    date_to = request.args.get('date_to', datetime.utcnow().strftime('%Y-%m-%d'))
+    category = request.args.get('category', '')
+
+    conn = get_conn()
+    cur = conn.cursor()
+    query = "SELECT date, type, amount, currency, category, description FROM transactions_view WHERE user_id=%s AND date BETWEEN %s AND %s"
+    params = [user_id, date_from, date_to]
+    if type_filter:
+        query += " AND type = %s"
+        params.append(type_filter)
+    if category:
+        query += " AND category = %s"
+        params.append(category)
+    query += " ORDER BY date DESC LIMIT %s OFFSET %s"
+    params.append(per_page)
+    params.append((page-1)*per_page)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    transactions = [
+        {"date": r[0], "type": r[1], "amount": r[2], "currency": r[3], "category": r[4], "description": r[5]}
+        for r in rows
+    ]
+    return jsonify({"page": page, "transactions": transactions})
+
+
 # --------------- HEALTH SCORE ---------------
 @app.route('/health', methods=['GET'])
 @jwt_required()
@@ -369,6 +535,50 @@ def health():
 def landing():
     return send_from_directory('webapp', 'landing.html')
 
+
+def get_last_sync_date(account_id):
+    # Retrieve from settings or a dedicated sync_tracker table
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM settings WHERE user_id=%s AND key=%s", (account_id, f"last_sync_{account_id}"))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_last_sync_date(account_id):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO settings (user_id, key, value) VALUES (%s, %s, %s) ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value",
+        (account_id, f"last_sync_{account_id}", today)
+    )
+    conn.commit()
+    conn.close()
+
+def is_transaction_processed(bank_ref):
+    # Check if an event with this bank_ref already exists (via metadata)
+    # You can store in a separate table or check transactions_view
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM transactions_view WHERE description ILIKE %s", (f"%ref:{bank_ref}%",))
+    exists = cur.fetchone()
+    conn.close()
+    return exists is not None
+
+def guess_category(narration):
+    narration = narration.lower()
+    if any(w in narration for w in ['food', 'rice', 'beans', 'restaurant']):
+        return 'food'
+    if any(w in narration for w in ['uber', 'taxi', 'transport', 'fuel']):
+        return 'transport'
+    if any(w in narration for w in ['rent', 'housing']):
+        return 'housing'
+    if any(w in narration for w in ['electricity', 'water', 'utility', 'internet', 'data']):
+        return 'utilities'
+    if any(w in narration for w in ['salary', 'wage', 'payment received']):
+        return 'income'
+    return 'other'
 
 def extract_date_range(date_param=None):
     today = datetime.utcnow().date()

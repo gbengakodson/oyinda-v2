@@ -129,6 +129,35 @@ def handle_projection(conn, user_id, stream_id, event_type, payload, event_id):
             (event_id,)
         )
 
+    elif event_type == 'BankAccountLinked':
+        # Insert or update connected_accounts with provider 'mono'
+        # payload: { account_id (mono), account_number, bank_name, currency, access_token_encrypted }
+        cur.execute(
+            """INSERT INTO connected_accounts (user_id, account_type, provider, account_number, label, currency)
+            VALUES (%s, 'bank', 'mono', %s, %s, %s)
+            ON CONFLICT DO NOTHING""",
+            (user_id, payload.get('account_number'), payload.get('bank_name'), payload.get('currency', 'NGN'))
+        )
+
+    elif event_type == 'BankTransactionsSynced':
+        # For each synced transaction, create corresponding income/expense event
+        # This is handled by the sync endpoint itself, but we can record the event.
+        pass
+
+    elif event_type == 'ExternalTransferExecuted':
+        # Deduct balance mirror and record
+        amount = payload.get('amount', 0)
+        currency = payload.get('currency', 'NGN')
+        cur.execute(
+            "UPDATE user_balances SET amount = amount - %s WHERE user_id = %s AND currency = %s",
+            (amount, user_id, currency)
+        )
+        cur.execute(
+            "INSERT INTO transactions_view (event_id, user_id, date, type, amount, currency, category, description, related_stream_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (event_id, user_id, datetime.utcnow().isoformat(), 'transfer_external', amount, currency, 'transfer',
+             payload.get('description', ''), payload.get('destination_account_id'))
+        )
+
     # Recalculate credit score after financial events
     if event_type in ('ExpenseLogged', 'IncomeReceived', 'GoalMilestone', 'TransferExecuted'):
         update_credit_score(conn, user_id)

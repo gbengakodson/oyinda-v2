@@ -53,104 +53,106 @@ def handle_command():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    parsed = parse_intent_groq(text)
-    if not parsed:
-        return jsonify({"error": "I didn't understand that. Could you rephrase?"}), 400
+    try:
+        parsed = parse_intent_groq(text)
+        if not parsed:
+            return jsonify({"error": "I didn't understand that. Could you rephrase?"}), 400
 
-    event_type = parsed.get('type')
-    if event_type == 'question':
-        return handle_query(text, user_id)
+        event_type = parsed.get('type')
+        if event_type == 'question':
+            return handle_query(text, user_id)
 
-    if event_type not in ('expense', 'income', 'transfer', 'liability', 'asset', 'intention'):
-        return jsonify({"error": "I'm not sure how to handle that request."}), 400
+        if event_type not in ('expense', 'income', 'transfer', 'liability', 'asset', 'intention'):
+            return jsonify({"error": "I'm not sure how to handle that request."}), 400
 
-    amount = parsed.get('amount')
-    currency = parsed.get('currency', 'NGN')
-    category = parsed.get('category', 'other')
-    description = parsed.get('description', text)
+        amount = parsed.get('amount')
+        currency = parsed.get('currency', 'NGN')
+        category = parsed.get('category', 'other')
+        description = parsed.get('description', text)
 
-    if event_type == 'transfer':
-        source_id = parsed.get("source_account_id")
-        dest_id = parsed.get("destination_account_id")
-        accounts = get_user_connected_accounts(user_id)
-        if not accounts:
-            return jsonify({"error": "No connected accounts. Please link a bank or wallet first."}), 400
-        if not source_id:
-            source_id = accounts[0]['id']
-        if not dest_id:
-            # In a full UI you'd ask the user; for demo we default to the same account (or second if exists)
-            dest_id = accounts[0]['id']  # change to second if you add more accounts
-        payload = {
-            "amount": amount,
-            "currency": currency,
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": description,
-            "source_account_id": source_id,
-            "destination_account_id": dest_id
-        }
-        event = append_event(user_id, user_id, 'TransferRequested', payload)
-        source_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
-        dest_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
-        response_text = f"Okay, I'll send {amount} {currency} from {source_label} to {dest_label}. Please confirm this transfer."
-        return jsonify({"message": response_text, "tone": "neutral", "event_id": event['event_id']})
+        if event_type == 'transfer':
+            source_id = parsed.get("source_account_id")
+            dest_id = parsed.get("destination_account_id")
+            accounts = get_user_connected_accounts(user_id)
+            if not accounts:
+                return jsonify({"error": "No connected accounts. Please link a bank or wallet first."}), 400
+            if not source_id:
+                source_id = accounts[0]['id']
+            if not dest_id:
+                dest_id = accounts[0]['id']
+            payload = {
+                "amount": amount,
+                "currency": currency,
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": description,
+                "source_account_id": source_id,
+                "destination_account_id": dest_id
+            }
+            event = append_event(user_id, user_id, 'TransferRequested', payload)
+            source_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
+            dest_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
+            response_text = f"Okay, I'll send {amount} {currency} from {source_label} to {dest_label}. Please confirm this transfer."
+            return jsonify({"message": response_text, "tone": "neutral", "event_id": event['event_id']})
 
-    # Non‑transfer events
-    if event_type == 'intention':
-        payload = {
-            "amount": amount,
-            "currency": currency,
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": description,
-            "goal_type": parsed.get("goal_type", "general"),
-            "deadline": parsed.get("deadline"),
-            "target_amount": amount
-        }
-        event = append_event(user_id, user_id, 'GoalSet', payload)
-        response_text = f"Goal set! You want to save {amount} {currency} for {description}. I'll help you stay on track."
-        return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
+        # Non‑transfer events
+        if event_type == 'intention':
+            payload = {
+                "amount": amount,
+                "currency": currency,
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": description,
+                "goal_type": parsed.get("goal_type", "general"),
+                "deadline": parsed.get("deadline"),
+                "target_amount": amount
+            }
+            event = append_event(user_id, user_id, 'GoalSet', payload)
+            response_text = f"Goal set! You want to save {amount} {currency} for {description}. I'll help you stay on track."
+            return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
-    # income / expense / liability / asset
-    if event_type == 'expense':
-        final_type = 'ExpenseLogged'
-    elif event_type == 'income':
-        final_type = 'IncomeReceived'
-    elif event_type == 'liability':
-        final_type = 'ExpenseLogged'  # treat as expense
-    elif event_type == 'asset':
-        final_type = 'IncomeReceived'  # selling asset is income
-    else:
-        final_type = event_type
-
-    payload = {
-        "amount": amount,
-        "currency": currency,
-        "category": category,
-        "date": parsed.get("date", datetime.utcnow().strftime("%Y-%m-%d")),
-        "description": description
-    }
-
-    event = append_event(user_id, user_id, final_type, payload)
-
-    # Human‑friendly response
-    name = get_user_name(user_id)
-    if final_type == 'ExpenseLogged':
-        response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
-        # Determine tone by comparing to budget
-        budget = calculate_daily_budget(user_id)
-        if budget:
-            total_budget = sum(budget.values())
-            daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
-            tone = "warning" if amount > daily_limit else "good"
+        # income / expense / liability / asset
+        if event_type == 'expense':
+            final_type = 'ExpenseLogged'
+        elif event_type == 'income':
+            final_type = 'IncomeReceived'
+        elif event_type == 'liability':
+            final_type = 'ExpenseLogged'
+        elif event_type == 'asset':
+            final_type = 'IncomeReceived'
         else:
-            tone = "neutral"
-    elif final_type == 'IncomeReceived':
-        response_text = f"Great, {name}! You received {amount} {currency}. That's a step forward."
-        tone = "income"
-    else:
-        response_text = f"Logged: {text}"
-        tone = "neutral"
+            final_type = event_type
 
-    return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
+        payload = {
+            "amount": amount,
+            "currency": currency,
+            "category": category,
+            "date": parsed.get("date", datetime.utcnow().strftime("%Y-%m-%d")),
+            "description": description
+        }
+
+        event = append_event(user_id, user_id, final_type, payload)
+
+        name = get_user_name(user_id)
+        if final_type == 'ExpenseLogged':
+            response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
+            budget = calculate_daily_budget(user_id)
+            if budget:
+                total_budget = sum(budget.values())
+                daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
+                tone = "warning" if amount > daily_limit else "good"
+            else:
+                tone = "neutral"
+        elif final_type == 'IncomeReceived':
+            response_text = f"Great, {name}! You received {amount} {currency}. That's a step forward."
+            tone = "income"
+        else:
+            response_text = f"Logged: {text}"
+            tone = "neutral"
+
+        return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
+
+    except Exception as e:
+        # Return the actual error so we can see it in the frontend
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 def get_user_name(user_id):
     conn = get_conn()

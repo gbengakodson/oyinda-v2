@@ -32,13 +32,14 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
         next_version = last[0] + 1 if last else 1
         previous_hash = last[1] if last else None
 
-        new_event_id = uuid.uuid4()
+        str(new_event_id)
         event_hash = compute_event_hash(stream_id, next_version, payload, previous_hash)
 
         cur.execute(
             """INSERT INTO events (event_id, user_id, stream_id, event_type, payload, metadata, version, previous_hash, event_hash)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (new_event_id, user_id, stream_id, event_type, json.dumps(payload), json.dumps(metadata), next_version, previous_hash, event_hash)
+            (str(new_event_id), user_id, stream_id, event_type, json.dumps(payload), json.dumps(metadata), next_version,
+             previous_hash, event_hash)
         )
         conn.commit()
 

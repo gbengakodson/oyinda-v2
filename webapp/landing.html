@@ -147,50 +147,40 @@
     }
 
     function openMonoWidget() {
-      // Log what Mono gave us
-      console.log('MonoConnect exists:', typeof window.MonoConnect);
-      console.log('MonoConnect value:', window.MonoConnect);
-      console.log('Mono public key first 8 chars:', MONO_PUBLIC_KEY ? MONO_PUBLIC_KEY.substring(0, 8) : 'undefined');
-
-      // Short delay to ensure the object is fully ready
-      setTimeout(() => {
-        try {
-          if (typeof window.MonoConnect !== 'function') {
-            addMessage('error', `MonoConnect is ${typeof window.MonoConnect}, not a constructor.`);
-            return;
-          }
-          const config = {
-            key: MONO_PUBLIC_KEY,
-            onSuccess: async (data) => {
-              try {
-                const resp = await fetch(`${API}/link/mono`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                  },
-                  body: JSON.stringify({ code: data.code })
-                });
-                const result = await resp.json();
-                if (resp.ok) {
-                  addMessage('cfo', result.message, 'income');
-                } else {
-                  addMessage('error', result.error || 'Failed to link account.');
-                }
-              } catch (e) {
-                addMessage('error', 'Network error while linking.');
+      const connectFn = window['@mono.co/connect.js'];
+      if (!connectFn) {
+        addMessage('error', 'Mono library not loaded. Please refresh and try again.');
+        return;
+      }
+      try {
+        connectFn({
+          key: MONO_PUBLIC_KEY,
+          onSuccess: async (data) => {
+            try {
+              const resp = await fetch(`${API}/link/mono`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ code: data.code })
+              });
+              const result = await resp.json();
+              if (resp.ok) {
+                addMessage('cfo', result.message, 'income');
+              } else {
+                addMessage('error', result.error || 'Failed to link account.');
               }
-            },
-            onClose: () => console.log('Mono widget closed'),
-            onError: (err) => addMessage('error', 'Mono error: ' + err.message)
-          };
-
-          const monoConnect = new window.MonoConnect(config);
-          monoConnect.open();
-        } catch (e) {
-          addMessage('error', 'MonoInit: ' + (e.message || e));
-        }
-      }, 500);
+            } catch (e) {
+              addMessage('error', 'Network error while linking.');
+            }
+          },
+          onClose: () => console.log('Mono widget closed'),
+          onError: (err) => addMessage('error', 'Mono error: ' + err.message)
+        });
+      } catch (e) {
+        addMessage('error', 'MonoInit error: ' + (e.message || e));
+      }
     }
 
     // --------------- Health Score & Logo ---------------

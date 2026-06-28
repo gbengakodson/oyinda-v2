@@ -1,10 +1,8 @@
-# core.py – Oyinda V2 Event Sourcing Core (non‑custodial, full implementation)
+# core.py – Oyinda V2 Event Sourcing Core (Final)
 
 import os, hashlib, json, uuid, psycopg2, psycopg2.extras, secrets
 from datetime import datetime, timedelta, date
 
-
-# --------------- Database Pool ---------------
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://postgres.bbjfetsgourtnywqzjqw:2Methylpropane%23@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
@@ -13,13 +11,12 @@ DATABASE_URL = os.environ.get(
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
-
 # --------------- Event Hashing ---------------
 def compute_event_hash(stream_id, version, payload, previous_hash=None):
     raw = f"{stream_id}|{version}|{json.dumps(payload, sort_keys=True)}|{previous_hash or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
-# --------------- APPEND EVENT (only write path) ---------------
+# --------------- Append Event ---------------
 def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, metadata: dict = None) -> dict:
     if metadata is None:
         metadata = {}
@@ -40,26 +37,20 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
         cur.execute(
             """INSERT INTO events (event_id, user_id, stream_id, event_type, payload, metadata, version, previous_hash, event_hash)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (str(new_event_id), user_id, stream_id, event_type, json.dumps(payload), json.dumps(metadata), next_version,
-             previous_hash, event_hash)
+            (str(new_event_id), user_id, stream_id, event_type, json.dumps(payload), json.dumps(metadata), next_version, previous_hash, event_hash)
         )
         conn.commit()
-
-        # Run projections
         handle_projection(conn, user_id, stream_id, event_type, payload, str(new_event_id))
-
         return {"event_id": str(new_event_id), "version": next_version}
-
     except Exception as e:
         conn.rollback()
         raise e
     finally:
         conn.close()
 
-# --------------- PROJECTION HANDLERS ---------------
+# --------------- Projection Handlers ---------------
 def handle_projection(conn, user_id, stream_id, event_type, payload, event_id):
     cur = conn.cursor()
-
     if event_type == 'ExpenseLogged':
         amount = payload.get('amount', 0)
         currency = payload.get('currency', 'NGN')
@@ -72,7 +63,6 @@ def handle_projection(conn, user_id, stream_id, event_type, payload, event_id):
             (event_id, user_id, payload.get('date', datetime.utcnow().isoformat()), 'expense', amount, currency, payload.get('category', 'other'), payload.get('description', ''))
         )
         update_behavior_log(conn, user_id, payload.get('date', datetime.utcnow().date().isoformat()))
-
     elif event_type == 'IncomeReceived':
         amount = payload.get('amount', 0)
         currency = payload.get('currency', 'NGN')
@@ -85,35 +75,19 @@ def handle_projection(conn, user_id, stream_id, event_type, payload, event_id):
             (event_id, user_id, payload.get('date', datetime.utcnow().isoformat()), 'income', amount, currency, payload.get('category', 'income'), payload.get('description', ''))
         )
         update_behavior_log(conn, user_id, payload.get('date', datetime.utcnow().date().isoformat()))
-
     elif event_type == 'GoalSet':
         cur.execute(
             "INSERT INTO goals (goal_id, user_id, stream_id, goal_type, target_amount, currency, deadline, description, saved) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (stream_id, user_id, stream_id, payload.get('goal_type', 'general'), payload.get('target_amount', 0), payload.get('currency', 'NGN'), payload.get('deadline'), payload.get('description', ''), 0)
         )
-
-    elif event_type == 'GoalMilestone':
-        cur.execute(
-            "UPDATE goals SET saved = saved + %s WHERE stream_id = %s",
-            (payload.get('amount', 0), stream_id)
-        )
-
     elif event_type == 'TransferRequested':
         cur.execute(
             "INSERT INTO transactions_view (event_id, user_id, date, type, amount, currency, category, description, related_stream_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (event_id, user_id, datetime.utcnow().isoformat(), 'transfer_pending', payload.get('amount', 0), payload.get('currency', 'NGN'), 'transfer', payload.get('description', ''), payload.get('destination_account_id'))
         )
-
-    elif event_type == 'TransferConfirmed':
-        cur.execute(
-            "UPDATE transactions_view SET type = 'transfer_confirmed' WHERE event_id = %s",
-            (event_id,)
-        )
-
     elif event_type == 'TransferExecuted':
         amount = payload.get('amount', 0)
         currency = payload.get('currency', 'NGN')
-        # Deduct from local balance mirror (source account estimation)
         cur.execute(
             "UPDATE user_balances SET amount = amount - %s WHERE user_id = %s AND currency = %s",
             (amount, user_id, currency)
@@ -122,50 +96,16 @@ def handle_projection(conn, user_id, stream_id, event_type, payload, event_id):
             "UPDATE transactions_view SET type = 'transfer_executed' WHERE event_id = %s",
             (event_id,)
         )
-
-    elif event_type == 'TransferFailed':
+    elif event_type == 'CryptoOrderExecuted':
         cur.execute(
-            "UPDATE transactions_view SET type = 'transfer_failed' WHERE event_id = %s",
-            (event_id,)
+            "INSERT INTO transactions_view (event_id, user_id, date, type, amount, currency, category, description) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (event_id, user_id, datetime.utcnow().isoformat(), 'crypto_trade', payload.get('quantity', 0), payload.get('symbol', 'USD'), 'trade', payload.get('side', '') + ' ' + payload.get('symbol', ''))
         )
-
-    elif event_type == 'BankAccountLinked':
-        # Insert or update connected_accounts with provider 'mono'
-        # payload: { account_id (mono), account_number, bank_name, currency, access_token_encrypted }
-        cur.execute(
-            """INSERT INTO connected_accounts (user_id, account_type, provider, account_number, label, currency)
-            VALUES (%s, 'bank', 'mono', %s, %s, %s)
-            ON CONFLICT DO NOTHING""",
-            (user_id, payload.get('account_number'), payload.get('bank_name'), payload.get('currency', 'NGN'))
-        )
-
-    elif event_type == 'BankTransactionsSynced':
-        # For each synced transaction, create corresponding income/expense event
-        # This is handled by the sync endpoint itself, but we can record the event.
-        pass
-
-    elif event_type == 'ExternalTransferExecuted':
-        # Deduct balance mirror and record
-        amount = payload.get('amount', 0)
-        currency = payload.get('currency', 'NGN')
-        cur.execute(
-            "UPDATE user_balances SET amount = amount - %s WHERE user_id = %s AND currency = %s",
-            (amount, user_id, currency)
-        )
-        cur.execute(
-            "INSERT INTO transactions_view (event_id, user_id, date, type, amount, currency, category, description, related_stream_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (event_id, user_id, datetime.utcnow().isoformat(), 'transfer_external', amount, currency, 'transfer',
-             payload.get('description', ''), payload.get('destination_account_id'))
-        )
-
-    # Recalculate credit score after financial events
-    if event_type in ('ExpenseLogged', 'IncomeReceived', 'GoalMilestone', 'TransferExecuted'):
+    if event_type in ('ExpenseLogged', 'IncomeReceived', 'TransferExecuted', 'CryptoOrderExecuted'):
         update_credit_score(conn, user_id)
-
     conn.commit()
     cur.close()
 
-# --------------- Behavior Log Aggregation ---------------
 def update_behavior_log(conn, user_id, date_str):
     try:
         if 'T' in date_str:
@@ -177,8 +117,7 @@ def update_behavior_log(conn, user_id, date_str):
     cur = conn.cursor()
     cur.execute("""
         SELECT category, SUM(amount) FROM transactions_view
-        WHERE user_id=%s AND date::date = %s AND type IN ('expense','transfer_executed')
-        AND category IN ('food','transport','housing','utilities','entertainment','health','clothing','education','other')
+        WHERE user_id=%s AND date::date = %s AND type IN ('expense','transfer_executed','crypto_trade')
         GROUP BY category
     """, (user_id, dt))
     cats = {row[0]: row[1] for row in cur.fetchall()}
@@ -186,7 +125,7 @@ def update_behavior_log(conn, user_id, date_str):
         INSERT INTO behavior_log (user_id, date, total_income, total_expense, food, transport, housing, utilities, entertainment, health, clothing, education, other)
         VALUES (%s, %s,
                 (SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND date::date=%s AND type='income'),
-                (SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND date::date=%s AND type IN ('expense','transfer_executed')),
+                (SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND date::date=%s AND type IN ('expense','transfer_executed','crypto_trade')),
                 %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, date) DO UPDATE SET
             total_income = EXCLUDED.total_income,
@@ -200,71 +139,47 @@ def update_behavior_log(conn, user_id, date_str):
             clothing = EXCLUDED.clothing,
             education = EXCLUDED.education,
             other = EXCLUDED.other
-    """, (
-        user_id, dt,
-        user_id, dt, user_id, dt,
-        cats.get('food',0), cats.get('transport',0), cats.get('housing',0),
-        cats.get('utilities',0), cats.get('entertainment',0), cats.get('health',0),
-        cats.get('clothing',0), cats.get('education',0), cats.get('other',0)
-    ))
+    """, (user_id, dt, user_id, dt, user_id, dt,
+          cats.get('food',0), cats.get('transport',0), cats.get('housing',0),
+          cats.get('utilities',0), cats.get('entertainment',0), cats.get('health',0),
+          cats.get('clothing',0), cats.get('education',0), cats.get('other',0)))
     conn.commit()
     cur.close()
 
-# --------------- Credit Score Calculation ---------------
 def update_credit_score(conn, user_id):
     cur = conn.cursor()
     three_months_ago = (datetime.utcnow() - timedelta(days=90)).date()
-    cur.execute("""
-        SELECT AVG(total_income), AVG(total_expense), SUM(total_income) as sum_income,
-               SUM(total_expense) as sum_expense
-        FROM behavior_log WHERE user_id=%s AND date >= %s
-    """, (user_id, three_months_ago))
-    row = cur.fetchone()
-    avg_income = row[0] or 0
-    avg_expense = row[1] or 0
-    total_income = row[2] or 0
-    total_expense = row[3] or 0
-
-    if total_income == 0:
+    cur.execute("SELECT total_income, total_expense FROM behavior_log WHERE user_id=%s AND date >= %s", (user_id, three_months_ago))
+    rows = cur.fetchall()
+    if not rows:
         score = 20
     else:
-        savings_rate = (total_income - total_expense) / total_income
-        score = max(0, min(100, int(savings_rate * 100 + 20)))
-
+        incomes = [r[0] for r in rows if r[0] > 0]
+        expenses = [r[1] for r in rows]
+        regularity = min(1, len(incomes) / 3)
+        total_income = sum(incomes)
+        total_expense = sum(expenses)
+        savings_rate = (total_income - total_expense) / total_income if total_income > 0 else 0
+        score = max(0, min(100, int(savings_rate * 60 + regularity * 40)))
     logo = 'butterfly' if score < 40 else ('eagle' if score >= 70 else 'transition')
-    cur.execute("""
-        INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now())
-        ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, logo = EXCLUDED.logo, updated_at = now()
-    """, (user_id, score, logo))
+    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, logo = EXCLUDED.logo, updated_at = now()", (user_id, score, logo))
     conn.commit()
     cur.close()
 
-# --------------- Connected Accounts Helpers ---------------
 def create_default_connected_account(conn, user_id):
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency) VALUES (%s, 'bank', 'demo_bank', 'Main NGN Account', 'NGN') ON CONFLICT DO NOTHING",
-        (user_id,)
-    )
+    cur.execute("INSERT INTO connected_accounts (user_id, account_type, provider, label, currency) VALUES (%s, 'bank', 'demo_bank', 'Main NGN Account', 'NGN') ON CONFLICT DO NOTHING", (user_id,))
     conn.commit()
     cur.close()
 
 def get_user_connected_accounts(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, account_type, provider, label, currency FROM connected_accounts WHERE user_id=%s AND is_active=true",
-        (user_id,)
-    )
+    cur.execute("SELECT id, account_type, provider, label, currency FROM connected_accounts WHERE user_id=%s AND is_active=true", (user_id,))
     rows = cur.fetchall()
     conn.close()
-    return [{"id": str(row[0]), "type": row[1], "provider": row[2], "label": row[3], "currency": row[4]} for row in rows]
+    return [{"id": str(r[0]), "type": r[1], "provider": r[2], "label": r[3], "currency": r[4]} for r in rows]
 
-def get_default_account(user_id):
-    accounts = get_user_connected_accounts(user_id)
-    return accounts[0] if accounts else None
-
-# --------------- Authentication Helpers ---------------
 def hash_password(password):
     salt = secrets.token_hex(16)
     return salt + ":" + hashlib.sha256((salt + password).encode()).hexdigest()
@@ -281,12 +196,8 @@ def create_user(name, email, password, account_type="personal", address=""):
     try:
         cur = conn.cursor()
         user_id = str(uuid.uuid4())
-        password_hash = hash_password(password)
-        cur.execute(
-            "INSERT INTO users (id, name, email, password_hash, account_type, address) VALUES (%s,%s,%s,%s,%s,%s)",
-            (user_id, name, email, password_hash, account_type, address)
-        )
-        # Create default connected account and initial score/balance
+        pwd_hash = hash_password(password)
+        cur.execute("INSERT INTO users (id, name, email, password_hash, account_type, address) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, name, email, pwd_hash, account_type, address))
         create_default_connected_account(conn, user_id)
         cur.execute("INSERT INTO credit_scores (user_id, score, logo) VALUES (%s, 20, 'butterfly') ON CONFLICT DO NOTHING", (user_id,))
         cur.execute("INSERT INTO user_balances (user_id, currency, amount) VALUES (%s, 'NGN', 0) ON CONFLICT DO NOTHING", (user_id,))
@@ -311,19 +222,18 @@ def authenticate_user(email, password):
     finally:
         conn.close()
 
-# --------------- Financial Queries ---------------
 def calculate_daily_budget(user_id):
     conn = get_conn()
     cur = conn.cursor()
     three_months_ago = (datetime.utcnow() - timedelta(days=90)).date()
     cur.execute("SELECT AVG(total_income) FROM behavior_log WHERE user_id=%s AND date >= %s", (user_id, three_months_ago))
-    avg_daily_income = cur.fetchone()[0] or 0
+    avg = cur.fetchone()[0] or 0
     conn.close()
-    if avg_daily_income == 0:
+    if avg == 0:
         return None
-    needs = avg_daily_income * 0.5
-    wants = avg_daily_income * 0.3
-    budget = {
+    needs = avg * 0.5
+    wants = avg * 0.3
+    return {
         "food": round(needs * 0.3, 2),
         "transport": round(needs * 0.2, 2),
         "housing": round(needs * 0.2, 2),
@@ -333,7 +243,6 @@ def calculate_daily_budget(user_id):
         "clothing": round(wants * 0.3, 2),
         "other_wants": round(wants * 0.2, 2)
     }
-    return budget
 
 def get_credit_score(user_id):
     conn = get_conn()

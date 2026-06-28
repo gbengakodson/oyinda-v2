@@ -13,11 +13,16 @@ from utils.crypto import encrypt, decrypt
 from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer
 from connectors.exchange import BinanceConnector, get_exchange_connector
 
+
+pending_transfers = {}  # user_id -> payload
 app = Flask(__name__)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
-pending_transfers = {}  # user_id -> transfer_event_payload
+
+def mock_execute_transfer(payload):
+    return True, "MOCK-REF-" + str(uuid.uuid4())[:8]
+
 # --------------- Voice / SMS channel (placeholder for future) ---------------
 # Voice uses browser Web Speech API; no extra backend needed now.
 # SMS integration will be added later via Africa's Talking or Twilio.
@@ -386,7 +391,7 @@ def handle_query(text, user_id):
         total = cur.fetchone()[0] or 0
         conn.close()
         return jsonify({"answer": f"Total expenses for {label}: ₦{total:,.2f}", "tone": "neutral"})
-    if any(w in text_lower for w in ['made','earned','income','profit']):
+    if any(w in text_lower for w in ['made', 'earned', 'income', 'profit', 'revenue']):
         start, end, label = extract_date_range(text_lower)
         conn = get_conn()
         cur = conn.cursor()
@@ -487,6 +492,35 @@ def list_transactions():
 
 # --------------- MONO & EXCHANGE & WALLET ENDPOINTS (as before) ---------------
 # ... (include /link/mono, /sync/mono, /link/exchange, /sync/exchange, /crypto/order, /crypto/withdraw, /link/wallet, /crypto/wallet/prepare, /crypto/wallet/submit)
+
+@app.route('/confirm_transfer', methods=['POST'])
+@jwt_required()
+def confirm_transfer():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    event_id = data.get('event_id')
+    if not event_id:
+        return jsonify({"error": "event_id required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM events WHERE event_id=%s AND user_id=%s", (event_id, user_id))
+    row = cur.fetchone()
+    if not row or row[4] != 'TransferRequested':
+        return jsonify({"error": "Invalid or expired transfer request."}), 400
+
+    payload = json.loads(row[5])
+    stream_id = row[3]
+
+    # Confirm and execute
+    append_event(user_id, stream_id, 'TransferConfirmed', payload)
+    success, ref = mock_execute_transfer(payload)
+    if success:
+        append_event(user_id, stream_id, 'TransferExecuted', {**payload, "reference": ref})
+        return jsonify({"message": f"Transfer of {payload['amount']} {payload['currency']} completed.", "tone": "income"})
+    else:
+        append_event(user_id, stream_id, 'TransferFailed', {**payload, "error": ref})
+        return jsonify({"message": f"Transfer failed: {ref}", "tone": "warning"})
 
 # --------------- HEALTH ---------------
 @app.route('/health', methods=['GET'])

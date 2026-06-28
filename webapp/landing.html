@@ -57,6 +57,7 @@
     <!-- Footer -->
     <div class="p-4 border-t flex items-center justify-between text-sm text-gray-500">
       <span id="userEmailDisplay" class="truncate">Not logged in</span>
+      <span id="creditIndicator" class="text-sm"></span>
       <div class="flex gap-2 items-center">
         <span id="loginLogoutIcon" onclick="handleLoginLogout()" class="cursor-pointer text-lg">🔑</span>
         <span onclick="copyConversation()" class="cursor-pointer text-lg" title="Copy conversation">
@@ -94,7 +95,7 @@
   </div>
 
   <!-- Auth dialogs (unchanged) -->
-  <div id="loginDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-20" onclick="if(event.target===this) hideDialogs()">
+  <div id="loginDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50" onclick="if(event.target===this) hideDialogs()">
     <div class="bg-white p-6 rounded-2xl w-80">
       <h2 class="text-xl font-bold mb-4">Login</h2>
       <input id="loginEmail" placeholder="Email" class="w-full mb-3 p-2 border rounded-lg">
@@ -103,7 +104,7 @@
       <button onclick="hideDialogs()" class="w-full mt-2 bg-gray-300 py-2 rounded-lg">Cancel</button>
     </div>
   </div>
-  <div id="registerDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-20" onclick="if(event.target===this) hideDialogs()">
+  <div id="registerDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50" onclick="if(event.target===this) hideDialogs()">
     <div class="bg-white p-6 rounded-2xl w-80">
       <h2 class="text-xl font-bold mb-4">Register</h2>
       <input id="regName" placeholder="Your name" class="w-full mb-3 p-2 border rounded-lg">
@@ -155,11 +156,11 @@
         const resp = await fetch(`${API}/health`, { headers: { 'Authorization': `Bearer ${token}` } });
         if (resp.ok) {
           const data = await resp.json();
-          const logo = data.logo;
-          const icon = document.getElementById('logoIconSidebar');
-          if (logo === 'eagle') icon.textContent = '🦅';
-          else if (logo === 'transition') icon.textContent = '🦋🦅';
-          else icon.textContent = '🦋';
+          const score = data.score;
+          const indicator = document.getElementById('creditIndicator');
+          if (indicator) {
+            indicator.textContent = score >= 70 ? '💡' : '';
+          }
         }
       } catch(e) {}
     }

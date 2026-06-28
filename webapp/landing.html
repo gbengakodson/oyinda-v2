@@ -106,9 +106,10 @@
           <button class="btn btn-link" onclick="linkBank()">🔗 Link Bank</button>
           <button class="btn btn-link" onclick="linkExchange()">🏦 Link Exchange</button>
           <button class="btn btn-link" onclick="linkWallet()">👛 Link Wallet</button>
+          <button class="btn btn-link" onclick="connectWallet()">🦊 Connect Wallet</button>
+          <button class="btn btn-link" onclick="walletTransfer()">💸 Transfer</button>
           <button class="btn btn-logout" onclick="logout()">Logout</button>`;
         // Attach the click handler *after* the button is in the DOM
-        attachLinkBankHandler();
         fetchHealthScore();
       } else {
         btns.innerHTML = `

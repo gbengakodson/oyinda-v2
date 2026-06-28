@@ -17,7 +17,7 @@ app = Flask(__name__)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
-
+pending_transfers = {}  # user_id -> transfer_event_payload
 # --------------- Voice / SMS channel (placeholder for future) ---------------
 # Voice uses browser Web Speech API; no extra backend needed now.
 # SMS integration will be added later via Africa's Talking or Twilio.
@@ -127,6 +127,25 @@ def handle_command():
     text = data.get('text', '').strip()
     if not text:
         return jsonify({"error": "No text provided"}), 400
+
+    if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
+        pending = pending_transfers.get(user_id)
+        if pending:
+            # Execute the transfer
+            # (call the confirm logic directly)
+            append_event(user_id, user_id, 'TransferConfirmed', pending['payload'])
+            success, ref = mock_execute_transfer(pending['payload'])
+            if success:
+                append_event(user_id, user_id, 'TransferExecuted', {**pending['payload'], "reference": ref})
+                del pending_transfers[user_id]
+                return jsonify({
+                                   "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
+                                   "tone": "income"})
+            else:
+                append_event(user_id, user_id, 'TransferFailed', {**pending['payload'], "error": ref})
+                del pending_transfers[user_id]
+                return jsonify({"error": f"Transfer failed: {ref}"}), 500
+
     try:
         parsed = parse_intent_groq(text)
         if not parsed:
@@ -186,10 +205,15 @@ def handle_command():
                 "destination_account_id": dest_id
             }
             event = append_event(user_id, user_id, 'TransferRequested', payload)
+            pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
             src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
             dst_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
             msg = f"Okay, I'll send {amount} {currency} from {src_label} to {dst_label}. Please confirm this transfer."
             return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap') and not amount:
+            return jsonify(
+                {"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
 
         # Income / Expense / Asset / Liability / Goal
         if event_type == 'intention':
@@ -284,6 +308,26 @@ def handle_query(text, user_id):
             conn.close()
             cat_text = f" on {category}" if category else ""
             return jsonify({"answer": f"Total {intent}{cat_text} for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+    if 'liability' in text_lower or 'debt' in text_lower:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'",
+                    (user_id,))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Your total liability (loans taken) is ₦{total:,.2f}.", "tone": "neutral"})
+
+    if 'invest' in text_lower or 'investment' in text_lower:
+        # We need a category 'investment' – you can add it when logging.
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='investment'",
+            (user_id,))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Total investments recorded: ₦{total:,.2f}.", "tone": "neutral"})
 
     # Budget
     if any(w in text_lower for w in ['budget','limit','spend limit']):

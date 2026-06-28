@@ -12,32 +12,39 @@
   <script src="https://unpkg.com/@walletconnect/web3-provider@1.7.8/dist/umd/index.min.js"></script>
   <script src="https://unpkg.com/ethers@5.7.2/dist/ethers.umd.min.js"></script>
   <style>
-    @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .message-animate { animation: fadeInUp 0.3s ease; }
+  .sidebar-hidden { transform: translateX(-100%); }
+
+  @media (max-width: 768px) {
+    .sidebar {
+      position: fixed;
+      z-index: 40;
+      height: 100%;
+      transition: transform 0.3s;
     }
-    .message-animate { animation: fadeInUp 0.3s ease; }
-    .sidebar-hidden { transform: translateX(-100%); }
-    @media (max-width: 768px) {
-      .sidebar { position: fixed; z-index: 40; height: 100%; transition: transform 0.3s; }
-      .main-area { margin-left: 0 !important; }
+    .main-area {
+      margin-left: 0 !important;
     }
-    @media (max-width: 768px) {
-      .scroll-container {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-        scrollbar-gutter: auto;   /* no need to reserve on mobile */
-      }
-      .scroll-container::-webkit-scrollbar {
-        display: none;
-      }
+    .scroll-container {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+      scrollbar-gutter: auto;
     }
-      .scroll-container {
-        overflow-y: auto;
-        scrollbar-gutter: stable;   /* reserves scrollbar space always */
-      }
+    .scroll-container::-webkit-scrollbar {
+      display: none;
     }
-  </style>
+  }
+
+  /* Desktop: reserve scrollbar space so centering stays true */
+  .scroll-container {
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+</style>
 </head>
 <body class="bg-gray-100 flex h-screen overflow-hidden">
   <!-- Sidebar -->

@@ -532,15 +532,29 @@ def health():
 
 @app.route('/debug/groq', methods=['GET'])
 def debug_groq():
-    import groq_parser
-    key_set = bool(os.environ.get("GROQ_API_KEY"))
-    test_text = "hello"
-    result = parse_intent_groq(test_text)
-    return jsonify({
-        "key_configured": key_set,
-        "parser_result": result,
-        "test_input": test_text
-    })
+    import requests
+    key = os.environ.get("GROQ_API_KEY")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {key}"}
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.0
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        return jsonify({
+            "status": "ok",
+            "groq_response": data["choices"][0]["message"]["content"][:200]
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error_message": str(e),
+            "response_body": getattr(e, 'response', None) and e.response.text[:300]
+        })
 
 # --------------- FRONTEND ---------------
 @app.route('/')

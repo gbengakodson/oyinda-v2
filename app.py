@@ -530,6 +530,18 @@ def health():
     score = get_credit_score(user_id)
     return jsonify(score)
 
+@app.route('/debug/groq', methods=['GET'])
+def debug_groq():
+    import groq_parser
+    key_set = bool(os.environ.get("GROQ_API_KEY"))
+    test_text = "hello"
+    result = parse_intent_groq(test_text)
+    return jsonify({
+        "key_configured": key_set,
+        "parser_result": result,
+        "test_input": test_text
+    })
+
 # --------------- FRONTEND ---------------
 @app.route('/')
 def landing():

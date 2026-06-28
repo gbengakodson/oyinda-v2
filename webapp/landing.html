@@ -291,7 +291,7 @@
     function addMessage(role, content, tone = null) {
       const chat = document.getElementById('chat-messages');
       const div = document.createElement('div');
-      div.className = 'message-animate max-w-[80%] px-0 py-1';
+      div.className = 'message-animate max-w-[80%] px-0 py-1 ' + (role === 'user' ? 'self-end' : 'self-start');
       const inner = document.createElement('div');
       if (role === 'user') {
         inner.className = 'text-right font-semibold text-emerald-600 text-lg';

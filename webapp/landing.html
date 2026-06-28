@@ -6,6 +6,8 @@
   <title>Oyinda – Your AI Financial Companion</title>
   <!-- Mono Connect Widget -->
   <script src="https://connect.withmono.com/connect.js"></script>
+  <script src="https://unpkg.com/@walletconnect/web3-provider@1.7.8/dist/umd/index.min.js"></script>
+  <script src="https://unpkg.com/ethers@5.7.2/dist/ethers.umd.min.js"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -101,9 +103,9 @@
       if (userName) {
         btns.innerHTML = `
           <span style="color:#00d4aa; margin-right:12px">👤 ${userName}</span>
+          <button class="btn btn-link" onclick="linkBank()">🔗 Link Bank</button>
           <button class="btn btn-link" onclick="linkExchange()">🏦 Link Exchange</button>
           <button class="btn btn-link" onclick="linkWallet()">👛 Link Wallet</button>
-          <button class="btn btn-link">🔗 Link Bank</button>
           <button class="btn btn-logout" onclick="logout()">Logout</button>`;
         // Attach the click handler *after* the button is in the DOM
         attachLinkBankHandler();
@@ -115,41 +117,96 @@
         document.getElementById('logoIcon').textContent = '🦋';
       }
     }
-    function linkExchange() {
-      const provider = prompt('Enter exchange (binance):', 'binance');
-      const apiKey = prompt('Enter API Key:');
-      const apiSecret = prompt('Enter API Secret:');
-      if (!apiKey || !apiSecret) return;
-      fetch(`${API}/link/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ provider, api_key: apiKey, api_secret: apiSecret })
-      }).then(res => res.json()).then(data => {
-        addMessage('cfo', data.message, data.error ? 'error' : 'income');
+    // --------------- Bank linking (Mono) ---------------
+    function linkBank() {
+      if (!token) { addMessage('error', 'Please login first.'); return; }
+      const connectFn = window['@mono.co/connect.js'];
+      if (!connectFn) {
+        addMessage('error', 'Mono library not loaded. Please refresh.');
+        return;
+      }
+      connectFn({
+        key: MONO_PUBLIC_KEY,
+        onSuccess: async (data) => {
+          try {
+            const resp = await fetch(`${API}/link/mono`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ code: data.code })
+            });
+            const result = await resp.json();
+            if (resp.ok) {
+              addMessage('cfo', result.message, 'income');
+            } else {
+              addMessage('error', result.error || 'Failed to link bank.');
+            }
+          } catch (e) {
+            addMessage('error', 'Network error linking bank.');
+          }
+        },
+        onClose: () => {},
+        onError: (err) => addMessage('error', 'Mono error: ' + err.message)
       });
     }
 
-    function linkWallet() {
+    // --------------- Exchange linking (Binance) ---------------
+    async function linkExchange() {
+      if (!token) { addMessage('error', 'Please login first.'); return; }
+      const provider = prompt('Enter exchange (currently only "binance" supported):', 'binance');
+      if (!provider) return;
+      const apiKey = prompt('Enter your API Key:');
+      if (!apiKey) return;
+      const apiSecret = prompt('Enter your API Secret:');
+      if (!apiSecret) return;
+
+      try {
+        const resp = await fetch(`${API}/link/exchange`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ provider, api_key: apiKey, api_secret: apiSecret })
+        });
+        const result = await resp.json();
+        if (resp.ok) {
+          addMessage('cfo', result.message, 'income');
+        } else {
+          addMessage('error', result.error || 'Failed to link exchange.');
+        }
+      } catch (e) {
+        addMessage('error', 'Network error linking exchange.');
+      }
+    }
+
+    // --------------- Watch‑only wallet linking ---------------
+    async function linkWallet() {
+      if (!token) { addMessage('error', 'Please login first.'); return; }
       const address = prompt('Enter wallet address:');
-      const network = prompt('Network (TRC20, ERC20):', 'TRC20');
       if (!address) return;
-      fetch(`${API}/link/wallet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ address, network })
-      }).then(res => res.json()).then(data => {
-        addMessage('cfo', data.message, data.error ? 'error' : 'income');
-      });
-    }
+      const network = prompt('Network (e.g., TRC20, ERC20):', 'TRC20');
+      if (!network) return;
 
-    // Attach the click handler when the button becomes visible
-    function attachLinkBankHandler() {
-      const btn = document.querySelector('.btn-link');
-      if (btn) {
-        btn.onclick = function() {
-          if (typeof linkBank === 'function') linkBank();
-          else addMessage('error', 'Bank linking not yet available.');
-        };
+      try {
+        const resp = await fetch(`${API}/link/wallet`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ address, network })
+        });
+        const result = await resp.json();
+        if (resp.ok) {
+          addMessage('cfo', result.message, 'income');
+        } else {
+          addMessage('error', result.error || 'Failed to link wallet.');
+        }
+      } catch (e) {
+        addMessage('error', 'Network error linking wallet.');
       }
     }
 
@@ -187,6 +244,58 @@
         });
       } catch (e) {
         addMessage('error', 'MonoInit error: ' + (e.message || e));
+      }
+    }
+
+    let wcProvider = null;
+    let ethersProvider = null;
+    let signer = null;
+
+    async function connectWallet() {
+      if (!window.WalletConnectProvider) {
+        addMessage('error', 'WalletConnect library not loaded.');
+        return;
+      }
+      try {
+        wcProvider = new WalletConnectProvider.default({
+          infuraId: 'YOUR_INFURA_ID', // optional
+          rpc: { 1: 'https://mainnet.infura.io/v3/YOUR_ID' }
+        });
+        await wcProvider.enable();
+        ethersProvider = new ethers.providers.Web3Provider(wcProvider);
+        signer = ethersProvider.getSigner();
+        const address = await signer.getAddress();
+        addMessage('cfo', `Wallet connected: ${address}`, 'income');
+        // Optionally, auto‑save as a connected account
+        fetch(`${API}/link/wallet`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ address, network: 'Ethereum' })
+        });
+      } catch (e) {
+        addMessage('error', 'Wallet connection failed: ' + e.message);
+      }
+    }
+
+    async function walletTransfer() {
+      if (!signer) { addMessage('error', 'Connect wallet first.'); return; }
+      const to = prompt('Recipient address:');
+      const amount = prompt('Amount in ETH:');
+      if (!to || !amount) return;
+      try {
+        const tx = await signer.sendTransaction({
+          to: to,
+          value: ethers.utils.parseEther(amount)
+        });
+        addMessage('cfo', `Transfer sent: ${tx.hash}`, 'income');
+        // Notify backend
+        await fetch(`${API}/crypto/wallet/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ account_id: 'wallet_account_id', tx_hash: tx.hash })
+        });
+      } catch (e) {
+        addMessage('error', 'Transfer failed: ' + e.message);
       }
     }
 

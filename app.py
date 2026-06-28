@@ -454,6 +454,68 @@ def mock_execute_transfer(payload):
     return True, "MOCK-REF-001"
 
 
+@app.route('/crypto/wallet/prepare', methods=['POST'])
+@jwt_required()
+def wallet_prepare():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    action = data.get('action')  # 'transfer' or 'swap'
+    wallet_account_id = data.get('account_id')
+    if not action or not wallet_account_id:
+        return jsonify({"error": "Missing action or account_id"}), 400
+
+    # Validate wallet account belongs to user
+    accounts = get_user_connected_accounts(user_id)
+    wallet = next((a for a in accounts if a['id'] == wallet_account_id and a['type'] == 'wallet'), None)
+    if not wallet:
+        return jsonify({"error": "Wallet not found"}), 404
+
+    # Build the transaction payload (simplified – in real code you'd craft the contract call)
+    if action == 'transfer':
+        to_address = data.get('to')
+        amount = data.get('amount')  # in ETH/BNB
+        if not to_address or not amount:
+            return jsonify({"error": "to and amount required"}), 400
+        tx_payload = {
+            "from": wallet['wallet_address'],
+            "to": to_address,
+            "value": str(int(float(amount) * 1e18)),  # wei
+            "chainId": 1,  # mainnet; adjust by network
+        }
+    elif action == 'swap':
+        # Interact with Uniswap/Sushi – we'll provide a placeholder
+        token_in = data.get('token_in')
+        token_out = data.get('token_out')
+        amount_in = data.get('amount_in')
+        # In reality, you'd call the router's swapExactTokensForTokens
+        tx_payload = {
+            "from": wallet['wallet_address'],
+            "to": "0xUNISWAP_ROUTER_ADDRESS",
+            "data": "0x...",  # encoded swap function
+            "value": "0",
+            "chainId": 1
+        }
+    else:
+        return jsonify({"error": "Unsupported action"}), 400
+
+    # Return the payload to the frontend so WalletConnect can request signature
+    return jsonify({"tx_payload": tx_payload})
+
+
+
+@app.route('/crypto/wallet/submit', methods=['POST'])
+@jwt_required()
+def wallet_submit():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')
+    tx_hash = data.get('tx_hash')  # from wallet after broadcast
+    # In a full implementation, we'd verify the signature, but for now we record the event
+    payload = {"tx_hash": tx_hash, "account_id": account_id}
+    append_event(user_id, account_id, 'WalletTransactionExecuted', payload)
+    return jsonify({"message": "Transaction submitted and recorded."})
+
+
 @app.route('/statement', methods=['GET'])
 @jwt_required()
 def generate_statement():

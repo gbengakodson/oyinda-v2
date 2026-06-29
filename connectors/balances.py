@@ -75,6 +75,7 @@ def _get_evm_balance(address, network):
 
     try:
         resp = requests.get(base_url, params=params, timeout=10)
+        print("EVMBALANCE_RAW:", resp.status_code, resp.text[:300])
         data = resp.json()
         print("EVMBALANCE_DEBUG:", network, address, data)   # debug
         if data.get("status") == "1":

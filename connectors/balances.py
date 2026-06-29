@@ -51,6 +51,7 @@ def _get_wallet_balance(account):
     else:
         return f"{account['label']}: unsupported network for balance lookup."
 
+
 def _get_evm_balance(address, network):
     # Choose API key and endpoint
     if network == 'bsc':
@@ -70,17 +71,18 @@ def _get_evm_balance(address, network):
     try:
         resp = requests.get(base_url, params=params, timeout=10)
         data = resp.json()
+        print("BSCSCAN_DEBUG:", network, address, data)   # debug
         if data["status"] == "1":
             balance_wei = int(data["result"])
-            print("BSCSCAN_DEBUG:", network, address, balance_wei, data)
-            # Convert to ETH/BNB (18 decimals)
+            # Convert to native token (18 decimals for ETH/BNB)
             balance = balance_wei / 1e18
-            return f"{account['label']}: {balance:.4f} {network.upper().split(' ')[0]}"
+            return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {network.upper().split(' ')[0]}"
         else:
-            return f"{account['label']}: unable to fetch balance ({data.get('message')})"
+            return f"{network.upper()} Wallet ({address[:6]}...): unable to fetch balance ({data.get('message')})"
     except Exception as e:
-        print("BSCSCAN_ERROR:", str(e))
-        return f"{account['label']}: error fetching balance ({str(e)})"
+        print("BSCSCAN_ERROR:", str(e))   # debug
+        return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"
+
 
 def _get_tron_balance(address):
     # TronGrid API

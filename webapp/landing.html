@@ -378,16 +378,48 @@
     // ---------- Connect Wallet ----------
     async function connectWallet() {
       if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-      if (!window.WalletConnectProvider || !window.ethers) { addMessage('cfo', 'WalletConnect not loaded.', 'warning'); return; }
+
+      // --- Try MetaMask (desktop) first ---
+      if (window.ethereum && window.ethereum.isMetaMask) {
+        try {
+          await window.ethereum.request({ method: 'eth_requestAccounts' });
+          ethersProvider = new ethers.providers.Web3Provider(window.ethereum);
+          signer = ethersProvider.getSigner();
+          const address = await signer.getAddress();
+          addMessage('cfo', `MetaMask connected: ${address}`, 'income');
+          await fetch(`${API}/link/wallet`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ address, network: 'Ethereum' })
+          });
+          return;
+        } catch (e) {
+          // MetaMask failed, fallback to WalletConnect
+        }
+      }
+
+      // --- WalletConnect fallback (mobile wallets) ---
+      if (!window.WalletConnectProvider || !window.ethers) {
+        addMessage('cfo', 'Wallet connection not available.', 'warning');
+        return;
+      }
       try {
-        wcProvider = new WalletConnectProvider.default({ rpc: {1:'https://mainnet.infura.io/v3/YOUR_INFURA_ID'} });
+        wcProvider = new WalletConnectProvider.default({
+          rpc: { 1: 'https://mainnet.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161' } // public infura
+        });
         await wcProvider.enable();
         ethersProvider = new ethers.providers.Web3Provider(wcProvider);
         signer = ethersProvider.getSigner();
         const address = await signer.getAddress();
         addMessage('cfo', `Wallet connected: ${address}`, 'income');
-        await fetch(`${API}/link/wallet`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body: JSON.stringify({address, network:'Ethereum'}) });
-      } catch(e) { addMessage('cfo', 'Wallet connection failed. Ensure you have a wallet and try again.', 'warning'); }
+        await fetch(`${API}/link/wallet`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ address, network: 'Ethereum' })
+        });
+      } catch (e) {
+        addMessage('cfo', 'Wallet connection failed. Please unlock MetaMask or try a mobile wallet.', 'warning');
+      }
     }
 
     // ---------- Swap ----------

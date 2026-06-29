@@ -292,10 +292,6 @@ def handle_query(text, user_id):
                 return jsonify({"answer": f"Hello {name}! I'm your AI CFO. How may I assist you?", "tone": "neutral"})
         return jsonify({"answer": "Hello! I'm Oyinda, your financial companion.", "tone": "neutral"})
 
-    # Wallet balance query
-    if any(w in text_lower for w in ['balance', 'how much is in', 'how much eth', 'how much bnb', 'how much in my wallet']):
-        # For now, we return a note that balance is shown directly by the frontend
-        return jsonify({"answer": "I'm fetching your wallet balance directly. Please check your chat for the result.", "tone": "neutral"})
 
     # Smart queries with date & category
     if query_info:
@@ -411,12 +407,28 @@ def handle_query(text, user_id):
         if not accounts:
             return jsonify({"answer": "You haven't linked any accounts yet.", "tone": "neutral"})
 
-        # Try to find a matching account name in the text
+        # Aliases to map common names to actual labels
+        aliases = {
+            'metamask': ['bsc wallet', 'ethereum wallet', 'metamask'],
+            'trust wallet': ['trust wallet', 'trust'],
+            'binance': ['binance'],
+            'uba': ['uba'],
+            'main': ['main ngn account'],
+        }
+
+        # Try to find a matching account
         matched = None
         for acc in accounts:
-            # Check if account label or type is mentioned
+            # Direct label or type match
             if acc['label'].lower() in text_lower or acc['type'].lower() in text_lower:
                 matched = acc
+                break
+            # Check against known aliases
+            for alias, labels in aliases.items():
+                if alias in text_lower and any(label in acc['label'].lower() for label in labels):
+                    matched = acc
+                    break
+            if matched:
                 break
 
         if matched:
@@ -427,7 +439,7 @@ def handle_query(text, user_id):
             except Exception as e:
                 return jsonify({"answer": f"Could not fetch balance: {str(e)}", "tone": "warning"})
         else:
-            # List accounts with balances
+            # No specific account mentioned – list all balances
             from connectors.balances import get_account_balance
             lines = []
             for acc in accounts:

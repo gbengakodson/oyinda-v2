@@ -53,33 +53,39 @@ def _get_wallet_balance(account):
 
 
 def _get_evm_balance(address, network):
-    # Choose endpoint
     if network == 'bsc':
         api_key = os.environ.get("BSCSCAN_API_KEY", "")
-        base_url = "https://api.bscscan.com/v2/api"
-        chain = "bsc"
+        base_url = "https://api.bscscan.com/api"
+        chain_param = "bsc"
     else:
         api_key = os.environ.get("ETHERSCAN_API_KEY", "")
-        base_url = "https://api.etherscan.io/v2/api"
-        chain = "eth"
+        base_url = "https://api.etherscan.io/api"
+        chain_param = "eth"
 
     params = {
-        "chain": chain,
         "module": "account",
         "action": "balance",
         "address": address,
-        "tag": "latest"
+        "tag": "latest",
+        "chain": chain_param
     }
     if api_key:
         params["apikey"] = api_key
 
     try:
         resp = requests.get(base_url, params=params, timeout=10)
-        raw_text = resp.text[:500]   # get first 500 chars
-        # Return raw response directly in the balance message for debugging
-        return f"Debug: {raw_text}"
+        data = resp.json()
+        # Debug: show raw response in logs
+        print("EVMBALANCE_DEBUG:", network, address, data)
+        if data.get("status") == "1":
+            balance_wei = int(data["result"])
+            balance = balance_wei / 1e18
+            return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {network.upper().split(' ')[0]}"
+        else:
+            return f"{network.upper()} Wallet ({address[:6]}...): {data.get('message', 'NOTOK')} (Raw: {data})"
     except Exception as e:
-        return f"Debug error: {str(e)}"
+        print("EVMBALANCE_ERROR:", str(e))
+        return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"
 
 
 def _get_tron_balance(address):

@@ -71,12 +71,14 @@ def _get_evm_balance(address, network):
         data = resp.json()
         if data["status"] == "1":
             balance_wei = int(data["result"])
+            print("BSCSCAN_DEBUG:", network, address, balance_wei, data)
             # Convert to ETH/BNB (18 decimals)
             balance = balance_wei / 1e18
             return f"{account['label']}: {balance:.4f} {network.upper().split(' ')[0]}"
         else:
             return f"{account['label']}: unable to fetch balance ({data.get('message')})"
     except Exception as e:
+        print("BSCSCAN_ERROR:", str(e))
         return f"{account['label']}: error fetching balance ({str(e)})"
 
 def _get_tron_balance(address):

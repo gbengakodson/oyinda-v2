@@ -1,6 +1,7 @@
 # connectors/balances.py
 import os, requests
 from utils.crypto import decrypt
+from connectors.exchange import BinanceConnector
 
 def get_account_balance(account: dict) -> str:
     try:
@@ -28,14 +29,14 @@ def _get_bank_balance(account):
 def _get_exchange_balance(account):
     if account['provider'] == 'binance':
         from connectors.exchange import BinanceConnector
+        from utils.crypto import decrypt
         api_key = decrypt(account['api_key_encrypted'])
         api_secret = decrypt(account['api_secret_encrypted'])
         connector = BinanceConnector(api_key, api_secret)
         balances = connector.get_balances()
-        # Format a summary
+        if not balances:
+            return f"{account['label']}: no balances found."
         lines = [f"{asset}: {data['free']}" for asset, data in balances.items() if data['free'] > 0]
-        if not lines:
-            return f"{account['label']}: no assets found."
         return f"{account['label']} holdings:\n" + "\n".join(lines)
     else:
         return f"{account['label']}: exchange not supported yet."

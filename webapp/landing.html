@@ -75,6 +75,11 @@
 
     <!-- Connected accounts -->
     <div class="px-4 pb-2 text-xs" id="accountList"></div>
+          <!-- Wallet Activity (on-chain transactions) -->
+    <div class="px-4 pb-2">
+      <div class="text-xs font-semibold text-gray-400 mt-4 mb-1">Wallet Activity</div>
+      <div id="walletHistory" class="text-xs text-gray-600"></div>
+    </div>
 
     <!-- Footer -->
     <div class="p-4 border-t flex items-center justify-between text-sm text-gray-500">
@@ -138,6 +143,34 @@
   </div>
 
   <script>
+
+    const TOKEN_ADDRESSES = {
+      bsc: {
+        'USDT': '0x55d398326f99059fF775485246999027B3197955',
+        'USDC': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+        'BUSD': '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
+      },
+      eth: {
+        'USDT': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+        'USDC': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+        'DAI': '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+      }
+    };
+
+    const ERC20_ABI = [
+      "function transfer(address to, uint256 amount) returns (bool)"
+    ];
+
+    const ROUTER_ADDRESS = {
+      bsc: '0x10ED43C718714eb63d5aA57B78B54704E256024E', // PancakeSwap Router
+      eth: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'  // Uniswap V2 Router
+    };
+    const ROUTER_ABI = [
+      'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)'
+    ];
+
+    let pendingAction = null; // { type: 'swap' | 'send', payload: ... }
+
     // ---------- CONFIG ----------
     const API = 'https://oyinda-v2.onrender.com';
     const MONO_PUBLIC_KEY = 'test_pk_otw9gnq5i870ipmiyucx'; // sandbox
@@ -314,19 +347,50 @@
     }
 
     // ---------- Send ----------
+    let pendingAction = null;  // { type: 'swap' | 'send', payload, event_id }
+
     async function sendMessage() {
       if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
       const input = document.getElementById('userInput');
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
+
+      // ---------- Check for pending swap/send confirmation ----------
+      if (text.toLowerCase() === 'yes' && pendingAction) {
+        addMessage('user', text);
+        if (pendingAction.type === 'swap') {
+          await executeSwap(pendingAction.payload, pendingAction.event_id);
+        } else if (pendingAction.type === 'send') {
+          await executeTokenTransfer(pendingAction.payload, pendingAction.event_id);
+        }
+        pendingAction = null;
+        return;
+      }
+
       addMessage('user', text);
       try {
-        const resp = await fetch(`${API}/command`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body: JSON.stringify({text}) });
+        const resp = await fetch(`${API}/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ text })
+        });
         if (resp.ok) {
           const data = await resp.json();
           const reply = data.message || data.answer || 'Done.';
           addMessage('cfo', reply, data.tone || null);
+
+          // Store pending action if required
+          if (data.requires_confirmation) {
+            pendingAction = {
+              type: data.swap_payload ? 'swap' : 'send',
+              payload: data.swap_payload || data.send_payload,
+              event_id: data.event_id
+            };
+          } else {
+            pendingAction = null;
+          }
+
           loadTransactionHistory(); loadConnectedAccounts();
         } else if (resp.status === 401) {
           addMessage('cfo', 'Session expired. Please login again.', 'warning');
@@ -336,6 +400,78 @@
           addMessage('cfo', err.error || 'Could not process.', 'warning');
         }
       } catch(e) { addMessage('cfo', 'Network error.', 'warning'); }
+    }
+
+    async function executeSwap(payload, eventId) {
+      if (!signer) return addMessage('cfo', 'Wallet not connected.', 'warning');
+      const network = payload.network?.toLowerCase() || 'bsc';
+      const tokenIn = payload.token_in.toUpperCase();
+      const tokenOut = payload.token_out.toUpperCase();
+      const amount = ethers.utils.parseUnits(payload.amount, 18);
+      const path = [TOKEN_ADDRESSES[network][tokenIn], TOKEN_ADDRESSES[network][tokenOut]];
+      if (!path[0] || !path[1]) return addMessage('cfo', 'Token addresses not found.', 'warning');
+      try {
+        const router = new ethers.Contract(ROUTER_ADDRESS[network], ROUTER_ABI, signer);
+        const deadline = Math.floor(Date.now()/1000) + 60*20;
+        const tx = await router.swapExactTokensForTokens(amount, 0, path, await signer.getAddress(), deadline);
+        addMessage('cfo', `Swap submitted: ${tx.hash}`, 'income');
+        await fetch(`${API}/wallet/swap_executed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ tx_hash: tx.hash, event_id: eventId })
+        });
+      } catch (e) { addMessage('cfo', 'Swap failed: ' + e.message, 'warning'); }
+    }
+
+    async function executeTokenTransfer(payload, eventId) {
+      if (!signer) return addMessage('cfo', 'Wallet not connected.', 'warning');
+      const network = payload.network?.toLowerCase() || 'bsc';
+      const token = payload.token.toUpperCase();
+      const tokenAddr = TOKEN_ADDRESSES[network][token];
+      if (!tokenAddr) return addMessage('cfo', 'Token not supported.', 'warning');
+      try {
+        const contract = new ethers.Contract(tokenAddr, ERC20_ABI, signer);
+        const decimals = 18; // could be 6 for USDT/USDC, but ethers assumes 18; we'll handle later if needed
+        const amount = ethers.utils.parseUnits(payload.amount, decimals);
+        const tx = await contract.transfer(payload.to_address, amount);
+        addMessage('cfo', `Transfer submitted: ${tx.hash}`, 'income');
+        await fetch(`${API}/wallet/token_transfer_executed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ tx_hash: tx.hash, event_id: eventId })
+        });
+      } catch (e) { addMessage('cfo', 'Transfer failed: ' + e.message, 'warning'); }
+    }
+
+
+    async function loadWalletTransactions(walletAddress, network) {
+      if (!walletAddress) return;
+      const baseUrl = network === 'bsc' ? 'https://api.bscscan.com/api' : 'https://api.etherscan.io/api';
+      const params = new URLSearchParams({
+        module: 'account',
+        action: 'txlist',
+        address: walletAddress,
+        startblock: 0,
+        endblock: 99999999,
+        page: 1,
+        offset: 10,
+        sort: 'desc',
+        apikey: network === 'bsc' ? '22DA2IEBN6DF2J96QJX37GZK9U54I217HR' : '' // your key
+      });
+      try {
+        const resp = await fetch(`${baseUrl}?${params}`);
+        const data = await resp.json();
+        if (data.status === '1') {
+          const txns = data.result;
+          let html = '';
+          txns.forEach(tx => {
+            const date = new Date(tx.timeStamp * 1000).toLocaleDateString();
+            const value = ethers.utils.formatEther(tx.value);
+            html += `<div class="tx-item">${date} - ${tx.from === walletAddress ? 'Sent' : 'Received'} ${value} ETH</div>`;
+          });
+          document.getElementById('walletHistory').innerHTML = html || '<div>No transactions</div>';
+        }
+      } catch (e) {}
     }
 
     // ---------- Voice ----------

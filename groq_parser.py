@@ -84,9 +84,12 @@ def parse_intent_groq(text):
             if start == -1:
                 return None
             json_str = content[start:end]
+        print("GROQ_JSON_STR:", repr(json_str))
 
+        # ... earlier JSON extraction code ...
         data = json.loads(json_str)
 
+        # Fix missing fields
         if 'has_amount' not in data:
             data['has_amount'] = data.get('amount') is not None
         if 'currency' not in data or data['currency'] is None:
@@ -99,11 +102,16 @@ def parse_intent_groq(text):
             if "deadline" not in data:
                 data["deadline"] = None
 
-        return data
+        # Debug: print final parsed data before returning
+        print("PARSER DEBUG - data:", data)
+
+        return data  # ← MUST be inside the try block
 
     except Exception as e:
         print(f"Groq parsing error: {e}")
-    return None
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def classify_query_intent(text):
@@ -144,6 +152,7 @@ def classify_query_intent(text):
             timeout=15
         )
         content = response.json()["choices"][0]["message"]["content"]
+        print("GROQ_RAW:", repr(content[:500]))   # first 500 chars
 
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
         if match:

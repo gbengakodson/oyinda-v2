@@ -3,20 +3,21 @@ import os, requests
 from utils.crypto import decrypt
 
 def get_account_balance(account: dict) -> str:
-    """
-    account: dict with keys: id, type, provider, label, currency, wallet_address, network,
-                              api_key_encrypted, api_secret_encrypted
-    Returns a human-readable balance string.
-    """
-    acc_type = account['type']
-    if acc_type == 'bank':
-        return _get_bank_balance(account)
-    elif acc_type == 'exchange':
-        return _get_exchange_balance(account)
-    elif acc_type == 'wallet':
-        return _get_wallet_balance(account)
-    else:
-        return f"{account['label']}: balance unavailable for this account type."
+    try:
+        acc_type = account['type']
+        if acc_type == 'bank':
+            return _get_bank_balance(account)
+        elif acc_type == 'exchange':
+            return _get_exchange_balance(account)
+        elif acc_type == 'wallet':
+            return _get_wallet_balance(account)
+        else:
+            return f"{account['label']}: balance unavailable for this account type."
+    except Exception as e:
+        print("BALANCE_FETCH_ERROR:", account.get('label'), str(e))
+        import traceback
+        traceback.print_exc()
+        return f"{account['label']}: balance unavailable"
 
 def _get_bank_balance(account):
     # Use Mono API to get real-time balance

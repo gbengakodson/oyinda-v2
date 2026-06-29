@@ -175,10 +175,21 @@ def create_default_connected_account(conn, user_id):
 def get_user_connected_accounts(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, account_type, provider, label, currency FROM connected_accounts WHERE user_id=%s AND is_active=true", (user_id,))
+    cur.execute("SELECT id, account_type, provider, label, currency, wallet_address, network FROM connected_accounts WHERE user_id=%s AND is_active=true", (user_id,))
     rows = cur.fetchall()
     conn.close()
-    return [{"id": str(r[0]), "type": r[1], "provider": r[2], "label": r[3], "currency": r[4]} for r in rows]
+    return [
+        {
+            "id": str(r[0]),
+            "type": r[1],
+            "provider": r[2],
+            "label": r[3],
+            "currency": r[4],
+            "wallet_address": r[5],
+            "network": r[6]
+        }
+        for r in rows
+    ]
 
 def hash_password(password):
     salt = secrets.token_hex(16)

@@ -78,7 +78,7 @@ def _get_evm_balance(address, network):
             balance = balance_wei / 1e18
             return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {network.upper().split(' ')[0]}"
         else:
-            return f"{network.upper()} Wallet ({address[:6]}...): unable to fetch balance ({data.get('message')})"
+            return f"{network.upper()} Wallet ({address[:6]}...): unable to fetch balance ({data.get('message')}) - Raw: {data}"
     except Exception as e:
         print("BSCSCAN_ERROR:", str(e))   # debug
         return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"

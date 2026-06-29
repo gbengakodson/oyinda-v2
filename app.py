@@ -12,6 +12,8 @@ from groq_parser import parse_intent_groq, classify_query_intent
 from utils.crypto import encrypt, decrypt
 from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer
 from connectors.exchange import BinanceConnector, get_exchange_connector
+from web3 import Web3
+import connectors.balances as balance_module   # to get token contract addresses
 
 
 pending_transfers = {}  # user_id -> payload
@@ -219,6 +221,80 @@ def handle_command():
         if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap') and not amount:
             return jsonify(
                 {"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
+
+
+        # -------- SWAP (DEX) --------
+        if event_type == 'swap':
+            token_in = parsed.get('token_in', '')
+            token_out = parsed.get('token_out', '')
+            amount = parsed.get('amount')
+            wallet_name = parsed.get('wallet', 'metamask').lower()
+
+            # Find the wallet account
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                return jsonify({"error": f"No wallet matching '{wallet_name}' found."}), 400
+
+            # For DEX swap, we need the signer (MetaMask must be connected in browser)
+            # Frontend will ask user to confirm via MetaMask, so backend only validates and stores intent
+            swap_payload = {
+                "token_in": token_in,
+                "token_out": token_out,
+                "amount": amount,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+            return jsonify({
+                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "swap_payload": swap_payload
+            })
+
+        # -------- SEND TOKEN --------
+        if event_type == 'send_token':
+            token = parsed.get('token', '')
+            amount = parsed.get('amount')
+            to_address = parsed.get('to_address', '')
+            wallet_name = parsed.get('wallet', 'metamask').lower()
+
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                return jsonify({"error": f"No wallet matching '{wallet_name}' found."}), 400
+            if not token or not amount or not to_address:
+                return jsonify({"error": "Missing token, amount, or destination address."}), 400
+
+            send_payload = {
+                "token": token,
+                "amount": amount,
+                "to_address": to_address,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
+            return jsonify({
+                "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "send_payload": send_payload
+            })
 
         # Income / Expense / Asset / Liability / Goal
         if event_type == 'intention':
@@ -597,6 +673,31 @@ def confirm_transfer():
         append_event(user_id, stream_id, 'TransferFailed', {**payload, "error": ref})
         return jsonify({"message": f"Transfer failed: {ref}", "tone": "warning"})
 
+
+
+@app.route('/wallet/swap_executed', methods=['POST'])
+@jwt_required()
+def wallet_swap_executed():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    tx_hash = data.get('tx_hash')
+    event_id = data.get('event_id')
+    if not tx_hash or not event_id:
+        return jsonify({"error": "tx_hash and event_id required"}), 400
+    append_event(user_id, user_id, 'SwapExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
+    return jsonify({"message": "Swap recorded successfully."})
+
+@app.route('/wallet/token_transfer_executed', methods=['POST'])
+@jwt_required()
+def token_transfer_executed():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    tx_hash = data.get('tx_hash')
+    event_id = data.get('event_id')
+    if not tx_hash or not event_id:
+        return jsonify({"error": "tx_hash and event_id required"}), 400
+    append_event(user_id, user_id, 'TokenTransferExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
+    return jsonify({"message": "Token transfer recorded."})
 
 
 

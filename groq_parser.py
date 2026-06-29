@@ -88,6 +88,15 @@ def parse_intent_groq(text):
 
         # ... earlier JSON extraction code ...
         data = json.loads(json_str)
+        # For swap and send_token, add special fields
+        if data.get("type") in ("swap", "send_token"):
+            data.setdefault("wallet", "metamask")
+            if data["type"] == "swap":
+                data.setdefault("token_in", "")
+                data.setdefault("token_out", "")
+            elif data["type"] == "send_token":
+                data.setdefault("token", "")
+                data.setdefault("to_address", "")
 
         # Fix missing fields
         if 'has_amount' not in data:

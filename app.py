@@ -292,6 +292,11 @@ def handle_query(text, user_id):
                 return jsonify({"answer": f"Hello {name}! I'm your AI CFO. How may I assist you?", "tone": "neutral"})
         return jsonify({"answer": "Hello! I'm Oyinda, your financial companion.", "tone": "neutral"})
 
+    # Wallet balance query
+    if any(w in text_lower for w in ['balance', 'how much is in', 'how much eth', 'how much bnb', 'how much in my wallet']):
+        # For now, we return a note that balance is shown directly by the frontend
+        return jsonify({"answer": "I'm fetching your wallet balance directly. Please check your chat for the result.", "tone": "neutral"})
+
     # Smart queries with date & category
     if query_info:
         intent = query_info.get('intent')
@@ -400,6 +405,39 @@ def handle_query(text, user_id):
         conn.close()
         return jsonify({"answer": f"Total income for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
+    # Balance queries
+    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'how many assets']):
+        accounts = get_user_connected_accounts(user_id)
+        if not accounts:
+            return jsonify({"answer": "You haven't linked any accounts yet.", "tone": "neutral"})
+
+        # Try to find a matching account name in the text
+        matched = None
+        for acc in accounts:
+            # Check if account label or type is mentioned
+            if acc['label'].lower() in text_lower or acc['type'].lower() in text_lower:
+                matched = acc
+                break
+
+        if matched:
+            try:
+                from connectors.balances import get_account_balance
+                result = get_account_balance(matched)
+                return jsonify({"answer": result, "tone": "neutral"})
+            except Exception as e:
+                return jsonify({"answer": f"Could not fetch balance: {str(e)}", "tone": "warning"})
+        else:
+            # List accounts with balances
+            from connectors.balances import get_account_balance
+            lines = []
+            for acc in accounts:
+                try:
+                    bal = get_account_balance(acc)
+                    lines.append(f"• {bal}")
+                except:
+                    lines.append(f"• {acc['label']}: balance unavailable")
+            return jsonify({"answer": "Here are your balances:\n" + "\n".join(lines), "tone": "neutral"})
+
     return jsonify({"answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
 
 # --------------- STATEMENT (PDF/JSON) ---------------
@@ -458,6 +496,31 @@ def generate_statement():
             return jsonify({"error": "PDF generation not available (reportlab missing)."}), 500
     else:
         return jsonify({"error": "Unsupported format"}), 400
+
+
+
+@app.route('/account/balance', methods=['POST'])
+@jwt_required()
+def account_balance():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')
+    if not account_id:
+        return jsonify({"error": "account_id required"}), 400
+
+    # Get account details
+    accounts = get_user_connected_accounts(user_id)
+    account = next((a for a in accounts if a['id'] == account_id), None)
+    if not account:
+        return jsonify({"error": "Account not found"}), 404
+
+    try:
+        from connectors.balances import get_account_balance
+        balance_str = get_account_balance(account)
+        return jsonify({"balance": balance_str})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # --------------- TRANSACTION LIST (paginated) ---------------
 @app.route('/transactions', methods=['GET'])

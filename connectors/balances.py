@@ -43,22 +43,44 @@ def _get_exchange_balance(account):
 def _get_wallet_balance(account):
     address = account['wallet_address']
     network = account['network'].lower()
-    if network in ('ethereum', 'bsc', 'bsc testnet'):
-        # Use Etherscan / BscScan
-        return _get_evm_balance(address, network)
-    elif network == 'tron':
-        return _get_tron_balance(address)
-    else:
-        return f"{account['label']}: unsupported network for balance lookup."
+    lines = []
+    # Native balance
+    native = _get_evm_balance(address, network)
+    lines.append(native)
+    # Token balances
+    tokens = _get_token_balances(address, network)
+    if tokens:
+        lines.append("Tokens: " + ", ".join(tokens))
+    return "\n".join(lines)
 
 
 from web3 import Web3
 
-# Connect to BSC / Ethereum public RPCs
+# RPC endpoints
 BSC_RPC = 'https://bsc-rpc.publicnode.com'
 ETH_RPC = 'https://eth.llamarpc.com'
 
+# Common BEP-20 / ERC-20 tokens to check (name, address, decimals)
+COMMON_TOKENS = {
+    'bsc': [
+        ('USDT', '0x55d398326f99059fF775485246999027B3197955', 18),
+        ('USDC', '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', 18),
+        ('BUSD', '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56', 18),
+    ],
+    'eth': [
+        ('USDT', '0xdAC17F958D2ee523a2206206994597C13D831ec7', 6),
+        ('USDC', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 6),
+        ('DAI',  '0x6B175474E89094C44Da98b954EedeAC495271d0F', 18),
+    ]
+}
+
+# Minimal ERC-20 ABI for balanceOf
+ERC20_ABI = [
+    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}
+]
+
 def _get_evm_balance(address, network):
+    """Get native token balance (BNB / ETH)"""
     try:
         if network.lower() == 'bsc':
             w3 = Web3(Web3.HTTPProvider(BSC_RPC))
@@ -71,7 +93,30 @@ def _get_evm_balance(address, network):
         return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {native}"
     except Exception as e:
         print("EVMBALANCE_ERROR:", str(e))
-        return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"
+        return f"{network.upper()} Wallet ({address[:6]}...): error ({str(e)})"
+
+def _get_token_balances(address, network):
+    """Return list of token balances for common tokens"""
+    net = network.lower()
+    if net not in COMMON_TOKENS:
+        return []
+    if net == 'bsc':
+        w3 = Web3(Web3.HTTPProvider(BSC_RPC))
+    else:
+        w3 = Web3(Web3.HTTPProvider(ETH_RPC))
+    checksum_addr = Web3.to_checksum_address(address)
+    results = []
+    for name, token_addr, decimals in COMMON_TOKENS[net]:
+        try:
+            contract = w3.eth.contract(address=Web3.to_checksum_address(token_addr), abi=ERC20_ABI)
+            raw = contract.functions.balanceOf(checksum_addr).call()
+            if raw > 0:
+                human = raw / (10 ** decimals)
+                results.append(f"{name}: {human:.4f}")
+        except Exception as e:
+            # skip token if call fails
+            pass
+    return results
 
 
 def _get_tron_balance(address):

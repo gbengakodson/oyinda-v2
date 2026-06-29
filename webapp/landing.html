@@ -169,7 +169,7 @@
       'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)'
     ];
 
-    let pendingAction = null; // { type: 'swap' | 'send', payload: ... }
+    let pendingAction = null;  // { type: 'swap' | 'send', payload, event_id }
 
     // ---------- CONFIG ----------
     const API = 'https://oyinda-v2.onrender.com';
@@ -279,6 +279,14 @@
       document.getElementById('registerDialog').style.display = 'none';
     }
 
+    function handleLoginLogout() {
+      if (userName) {
+        logout();
+      } else {
+        showLogin();
+      }
+    }
+
     async function doLogin() {
       const email = document.getElementById('loginEmail').value.trim();
       const password = document.getElementById('loginPassword').value.trim();
@@ -347,7 +355,7 @@
     }
 
     // ---------- Send ----------
-    let pendingAction = null;  // { type: 'swap' | 'send', payload, event_id }
+
 
     async function sendMessage() {
       if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }

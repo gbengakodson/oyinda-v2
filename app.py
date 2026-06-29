@@ -522,6 +522,34 @@ def confirm_transfer():
         append_event(user_id, stream_id, 'TransferFailed', {**payload, "error": ref})
         return jsonify({"message": f"Transfer failed: {ref}", "tone": "warning"})
 
+
+
+
+@app.route('/link/wallet', methods=['POST'])
+@jwt_required()
+def link_wallet():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    address = data.get('address')
+    network = data.get('network', 'Ethereum')
+    label = data.get('label', f'{network} Wallet')
+
+    if not address:
+        return jsonify({"error": "Wallet address required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, wallet_address, network) VALUES (%s, 'wallet', %s, %s, 'ETH', %s, %s) RETURNING id",
+        (user_id, network.lower(), label, address, network)
+    )
+    account_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"{label} linked successfully.", "account_id": str(account_id)})
+
+
 # --------------- HEALTH ---------------
 @app.route('/health', methods=['GET'])
 @jwt_required()
@@ -529,6 +557,9 @@ def health():
     user_id = get_jwt_identity()
     score = get_credit_score(user_id)
     return jsonify(score)
+
+
+
 
 @app.route('/debug/groq', methods=['GET'])
 def debug_groq():

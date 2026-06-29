@@ -52,37 +52,23 @@ def _get_wallet_balance(account):
         return f"{account['label']}: unsupported network for balance lookup."
 
 
+from web3 import Web3
+
+# Connect to BSC / Ethereum public RPCs
+BSC_RPC = 'https://bsc-rpc.publicnode.com'
+ETH_RPC = 'https://eth.llamarpc.com'
+
 def _get_evm_balance(address, network):
-    if network == 'bsc':
-        api_key = os.environ.get("BSCSCAN_API_KEY", "")
-        base_url = "https://api.bscscan.com/api"
-        chain_param = "bsc"
-    else:
-        api_key = os.environ.get("ETHERSCAN_API_KEY", "")
-        base_url = "https://api.etherscan.io/api"
-        chain_param = "eth"
-
-    params = {
-        "module": "account",
-        "action": "balance",
-        "address": address,
-        "tag": "latest",
-        "chain": chain_param
-    }
-    if api_key:
-        params["apikey"] = api_key
-
     try:
-        resp = requests.get(base_url, params=params, timeout=10)
-        data = resp.json()
-        # Debug: show raw response in logs
-        print("EVMBALANCE_DEBUG:", network, address, data)
-        if data.get("status") == "1":
-            balance_wei = int(data["result"])
-            balance = balance_wei / 1e18
-            return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {network.upper().split(' ')[0]}"
+        if network.lower() == 'bsc':
+            w3 = Web3(Web3.HTTPProvider(BSC_RPC))
+            native = 'BNB'
         else:
-            return f"{network.upper()} Wallet ({address[:6]}...): {data.get('message', 'NOTOK')} (Raw: {data})"
+            w3 = Web3(Web3.HTTPProvider(ETH_RPC))
+            native = 'ETH'
+        balance_wei = w3.eth.get_balance(Web3.to_checksum_address(address))
+        balance = w3.from_wei(balance_wei, 'ether')
+        return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {native}"
     except Exception as e:
         print("EVMBALANCE_ERROR:", str(e))
         return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"

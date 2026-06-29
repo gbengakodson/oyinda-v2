@@ -66,8 +66,8 @@ def _get_evm_balance(address, network):
         "address": address,
         "tag": "latest"
     }
-    if api_key:
-        params["apikey"] = api_key
+    #if api_key:
+        #params["apikey"] = api_key
     try:
         resp = requests.get(base_url, params=params, timeout=10)
         data = resp.json()

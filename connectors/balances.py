@@ -53,34 +53,38 @@ def _get_wallet_balance(account):
 
 
 def _get_evm_balance(address, network):
-    # Choose API key and endpoint
+    # Use the new V2 endpoints for BscScan / Etherscan
     if network == 'bsc':
         api_key = os.environ.get("BSCSCAN_API_KEY", "")
-        base_url = "https://api.bscscan.com/api"
+        base_url = "https://api.bscscan.com/v2/api"
+        chain = "bsc"
     else:  # ethereum or testnets
         api_key = os.environ.get("ETHERSCAN_API_KEY", "")
-        base_url = "https://api.etherscan.io/api"
+        base_url = "https://api.etherscan.io/v2/api"
+        chain = "eth"
+
     params = {
+        "chain": chain,
         "module": "account",
         "action": "balance",
         "address": address,
         "tag": "latest"
     }
-    #if api_key:
-        #params["apikey"] = api_key
+    if api_key:
+        params["apikey"] = api_key
+
     try:
         resp = requests.get(base_url, params=params, timeout=10)
         data = resp.json()
-        print("BSCSCAN_DEBUG:", network, address, data)   # debug
-        if data["status"] == "1":
+        print("EVMBALANCE_DEBUG:", network, address, data)   # debug
+        if data.get("status") == "1":
             balance_wei = int(data["result"])
-            # Convert to native token (18 decimals for ETH/BNB)
             balance = balance_wei / 1e18
             return f"{network.upper()} Wallet ({address[:6]}...): {balance:.4f} {network.upper().split(' ')[0]}"
         else:
-            return f"{network.upper()} Wallet ({address[:6]}...): unable to fetch balance ({data.get('message')}) - Raw: {data}"
+            return f"{network.upper()} Wallet ({address[:6]}...): {data.get('message', 'NOTOK')} (Raw: {data})"
     except Exception as e:
-        print("BSCSCAN_ERROR:", str(e))   # debug
+        print("EVMBALANCE_ERROR:", str(e))
         return f"{network.upper()} Wallet ({address[:6]}...): error fetching balance ({str(e)})"
 
 

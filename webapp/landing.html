@@ -708,5 +708,35 @@
     // Initialize
     updateUI();
   </script>
+<script>
+  // Force the Link Bank button to work on every page load
+  document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.querySelector('[title="Link Bank"]');
+    if (btn) {
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        var t = localStorage.getItem('oyinda_token') || '';
+        if (!t) { alert('Please login first.'); return; }
+        var fn = window['@mono.co/connect.js'];
+        if (!fn) { alert('Mono library not loaded. Refresh.'); return; }
+        fn({
+          key: MONO_PUBLIC_KEY,
+          onSuccess: async function(data) {
+            var r = await fetch('https://oyinda-v2.onrender.com/link/mono', {
+              method:'POST',
+              headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+              body: JSON.stringify({code: data.code})
+            });
+            var d = await r.json();
+            alert(d.message || d.error);
+            if(r.ok) location.reload();
+          },
+          onClose: function(){},
+          onError: function(err){ alert('Mono error: ' + err.message); }
+        });
+      });
+    }
+  });
+</script>
 </body>
 </html>

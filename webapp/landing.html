@@ -549,11 +549,30 @@
     // ---------- Link Exchange ----------
     async function linkExchange() {
       if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-      const apiKey = prompt('Binance API Key:'); const apiSecret = prompt('Binance API Secret:');
-      if (!apiKey || !apiSecret) return;
-      const resp = await fetch(`${API}/link/exchange`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body: JSON.stringify({provider:'binance',api_key:apiKey,api_secret:apiSecret}) });
-      const data = await resp.json();
-      addMessage('cfo', data.message || data.error, resp.ok ? 'income' : 'warning');
+      const provider = prompt('Enter exchange (binance, bybit, kucoin):', 'binance');
+      if (!provider) return;
+      const apiKey = prompt('Enter API Key:');
+      if (!apiKey) return;
+      const apiSecret = prompt('Enter API Secret:');
+      if (!apiSecret) return;
+      const passphrase = provider === 'kucoin' ? prompt('Enter KuCoin Passphrase:') : '';
+
+      try {
+        const resp = await fetch(`${API}/link/exchange`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ provider, api_key: apiKey, api_secret: apiSecret, passphrase })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          addMessage('cfo', data.message, 'income');
+          loadConnectedAccounts(); // refresh sidebar
+        } else {
+          addMessage('cfo', data.error || 'Failed to link exchange.', 'warning');
+        }
+      } catch(e) {
+        addMessage('cfo', 'Network error while linking exchange.', 'warning');
+      }
     }
 
     // ---------- Connect Wallet ----------

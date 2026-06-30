@@ -83,6 +83,30 @@ def extract_date_range(date_param=None):
         return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
     dl = date_param.lower().strip()
 
+    # Check if any month name appears in the string
+    month_names = {
+        'january':1,'february':2,'march':3,'april':4,'may':5,'june':6,
+        'july':7,'august':8,'september':9,'october':10,'november':11,'december':12
+    }
+    found_month = None
+    for m_name in month_names:
+        if m_name in dl:
+            found_month = m_name
+            break
+    if found_month:
+        month = month_names[found_month]
+        year = today.year
+        if month > today.month:
+            year -= 1
+        start = f"{year}-{month:02d}-01"
+        if month == 12:
+            end = f"{year}-12-31"
+        else:
+            next_month = month + 1
+            end = f"{year}-{next_month:02d}-01"
+            end = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        return start, end, found_month.capitalize()
+
     # Specific month names (e.g., "june", "march")
     month_names = {
         'january':1, 'february':2, 'march':3, 'april':4, 'may':5, 'june':6,
@@ -549,27 +573,34 @@ def handle_command():
                 "send_payload": send_payload
             })
 
-        # ---------- CEX ORDERS (buy/sell only, not swap) ----------
-        if event_type in ('buy', 'sell'):
-            symbol = parsed.get('symbol', '')
-            side = event_type.upper()
-            quantity = amount
+        # Exchange trade (buy/sell on any linked exchange)
+        trade_match = re.match(r'(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from)?\s*(\w+)', text,
+                               re.IGNORECASE)
+        if trade_match:
+            action = trade_match.group(1).lower()
+            amount = float(trade_match.group(2))
+            symbol = trade_match.group(3).upper()
+            exchange_name = trade_match.group(4).lower()
             accounts = get_user_connected_accounts(user_id)
-            exchange_accts = [a for a in accounts if a['type'] == 'exchange']
-            if not exchange_accts:
-                return jsonify({"error": "No exchange account linked. Please connect Binance first."}), 400
-            account_id = exchange_accts[0]['id']
-            connector = get_exchange_connector(user_id, account_id)
-            if not connector:
-                return jsonify({"error": "Could not connect to exchange."}), 500
+            ex_account = None
+            for acc in accounts:
+                if acc['type'] == 'exchange' and exchange_name in acc['label'].lower():
+                    ex_account = acc
+                    break
+            if not ex_account:
+                return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
+
             try:
-                order = connector.place_order(symbol, side, quantity)
-                payload = {"symbol": symbol, "side": side, "quantity": quantity, "order_id": order.get('orderId'), "price": order.get('price','0')}
-                event = append_event(user_id, account_id, 'CryptoOrderExecuted', payload)
-                response_text = f"Order placed: {side} {quantity} {symbol}. Order ID: {order.get('orderId')}"
-                return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
+                from connectors.exchange_factory import get_exchange_connector as factory_connector
+                connector = factory_connector(ex_account)
+                order = connector.place_order(symbol, action, amount)
+                payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
+                append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
+                return jsonify(
+                    {"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
+                     "tone": "income"})
             except Exception as e:
-                return jsonify({"error": f"Order failed: {str(e)}"}), 500
+                return jsonify({"error": f"Trade failed: {str(e)}"}), 500
 
         # ---------- BANK TRANSFER ----------
         if event_type == 'transfer':
@@ -777,6 +808,23 @@ def handle_query(text, user_id):
             return jsonify({"answer": "No transactions yet.", "tone": "neutral"})
         lines = [f"{r[0][:10]} {r[1]}: ₦{r[2]:,.2f} {r[3]} - {r[4]}" for r in rows]
         return jsonify({"answer": "Your latest transactions:\n" + "\n".join(lines), "tone": "neutral"})
+
+    # Pattern: "total spent on <category> <time>"
+    spent_on = re.match(r'(?:total\s+)?spent\s+on\s+(\w+)\s+(.+)', text_lower)
+    if spent_on:
+        category = spent_on.group(1)
+        date_part = spent_on.group(2).strip()
+        # map aliases
+        cat_map = {'internet':'utilities','data':'utilities','fuel':'transport','rice':'food'}
+        category = cat_map.get(category, category)
+        start, end, label = extract_date_range(date_part)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category=%s AND date BETWEEN %s AND %s",
+                    (user_id, category, start, end))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Total spent on {category} for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
     # Simple expense/income fallback
     if any(w in text_lower for w in ['spent','expense','spend']):
@@ -1119,6 +1167,54 @@ def link_wallet():
         return jsonify({"message": f"{label} linked successfully.", "account_id": str(account_id)})
     else:
         return jsonify({"message": f"{label} already linked."})
+
+
+@app.route('/link/exchange', methods=['POST'])
+@jwt_required()
+def link_exchange():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    provider = data.get('provider', '').lower()
+    api_key = data.get('api_key')
+    api_secret = data.get('api_secret')
+    passphrase = data.get('passphrase', '')   # for KuCoin
+    if not provider or not api_key or not api_secret:
+        return jsonify({"error": "provider, api_key, and api_secret required"}), 400
+
+    # Validate provider
+    valid_providers = ['binance', 'bybit', 'kucoin', 'coinbase']
+    if provider not in valid_providers:
+        return jsonify({"error": f"Unsupported provider. Choose from: {', '.join(valid_providers)}"}), 400
+
+    # Encrypt credentials
+    from utils.crypto import encrypt
+    enc_key = encrypt(api_key)
+    enc_secret = encrypt(api_secret)
+    enc_passphrase = encrypt(passphrase) if passphrase else ''
+
+    # Check if this account already exists (by provider)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM connected_accounts WHERE user_id=%s AND provider=%s AND account_type='exchange'",
+        (user_id, provider)
+    )
+    existing = cur.fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"message": f"{provider.capitalize()} account already linked.", "account_id": str(existing[0])})
+
+    # Insert new account
+    cur.execute(
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, api_key_encrypted, api_secret_encrypted) VALUES (%s, 'exchange', %s, %s, 'USD', %s, %s) RETURNING id",
+        (user_id, provider, f"{provider.capitalize()} Account", enc_key, enc_secret)
+    )
+    account_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    # Optionally, store passphrase in a separate table or as part of api_secret_encrypted (we'll extend later)
+    return jsonify({"message": f"{provider.capitalize()} account linked successfully.", "account_id": str(account_id)})
 
 
 # --------------- HEALTH ---------------

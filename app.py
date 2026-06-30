@@ -335,6 +335,13 @@ def handle_command():
         amount = float(trade_match.group(2))
         symbol = trade_match.group(3).upper()
         exchange_name = trade_match.group(4).lower()
+
+        # Auto‑append USDT if the symbol looks like a standalone asset
+        common_assets = {'BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'LINK', 'DOT', 'LTC', 'BCH', 'ATOM', 'UNI',
+                         'ETC', 'FIL', 'APT', 'ARB', 'OP', 'NEAR', 'MATIC'}  # expand as needed
+        if symbol in common_assets:
+            symbol += 'USDT'
+
         accounts = get_user_connected_accounts(user_id)
         ex_account = None
         for acc in accounts:
@@ -343,10 +350,6 @@ def handle_command():
                 break
         if not ex_account:
             return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
-
-        # Ensure symbol is a valid trading pair (if no quote, default to USDT)
-        if len(symbol) <= 4 and not any(symbol.endswith(q) for q in ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH', 'BNB']):
-            symbol = symbol + 'USDT'
 
         try:
             from connectors.exchange_factory import get_exchange_connector as factory_connector
@@ -357,7 +360,6 @@ def handle_command():
             return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
                             "tone": "income"})
         except Exception as e:
-            # Try to extract Binance error message
             err_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:

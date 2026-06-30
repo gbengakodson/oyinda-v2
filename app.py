@@ -1216,6 +1216,29 @@ def link_exchange():
     # Optionally, store passphrase in a separate table or as part of api_secret_encrypted (we'll extend later)
     return jsonify({"message": f"{provider.capitalize()} account linked successfully.", "account_id": str(account_id)})
 
+@app.route('/account/<account_id>', methods=['DELETE'])
+@jwt_required()
+def delete_account(account_id):
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM connected_accounts WHERE id=%s AND user_id=%s RETURNING id", (account_id, user_id))
+    deleted = cur.fetchone()
+    conn.commit()
+    conn.close()
+    if deleted:
+        return jsonify({"message": "Account disconnected successfully."})
+    else:
+        return jsonify({"error": "Account not found or already deleted."}), 404
+
+
+@app.route('/api/accounts', methods=['GET'])
+@jwt_required()
+def api_accounts():
+    user_id = get_jwt_identity()
+    accounts = get_user_connected_accounts(user_id)
+    return jsonify(accounts)
+
 
 # --------------- HEALTH ---------------
 @app.route('/health', methods=['GET'])

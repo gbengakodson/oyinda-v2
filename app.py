@@ -660,6 +660,23 @@ def handle_query(text, user_id):
                 return jsonify({"answer": f"Hello {name}! I'm your AI CFO. How may I assist you?", "tone": "neutral"})
         return jsonify({"answer": "Hello! I'm Oyinda, your financial companion.", "tone": "neutral"})
 
+    # Manual parse for "spent on <category> <time>"
+    spent_match = re.match(r'(?:how much\s+)?(?:did\s+)?i\s+spent\s+on\s+(\w+)\s+(.+)', text_lower)
+    if spent_match:
+        category = spent_match.group(1)
+        date_part = spent_match.group(2).strip()
+        # Map common category words
+        cat_map = {'internet':'utilities','data':'utilities','food':'food','transport':'transport','fuel':'transport'}
+        category = cat_map.get(category, category)
+        start, end, label = extract_date_range(date_part)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category=%s AND date BETWEEN %s AND %s",
+                    (user_id, category, start, end))
+        total = cur.fetchone()[0] or 0
+        conn.close()
+        return jsonify({"answer": f"Total spent on {category} for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
 
     # Smart queries with date & category
     if query_info:

@@ -431,31 +431,41 @@
       const network = payload.network?.toLowerCase() || 'bsc';
       const tokenIn = payload.token_in.toUpperCase();
       const tokenOut = payload.token_out.toUpperCase();
-
-      console.log('SWAP DEBUG - network:', network);
-      console.log('SWAP DEBUG - tokenIn:', tokenIn, 'tokenOut:', tokenOut);
-      console.log('SWAP DEBUG - TOKEN_ADDRESSES:', TOKEN_ADDRESSES);
-      console.log('SWAP DEBUG - ROUTER_ADDRESS:', ROUTER_ADDRESS);
-
-      const path = [TOKEN_ADDRESSES[network]?.[tokenIn], TOKEN_ADDRESSES[network]?.[tokenOut]];
-      console.log('SWAP DEBUG - path:', path);
-      if (!path[0] || !path[1]) {
-        addMessage('cfo', `Token address missing: ${tokenIn}=${path[0]}, ${tokenOut}=${path[1]}`, 'warning');
-        return;
+      const tokenInAddr = TOKEN_ADDRESSES[network]?.[tokenIn];
+      const tokenOutAddr = TOKEN_ADDRESSES[network]?.[tokenOut];
+      if (!tokenInAddr || !tokenOutAddr) {
+        return addMessage('cfo', `Token address missing: ${tokenIn}=${tokenInAddr}, ${tokenOut}=${tokenOutAddr}`, 'warning');
       }
 
       try {
         const amount = ethers.utils.parseUnits(String(payload.amount), 18);
-        const router = new ethers.Contract(ROUTER_ADDRESS[network], ROUTER_ABI, signer);
-        const deadline = Math.floor(Date.now()/1000) + 60*20;
-        const tx = await router.swapExactTokensForTokens(amount, 0, path, await signer.getAddress(), deadline);
+        const routerAddr = ROUTER_ADDRESS[network];
+        const routerContract = new ethers.Contract(routerAddr, ROUTER_ABI, signer);
+        const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
+        const userAddr = await signer.getAddress();
+
+        // If the tokenIn is not the native token (BNB/ETH), we need to approve the router first.
+        if (tokenIn !== 'BNB' && tokenIn !== 'ETH') {
+          const tokenContract = new ethers.Contract(tokenInAddr, [
+            'function approve(address spender, uint256 amount) public returns (bool)'
+          ], signer);
+          addMessage('cfo', `Approving ${payload.amount} ${tokenIn} for swap…`, 'neutral');
+          const approveTx = await tokenContract.approve(routerAddr, amount);
+          await approveTx.wait();
+          addMessage('cfo', 'Approval confirmed.', 'income');
+        }
+
+        const path = [tokenInAddr, tokenOutAddr];
+        const tx = await routerContract.swapExactTokensForTokens(amount, 0, path, userAddr, deadline);
         addMessage('cfo', `Swap submitted: ${tx.hash}`, 'income');
         await fetch(`${API}/wallet/swap_executed`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ tx_hash: tx.hash, event_id: eventId })
         });
-      } catch (e) { addMessage('cfo', 'Swap failed: ' + e.message, 'warning'); }
+      } catch (e) {
+        addMessage('cfo', 'Swap failed: ' + (e.reason || e.message), 'warning');
+      }
     }
 
     async function executeTokenTransfer(payload, eventId) {

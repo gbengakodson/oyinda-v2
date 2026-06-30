@@ -328,6 +328,32 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
+    # 4b. Exchange trade (buy/sell on Binance, Bybit, etc.)
+    trade_match = re.match(r'(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from)?\s*(\w+)', text, re.IGNORECASE)
+    if trade_match:
+        action = trade_match.group(1).lower()
+        amount = float(trade_match.group(2))
+        symbol = trade_match.group(3).upper()
+        exchange_name = trade_match.group(4).lower()
+        accounts = get_user_connected_accounts(user_id)
+        ex_account = None
+        for acc in accounts:
+            if acc['type'] == 'exchange' and exchange_name in acc['label'].lower():
+                ex_account = acc
+                break
+        if not ex_account:
+            return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
+
+        try:
+            from connectors.exchange_factory import get_exchange_connector as factory_connector
+            connector = factory_connector(ex_account)
+            order = connector.place_order(symbol, action, amount)
+            payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
+            append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
+            return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.", "tone": "income"})
+        except Exception as e:
+            return jsonify({"error": f"Trade failed: {str(e)}"}), 500
+
     # 5. Send token (crypto)
     send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text,
                           re.IGNORECASE)

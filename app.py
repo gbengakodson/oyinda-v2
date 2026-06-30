@@ -344,15 +344,28 @@ def handle_command():
         if not ex_account:
             return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
 
+        # Ensure symbol is a valid trading pair (if no quote, default to USDT)
+        if len(symbol) <= 4 and not any(symbol.endswith(q) for q in ['USDT', 'BUSD', 'USDC', 'BTC', 'ETH', 'BNB']):
+            symbol = symbol + 'USDT'
+
         try:
             from connectors.exchange_factory import get_exchange_connector as factory_connector
             connector = factory_connector(ex_account)
             order = connector.place_order(symbol, action, amount)
             payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
             append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
-            return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.", "tone": "income"})
+            return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
+                            "tone": "income"})
         except Exception as e:
-            return jsonify({"error": f"Trade failed: {str(e)}"}), 500
+            # Try to extract Binance error message
+            err_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    err_data = e.response.json()
+                    err_msg = err_data.get('msg', err_msg)
+                except:
+                    pass
+            return jsonify({"error": f"Trade failed: {err_msg}"}), 500
 
     # 5. Send token (crypto)
     send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text,

@@ -69,6 +69,14 @@ def get_user_name(user_id):
     conn.close()
     return row[0] if row else "there"
 
+def get_user_type(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT account_type FROM users WHERE id=%s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 'personal'
+
 def extract_date_range(date_param=None):
     today = datetime.utcnow().date()
     if not date_param:
@@ -887,6 +895,29 @@ def handle_query(text, user_id):
                 except:
                     lines.append(f"• {acc['label']}: balance unavailable")
             return jsonify({"answer": "Here are your balances:\n" + "\n".join(lines), "tone": "neutral"})
+
+    # Tax estimation
+    if 'tax' in text_lower:
+        start, end, label = extract_date_range(text_lower)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='income' AND date BETWEEN %s AND %s", (user_id, start, end))
+        total_income = cur.fetchone()[0] or 0
+        conn.close()
+
+        # Simple Nigerian tax brackets (approximate)
+        tax = 0
+        if total_income > 30000000:
+            tax = (total_income - 30000000) * 0.30 + 6000000 * 0.25 + 18000000 * 0.15 + 300000 * 0.07
+        elif total_income > 12000000:
+            tax = (total_income - 12000000) * 0.25 + 18000000 * 0.15 + 300000 * 0.07
+        elif total_income > 600000:
+            tax = (total_income - 600000) * 0.15 + 300000 * 0.07
+        elif total_income > 300000:
+            tax = (total_income - 300000) * 0.07
+        # else: tax = 0
+
+        return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
     return jsonify({"answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
 

@@ -184,8 +184,11 @@ def handle_command():
                 if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
                     wallet_account = acc
                     break
+            # If no exact match, fallback to first wallet
             if not wallet_account:
-                return jsonify({"error": f"No wallet matching '{wallet_name}' found."}), 400
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+                if not wallet_account:
+                    return jsonify({"error": "No connected wallet found."}), 400
 
             swap_payload = {
                 "token_in": token_in,
@@ -217,10 +220,11 @@ def handle_command():
                 if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
                     wallet_account = acc
                     break
+            # If no exact match, fallback to first wallet
             if not wallet_account:
-                return jsonify({"error": f"No wallet matching '{wallet_name}' found."}), 400
-            if not token or not amount or not to_address:
-                return jsonify({"error": "Missing token, amount, or destination address."}), 400
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+                if not wallet_account:
+                    return jsonify({"error": "No connected wallet found."}), 400
 
             send_payload = {
                 "token": token,

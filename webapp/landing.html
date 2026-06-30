@@ -231,6 +231,14 @@
         const data = await resp.json();
         const answer = data.answer || '';
         const lines = answer.split('\n').filter(l => l.startsWith('•'));
+
+        // Build accounts array with wallet addresses for duplicate detection
+        const accounts = lines.map(l => {
+          const match = l.match(/0x[a-fA-F0-9]{40}/);
+          return { wallet_address: match ? match[0] : null };
+        });
+        window._connectedAccounts = accounts;
+
         const html = lines.map(l => `<div class="py-1 px-2 bg-green-50 rounded mb-1 text-gray-700">${l}</div>`).join('');
         document.getElementById('accountList').innerHTML = html || '<div class="text-gray-400">No accounts linked</div>';
       } catch(e) {}
@@ -532,45 +540,55 @@
 
       // --- MetaMask (desktop) ---
       if (window.ethereum && window.ethereum.isMetaMask) {
-        try {
-          await window.ethereum.request({ method: 'eth_requestAccounts' });
-          ethersProvider = new ethers.providers.Web3Provider(window.ethereum);
-          signer = ethersProvider.getSigner();
-          const address = await signer.getAddress();
-
-          // Detect network
-          const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-          const networkMap = {
-            '0x1': 'Ethereum',
-            '0x38': 'BSC',        // Binance Smart Chain
-            '0x61': 'BSC Testnet'
-          };
-          const network = networkMap[chainId] || 'Unknown';
-          addMessage('cfo', `MetaMask connected: ${address} (${network})`, 'income');
-
-          // Save to server
           try {
-            const resp = await fetch(`${API}/link/wallet`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ address, network })
-            });
-            const data = await resp.json();
-            if (resp.ok) {
-              addMessage('cfo', `Wallet saved: ${data.message}`, 'income');
-              loadConnectedAccounts();
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            ethersProvider = new ethers.providers.Web3Provider(window.ethereum);
+            signer = ethersProvider.getSigner();
+            const address = await signer.getAddress();
+
+            // Detect network
+            const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+            const networkMap = {
+              '0x1': 'Ethereum',
+              '0x38': 'BSC',        // Binance Smart Chain
+              '0x61': 'BSC Testnet'
+            };
+            const network = networkMap[chainId] || 'Unknown';
+            addMessage('cfo', `MetaMask connected: ${address} (${network})`, 'income');
+
+            // Check if this wallet address is already linked
+            const alreadyLinked = (window._connectedAccounts || []).some(
+              acc => acc.wallet_address && acc.wallet_address.toLowerCase() === address.toLowerCase()
+            );
+
+            if (!alreadyLinked) {
+              // Save to server – first time
+              try {
+                const resp = await fetch(`${API}/link/wallet`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                  body: JSON.stringify({ address, network })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                  addMessage('cfo', `Wallet saved: ${data.message}`, 'income');
+                  loadConnectedAccounts(); // refresh sidebar list
+                } else {
+                  addMessage('cfo', 'Sync issue: ' + (data.error || ''), 'warning');
+                }
+              } catch(e) {
+                addMessage('cfo', 'Connected locally, sync failed.', 'warning');
+              }
             } else {
-              addMessage('cfo', 'Sync issue: ' + (data.error || ''), 'warning');
+              // Already linked – just notify, no duplicate saved
+              addMessage('cfo', `MetaMask already linked (${address.substring(0,6)}...). Ready for transactions.`, 'income');
             }
-          } catch(e) {
-            addMessage('cfo', 'Connected locally, sync failed.', 'warning');
+            return;
+          } catch (e) {
+            addMessage('cfo', 'MetaMask connection failed.', 'warning');
+            return;
           }
-          return;
-        } catch (e) {
-          addMessage('cfo', 'MetaMask connection failed.', 'warning');
-          return;
         }
-      }
 
       // --- WalletConnect fallback (mobile / TronLink) ---
       if (!window.WalletConnectProvider || !window.ethers) {

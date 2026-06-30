@@ -135,19 +135,18 @@ def handle_command():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
+    # Check for pending transfer confirmation
     if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
         pending = pending_transfers.get(user_id)
         if pending:
-            # Execute the transfer
-            # (call the confirm logic directly)
             append_event(user_id, user_id, 'TransferConfirmed', pending['payload'])
             success, ref = mock_execute_transfer(pending['payload'])
             if success:
                 append_event(user_id, user_id, 'TransferExecuted', {**pending['payload'], "reference": ref})
                 del pending_transfers[user_id]
                 return jsonify({
-                                   "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
-                                   "tone": "income"})
+                    "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
+                    "tone": "income"})
             else:
                 append_event(user_id, user_id, 'TransferFailed', {**pending['payload'], "error": ref})
                 del pending_transfers[user_id]
@@ -157,10 +156,13 @@ def handle_command():
         parsed = parse_intent_groq(text)
         if not parsed:
             return jsonify({"error": "I didn't understand that. Could you rephrase?"}), 400
+
         event_type = parsed.get('type')
         if event_type == 'question':
             return handle_query(text, user_id)
-        if event_type not in ('expense', 'income', 'transfer', 'liability', 'asset', 'intention', 'buy', 'sell', 'swap'):
+
+        # Allowed types – include send_token and swap
+        if event_type not in ('expense', 'income', 'transfer', 'liability', 'asset', 'intention', 'buy', 'sell', 'swap', 'send_token'):
             return jsonify({"error": "I'm not sure how to handle that request."}), 400
 
         amount = parsed.get('amount')
@@ -170,29 +172,7 @@ def handle_command():
         raw_date = parsed.get("date")
         date = normalize_date(raw_date) if raw_date else datetime.utcnow().strftime("%Y-%m-%d")
 
-        # Crypto trading
-        if event_type in ('buy', 'sell', 'swap'):
-            symbol = parsed.get('symbol', '')
-            side = event_type.upper()
-            quantity = amount
-            accounts = get_user_connected_accounts(user_id)
-            exchange_accts = [a for a in accounts if a['type'] == 'exchange']
-            if not exchange_accts:
-                return jsonify({"error": "No exchange account linked. Please connect Binance first."}), 400
-            account_id = exchange_accts[0]['id']
-            connector = get_exchange_connector(user_id, account_id)
-            if not connector:
-                return jsonify({"error": "Could not connect to exchange."}), 500
-            try:
-                order = connector.place_order(symbol, side, quantity)
-                payload = {"symbol": symbol, "side": side, "quantity": quantity, "order_id": order.get('orderId'), "price": order.get('price','0')}
-                event = append_event(user_id, account_id, 'CryptoOrderExecuted', payload)
-                response_text = f"Order placed: {side} {quantity} {symbol}. Order ID: {order.get('orderId')}"
-                return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
-            except Exception as e:
-                return jsonify({"error": f"Order failed: {str(e)}"}), 500
-
-        # -------- SWAP (DEX) --------
+        # ---------- DEX SWAP (must come before CEX) ----------
         if event_type == 'swap':
             token_in = parsed.get('token_in', '')
             token_out = parsed.get('token_out', '')
@@ -225,7 +205,7 @@ def handle_command():
                 "swap_payload": swap_payload
             })
 
-        # -------- SEND TOKEN --------
+        # ---------- SEND TOKEN (must come before CEX) ----------
         if event_type == 'send_token':
             token = parsed.get('token', '')
             to_address = parsed.get('to_address', '')
@@ -260,9 +240,29 @@ def handle_command():
                 "send_payload": send_payload
             })
 
+        # ---------- CEX ORDERS (buy/sell only, not swap) ----------
+        if event_type in ('buy', 'sell'):
+            symbol = parsed.get('symbol', '')
+            side = event_type.upper()
+            quantity = amount
+            accounts = get_user_connected_accounts(user_id)
+            exchange_accts = [a for a in accounts if a['type'] == 'exchange']
+            if not exchange_accts:
+                return jsonify({"error": "No exchange account linked. Please connect Binance first."}), 400
+            account_id = exchange_accts[0]['id']
+            connector = get_exchange_connector(user_id, account_id)
+            if not connector:
+                return jsonify({"error": "Could not connect to exchange."}), 500
+            try:
+                order = connector.place_order(symbol, side, quantity)
+                payload = {"symbol": symbol, "side": side, "quantity": quantity, "order_id": order.get('orderId'), "price": order.get('price','0')}
+                event = append_event(user_id, account_id, 'CryptoOrderExecuted', payload)
+                response_text = f"Order placed: {side} {quantity} {symbol}. Order ID: {order.get('orderId')}"
+                return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
+            except Exception as e:
+                return jsonify({"error": f"Order failed: {str(e)}"}), 500
 
-
-        # Transfer
+        # ---------- BANK TRANSFER ----------
         if event_type == 'transfer':
             source_id = parsed.get("source_account_id")
             dest_id = parsed.get("destination_account_id")
@@ -288,12 +288,11 @@ def handle_command():
             msg = f"Okay, I'll send {amount} {currency} from {src_label} to {dst_label}. Please confirm this transfer."
             return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
-        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap') and not amount:
-            return jsonify(
-                {"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
+        # Missing amount guard (only for expense/income etc.)
+        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap', 'send_token') and not amount:
+            return jsonify({"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
 
-
-        # Income / Expense / Asset / Liability / Goal
+        # ---------- INCOME / EXPENSE / ASSET / LIABILITY / GOAL ----------
         if event_type == 'intention':
             payload = {
                 "amount": amount,

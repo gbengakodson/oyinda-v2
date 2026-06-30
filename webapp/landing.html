@@ -100,6 +100,12 @@
     <!-- Hamburger for mobile -->
     <button class="md:hidden absolute top-4 left-4 z-50 bg-white p-2 rounded shadow" onclick="toggleSidebar()">☰</button>
 
+    <div style="text-align:center; padding:10px;">
+      <button onclick="alert('Test OK'); window['@mono.co/connect.js']({key:MONO_PUBLIC_KEY, onSuccess: (data) => alert('Mono success: '+data.code), onClose: ()=>alert('Closed'), onError: (err)=>alert('Mono error: '+err.message)})"
+              style="padding:12px 24px; background:#22c55e; color:white; border:none; border-radius:8px; font-size:16px; cursor:pointer;">
+        🔗 Link Bank (Test Button)
+      </button>
+    </div>
     <!-- Chat messages -->
     <div id="chat" class="flex-1 overflow-y-auto w-full scroll-container"><div id="chat-messages" class="max-w-2xl mx-auto w-full px-4 py-6 flex flex-col gap-4"></div></div>
 

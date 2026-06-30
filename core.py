@@ -171,31 +171,52 @@ def calculate_net_worth(user_id):
     accounts = get_user_connected_accounts(user_id)
     assets = []
     total_assets_ngn = 0.0
-    rates = {'NGN':1.0,'USD':1500.0,'ETH':2000000.0,'BNB':250000.0,'USDT':1500.0,'USDC':1500.0,'BUSD':1500.0}
+    rates = {
+        'NGN':1.0, 'USD':1500.0, 'ETH':2000000.0, 'BNB':250000.0,
+        'USDT':1500.0, 'USDC':1500.0, 'BUSD':1500.0, 'DAI':1500.0
+    }
 
     for acc in accounts:
         try:
             from connectors.balances import get_account_balance
-            # IMPORTANT: get_account_balance must NOT close the global connection.
-            balance_str = get_account_balance(acc)
+            balance_str = get_account_balance(acc)   # e.g. "BSC Wallet (0x2295...): 0.0083 BNB\nTokens: USDT: 25.72, USDC: 51.65"
             import re
-            match = re.search(r'([\d,]+\.?\d*)\s*([A-Z]+)', balance_str)
-            if match:
-                amount = float(match.group(1).replace(',', ''))
-                currency = match.group(2)
+
+            # Parse native balance (first line)
+            native_match = re.search(r'([\d,]+\.?\d*)\s*(BNB|ETH|MATIC|TRX|SOL)', balance_str)
+            if native_match:
+                amount = float(native_match.group(1).replace(',', ''))
+                currency = native_match.group(2)
                 rate = rates.get(currency, 1.0)
                 ngn_value = amount * rate
                 total_assets_ngn += ngn_value
                 assets.append(f"{acc['label']}: {amount:,.4f} {currency} (≈ ₦{ngn_value:,.2f})")
-            else:
+
+            # Parse token balances (line starting with "Tokens:" or "Tokens: ")
+            token_line = re.search(r'Tokens:\s*(.*)', balance_str)
+            if token_line:
+                token_string = token_line.group(1)   # e.g. "USDT: 25.7232, USDC: 51.6500"
+                tokens = re.findall(r'(\w+):\s*([\d,]+\.?\d*)', token_string)
+                for token_name, amount_str in tokens:
+                    amount = float(amount_str.replace(',', ''))
+                    currency = token_name.upper()
+                    rate = rates.get(currency, 1.0)
+                    ngn_value = amount * rate
+                    total_assets_ngn += ngn_value
+                    assets.append(f"  └ {token_name}: {amount:,.4f} (≈ ₦{ngn_value:,.2f})")
+
+            # If balance_str couldn't be parsed, show raw string
+            if not native_match and not token_line:
                 assets.append(f"{acc['label']}: {balance_str}")
+
         except Exception as e:
             assets.append(f"{acc['label']}: error ({str(e)})")
 
     # Liabilities
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'", (user_id,))
+    cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'",
+                (user_id,))
     total_loans = cur.fetchone()[0] or 0
     conn.close()
 
@@ -297,12 +318,48 @@ def calculate_daily_budget(user_id):
         "other_wants": round(wants * 0.2, 2)
     }
 
-def get_credit_score(user_id):
-    conn = get_conn()
+def update_credit_score(conn, user_id):
     cur = conn.cursor()
-    cur.execute("SELECT score, logo FROM credit_scores WHERE user_id=%s", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    if row:
-        return {"score": row[0], "logo": row[1]}
-    return {"score": 0, "logo": "butterfly"}
+
+    # 1. Cash‑flow metrics (last 90 days)
+    three_months_ago = (datetime.utcnow() - timedelta(days=90)).date()
+    cur.execute("SELECT total_income, total_expense FROM behavior_log WHERE user_id=%s AND date >= %s", (user_id, three_months_ago))
+    rows = cur.fetchall()
+    income_sum = sum(r[0] for r in rows)
+    expense_sum = sum(r[1] for r in rows)
+    savings_rate = (income_sum - expense_sum) / income_sum if income_sum > 0 else 0
+
+    # 2. Net worth (assets – liabilities)
+    try:
+        net_worth_str = calculate_net_worth(user_id)
+        # Extract the final net worth number from the string
+        import re
+        match = re.search(r'Net Worth: ₦([\d,]+\.?\d*)', net_worth_str)
+        if match:
+            net_worth = float(match.group(1).replace(',', ''))
+        else:
+            net_worth = 0
+    except:
+        net_worth = 0
+
+    # 3. Composite score (0‑100)
+    # – Savings rate (0‑1) → 50 points max
+    # – Positive net worth → 30 points
+    # – Regular income (≥2 months) → 20 points
+    income_months = len(set(r[0] for r in rows if r[0] > 0))   # distinct months with income
+    regularity = min(1, income_months / 3)
+
+    score = int(
+        savings_rate * 50 +
+        (30 if net_worth > 0 else max(0, 30 + net_worth / 10000)) +   # scale down if negative
+        regularity * 20
+    )
+    score = max(0, min(100, score))
+
+    # Logo: <40 butterfly, 40‑69 transition, ≥70 eagle
+    logo = 'butterfly' if score < 40 else ('eagle' if score >= 70 else 'transition')
+
+    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, logo = EXCLUDED.logo, updated_at = now()",
+                (user_id, score, logo))
+    conn.commit()
+    cur.close()

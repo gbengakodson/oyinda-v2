@@ -124,6 +124,22 @@ def extract_date_range(date_param=None):
         start = f"{today.year-1}-01-01"
         end = f"{today.year-1}-12-31"
         return start, end, "last year"
+    # Handle run‑together words
+    if 'lastweek' in dl or 'last week' in dl:
+        end = today - timedelta(days=today.weekday()+1)
+        start = end - timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), "last week"
+    if 'thisweek' in dl or 'this week' in dl:
+        start = today - timedelta(days=today.weekday())
+        return start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), "this week"
+    if 'thismonth' in dl or 'this month' in dl:
+        start = today.strftime("%Y-%m") + "-01"
+        return start, today.strftime("%Y-%m-%d"), "this month"
+    if 'lastmonth' in dl or 'last month' in dl:
+        first_day_this_month = today.replace(day=1)
+        last_day_prev = first_day_this_month - timedelta(days=1)
+        start_prev = last_day_prev.replace(day=1)
+        return start_prev.strftime("%Y-%m-%d"), last_day_prev.strftime("%Y-%m-%d"), "last month"
 
     # fallback all time
     return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
@@ -223,37 +239,26 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
+
     # ========== RULE-BASED FALLBACK (covers 90% of user intents) ==========
     text_lower = text.lower().strip()
 
-    # 1. Balance queries
-    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'how much is my', 'what is my total']):
+    # 1. Catch ALL “how much …” / “what is my …” questions → query handler
+    if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many', 'what is the')):
         return handle_query(text, user_id)
 
-    # 2. Greetings / help / small talk
-    if any(w in text_lower for w in
-           ['hello', 'hi', 'hey', 'good morning', 'good evening', 'how are you', 'what can you do', 'help']):
+    # 2. Exact greetings only (do not use substring matches)
+    if text_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'help', 'what can you do']:
         name = get_user_name(user_id)
         return jsonify(
             {"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
 
-    # Catch all “how much …” / “what is my …” questions → query handler
-    if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many')):
+    # 3. Balance / budget / net worth / credit score / debt keywords
+    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'budget', 'net worth', 'credit score',
+                                     'health score', 'debt', 'owe', 'liability']):
         return handle_query(text, user_id)
 
-    # 3. Budget query
-    if any(w in text_lower for w in ['budget', 'spend limit', 'daily limit', 'what can i spend']):
-        return handle_query(text, user_id)
-
-    # 4. Net worth query
-    if any(w in text_lower for w in ['net worth', 'networth', 'what am i worth']):
-        return handle_query(text, user_id)
-
-    # 5. Credit score / health
-    if any(w in text_lower for w in ['credit score', 'health score']):
-        return handle_query(text, user_id)
-
-    # 6. Swap (already rule‑based, keep here)
+    # 4. Swap (crypto)
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text,
                           re.IGNORECASE)
     if swap_match:
@@ -291,7 +296,7 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
-    # 7. Send token (crypto to address)
+    # 5. Send token (crypto)
     send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text,
                           re.IGNORECASE)
     if send_match:
@@ -329,7 +334,7 @@ def handle_command():
             "send_payload": send_payload
         })
 
-    # 8. Expense logging
+    # 6. Expense logging
     expense_patterns = [
         r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
         r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
@@ -383,7 +388,7 @@ def handle_command():
             tone = "neutral"
         return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
 
-    # 9. Income logging
+    # 7. Income logging
     income_patterns = [
         r'(?:i\s+)?made\s+(\d+\.?\d*)\s*(?:profit|income|from|of)?\s*(.*)',
         r'(?:i\s+)?earned\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
@@ -411,12 +416,10 @@ def handle_command():
         response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
         return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
-    # 10. Bank transfer (simple pattern: send X to account Y)
-    transfer_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text,
+    # 8. Bank transfer
+    transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?',
+                              text,
                               re.IGNORECASE)
-    if not transfer_match:
-        transfer_match = re.match(r'transfer\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text,
-                                  re.IGNORECASE)
     if transfer_match:
         amount = float(transfer_match.group(1))
         dest_account = transfer_match.group(2)
@@ -440,6 +443,8 @@ def handle_command():
         dst_label = f"{bank_name} {dest_account}"
         msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+
 
 
 
@@ -784,10 +789,61 @@ def handle_query(text, user_id):
         return jsonify({"answer": f"Total income for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
     # Balance queries
-    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'how many assets']):
+    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'how many assets', 'savings']):
         accounts = get_user_connected_accounts(user_id)
         if not accounts:
             return jsonify({"answer": "You haven't linked any accounts yet.", "tone": "neutral"})
+
+        # If user specifically asks about "savings"
+        if 'savings' in text_lower:
+            # 1. Sum stablecoin balances from all wallets
+            stablecoins = ['USDT', 'USDC', 'BUSD', 'DAI']
+            total_savings_ngn = 0.0
+            lines = []
+            for acc in accounts:
+                if acc['type'] == 'wallet':
+                    try:
+                        from connectors.balances import get_account_balance
+                        bal_str = get_account_balance(acc)
+                        # Extract token lines
+                        token_line_match = re.search(r'Tokens:\s*(.*)', bal_str)
+                        if token_line_match:
+                            token_line = token_line_match.group(1)
+                            tokens = re.findall(r'(\w+):\s*([\d,]+\.?\d*)', token_line)
+                            for token, amount_str in tokens:
+                                if token.upper() in stablecoins:
+                                    amount = float(amount_str.replace(',', ''))
+                                    # Convert to NGN (using demo rates)
+                                    rates = {'USDT': 1500, 'USDC': 1500, 'BUSD': 1500, 'DAI': 1500}
+                                    ngn_val = amount * rates.get(token.upper(), 1500)
+                                    total_savings_ngn += ngn_val
+                                    lines.append(f"{acc['label']} - {token}: {amount:,.2f} (≈ ₦{ngn_val:,.2f})")
+                    except:
+                        pass
+            # 2. Also add any bank accounts labelled "savings" (future)
+            for acc in accounts:
+                if acc['type'] == 'bank' and 'savings' in acc['label'].lower():
+                    try:
+                        bal = get_account_balance(acc)
+                        # extract numeric value (simple)
+                        match = re.search(r'([\d,]+\.?\d*)', bal)
+                        if match:
+                            val = float(match.group(1).replace(',', ''))
+                            total_savings_ngn += val  # already in NGN
+                            lines.append(f"{acc['label']}: ₦{val:,.2f}")
+                    except:
+                        pass
+
+            if not lines:
+                return jsonify(
+                    {"answer": "No savings found yet. Stablecoins in wallets will automatically count as savings.",
+                     "tone": "neutral"})
+
+            lines.append(f"\n**Total Savings: ₦{total_savings_ngn:,.2f}**")
+            return jsonify({"answer": "\n".join(lines), "tone": "neutral"})
+
+        # Original per‑account matching (unchanged)
+        # … (keep the existing alias matching and per‑account balance logic)
 
         # Aliases to map common names to actual labels
         aliases = {

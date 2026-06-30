@@ -430,7 +430,7 @@
       const network = payload.network?.toLowerCase() || 'bsc';
       const tokenIn = payload.token_in.toUpperCase();
       const tokenOut = payload.token_out.toUpperCase();
-      const amount = ethers.utils.parseUnits(payload.amount, 18);
+      const amount = ethers.utils.parseUnits(String(payload.amount), 18);
       const path = [TOKEN_ADDRESSES[network][tokenIn], TOKEN_ADDRESSES[network][tokenOut]];
       if (!path[0] || !path[1]) return addMessage('cfo', 'Token addresses not found.', 'warning');
       try {
@@ -455,7 +455,7 @@
       try {
         const contract = new ethers.Contract(tokenAddr, ERC20_ABI, signer);
         const decimals = 18; // could be 6 for USDT/USDC, but ethers assumes 18; we'll handle later if needed
-        const amount = ethers.utils.parseUnits(payload.amount, decimals);
+        const amount = ethers.utils.parseUnits(String(payload.amount), decimals);
         const tx = await contract.transfer(payload.to_address, amount);
         addMessage('cfo', `Transfer submitted: ${tx.hash}`, 'income');
         await fetch(`${API}/wallet/token_transfer_executed`, {

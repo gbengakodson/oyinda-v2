@@ -148,6 +148,7 @@
       bsc: {
         'USDT': '0x55d398326f99059fF775485246999027B3197955',
         'USDC': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+        'BNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',  // WBNB
         'BUSD': '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
       },
       eth: {
@@ -430,10 +431,21 @@
       const network = payload.network?.toLowerCase() || 'bsc';
       const tokenIn = payload.token_in.toUpperCase();
       const tokenOut = payload.token_out.toUpperCase();
-      const amount = ethers.utils.parseUnits(String(payload.amount), 18);
-      const path = [TOKEN_ADDRESSES[network][tokenIn], TOKEN_ADDRESSES[network][tokenOut]];
-      if (!path[0] || !path[1]) return addMessage('cfo', 'Token addresses not found.', 'warning');
+
+      console.log('SWAP DEBUG - network:', network);
+      console.log('SWAP DEBUG - tokenIn:', tokenIn, 'tokenOut:', tokenOut);
+      console.log('SWAP DEBUG - TOKEN_ADDRESSES:', TOKEN_ADDRESSES);
+      console.log('SWAP DEBUG - ROUTER_ADDRESS:', ROUTER_ADDRESS);
+
+      const path = [TOKEN_ADDRESSES[network]?.[tokenIn], TOKEN_ADDRESSES[network]?.[tokenOut]];
+      console.log('SWAP DEBUG - path:', path);
+      if (!path[0] || !path[1]) {
+        addMessage('cfo', `Token address missing: ${tokenIn}=${path[0]}, ${tokenOut}=${path[1]}`, 'warning');
+        return;
+      }
+
       try {
+        const amount = ethers.utils.parseUnits(String(payload.amount), 18);
         const router = new ethers.Contract(ROUTER_ADDRESS[network], ROUTER_ABI, signer);
         const deadline = Math.floor(Date.now()/1000) + 60*20;
         const tx = await router.swapExactTokensForTokens(amount, 0, path, await signer.getAddress(), deadline);

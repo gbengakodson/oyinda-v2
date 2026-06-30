@@ -155,7 +155,8 @@ def handle_command():
     try:
         parsed = parse_intent_groq(text)
         if not parsed:
-            return jsonify({"error": "I didn't understand that. Could you rephrase?"}), 400
+            # Fallback: if the AI parser fails, try the rule‑based query handler
+            return handle_query(text, user_id)
 
         event_type = parsed.get('type')
         if event_type == 'question':

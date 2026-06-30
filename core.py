@@ -166,6 +166,80 @@ def update_credit_score(conn, user_id):
     conn.commit()
     cur.close()
 
+
+def calculate_net_worth(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ---------- 1. Get all connected accounts ----------
+    cur.execute("""
+        SELECT id, account_type, provider, label, currency, wallet_address, network,
+               api_key_encrypted, api_secret_encrypted
+        FROM connected_accounts
+        WHERE user_id = %s AND is_active = true
+    """, (user_id,))
+    accounts = cur.fetchall()
+    conn.close()
+
+    # ---------- 2. Fetch balance for each account ----------
+    assets = []
+    total_assets_ngn = 0.0
+    base_currency = 'NGN'
+    # Exchange rates (hardcoded for demo – replace with live rates later)
+    rates = {
+        'NGN': 1.0,
+        'USD': 1500.0,   # example
+        'ETH': 2000000.0, # example
+        'BNB': 250000.0,  # example
+    }
+
+    for acc in accounts:
+        acc_dict = {
+            "id": str(acc[0]),
+            "type": acc[1],
+            "provider": acc[2],
+            "label": acc[3],
+            "currency": acc[4],
+            "wallet_address": acc[5],
+            "network": acc[6],
+            "api_key_encrypted": acc[7],
+            "api_secret_encrypted": acc[8]
+        }
+        try:
+            from connectors.balances import get_account_balance
+            balance_str = get_account_balance(acc_dict)
+            # Parse the balance string (format varies, but we can extract the first number)
+            # We'll assume the format is "LABEL: 0.1234 CURRENCY" or "LABEL: 1234 CURRENCY"
+            import re
+            match = re.search(r'([\d,]+\.?\d*)\s*([A-Z]+)', balance_str)
+            if match:
+                amount = float(match.group(1).replace(',', ''))
+                currency = match.group(2)
+                rate = rates.get(currency, 1.0)
+                ngn_value = amount * rate
+                total_assets_ngn += ngn_value
+                assets.append(f"{acc[3]}: {amount:,.4f} {currency} (≈ ₦{ngn_value:,.2f})")
+            else:
+                assets.append(f"{acc[3]}: {balance_str}")
+        except Exception:
+            assets.append(f"{acc[3]}: unavailable")
+
+    # ---------- 3. Sum up liabilities (loans) ----------
+    cur = conn.cursor()
+    cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'", (user_id,))
+    total_loans = cur.fetchone()[0] or 0
+    conn.close()
+
+    # ---------- 4. Build result ----------
+    net_worth = total_assets_ngn - total_loans
+    result = f"**Your Net Worth**\n\nAssets:\n"
+    for a in assets:
+        result += f"• {a}\n"
+    result += f"\nTotal Assets (NGN): ₦{total_assets_ngn:,.2f}\n"
+    result += f"Total Liabilities (Loans): ₦{total_loans:,.2f}\n"
+    result += f"**Net Worth: ₦{net_worth:,.2f}**"
+    return result
+
 def create_default_connected_account(conn, user_id):
     cur = conn.cursor()
     cur.execute("INSERT INTO connected_accounts (user_id, account_type, provider, label, currency) VALUES (%s, 'bank', 'demo_bank', 'Main NGN Account', 'NGN') ON CONFLICT DO NOTHING", (user_id,))

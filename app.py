@@ -14,6 +14,7 @@ from connectors.mono import exchange_code, get_account_details, get_transactions
 from connectors.exchange import BinanceConnector, get_exchange_connector
 from web3 import Web3
 import connectors.balances as balance_module   # to get token contract addresses
+from core import calculate_net_worth
 
 
 pending_transfers = {}  # user_id -> payload
@@ -190,8 +191,73 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
-    # ---------- RULE-BASED SEND TOKEN DETECTOR (fast path) ----------
-    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text, re.IGNORECASE)
+    # ========== RULE-BASED FALLBACK (covers 90% of user intents) ==========
+    text_lower = text.lower().strip()
+
+    # 1. Balance queries
+    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'how much is my', 'what is my total']):
+        return handle_query(text, user_id)
+
+    # 2. Greetings / help / small talk
+    if any(w in text_lower for w in
+           ['hello', 'hi', 'hey', 'good morning', 'good evening', 'how are you', 'what can you do', 'help']):
+        name = get_user_name(user_id)
+        return jsonify(
+            {"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
+
+    # 3. Budget query
+    if any(w in text_lower for w in ['budget', 'spend limit', 'daily limit', 'what can i spend']):
+        return handle_query(text, user_id)
+
+    # 4. Net worth query
+    if any(w in text_lower for w in ['net worth', 'networth', 'what am i worth']):
+        return handle_query(text, user_id)
+
+    # 5. Credit score / health
+    if any(w in text_lower for w in ['credit score', 'health score']):
+        return handle_query(text, user_id)
+
+    # 6. Swap (already rule‑based, keep here)
+    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text,
+                          re.IGNORECASE)
+    if swap_match:
+        amount = float(swap_match.group(1))
+        token_in = swap_match.group(2).upper()
+        token_out = swap_match.group(3).upper()
+        wallet_name = swap_match.group(4).strip().lower() or 'metamask'
+
+        accounts = get_user_connected_accounts(user_id)
+        wallet_account = None
+        for acc in accounts:
+            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                wallet_account = acc
+                break
+        if not wallet_account:
+            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+        if not wallet_account:
+            return jsonify({"error": "No connected wallet found."}), 400
+
+        swap_payload = {
+            "token_in": token_in,
+            "token_out": token_out,
+            "amount": amount,
+            "wallet": wallet_account['id'],
+            "wallet_address": wallet_account['wallet_address'],
+            "network": wallet_account['network'],
+            "description": text
+        }
+        event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+        return jsonify({
+            "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+            "tone": "neutral",
+            "event_id": event['event_id'],
+            "requires_confirmation": True,
+            "swap_payload": swap_payload
+        })
+
+    # 7. Send token (crypto to address)
+    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text,
+                          re.IGNORECASE)
     if send_match:
         amount = float(send_match.group(1))
         token = send_match.group(2).upper()
@@ -226,6 +292,120 @@ def handle_command():
             "requires_confirmation": True,
             "send_payload": send_payload
         })
+
+    # 8. Expense logging
+    expense_patterns = [
+        r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
+        r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
+        r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
+        r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'  # pidgin
+    ]
+    expense_match = None
+    for pat in expense_patterns:
+        expense_match = re.match(pat, text, re.IGNORECASE)
+        if expense_match:
+            break
+
+    if expense_match:
+        amount = float(expense_match.group(1))
+        description = expense_match.group(2).strip().lower()
+        # Guess category from description
+        cat_map = {
+            'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',
+            'transport': 'transport', 'uber': 'transport', 'taxi': 'transport', 'okada': 'transport',
+            'fuel': 'transport',
+            'data': 'utilities', 'internet': 'utilities', 'net': 'utilities', 'electricity': 'utilities',
+            'bill': 'utilities',
+            'rent': 'housing', 'house': 'housing', 'accommodation': 'housing',
+            'cloth': 'clothing', 'shoe': 'clothing',
+            'doctor': 'health', 'medicine': 'health', 'hospital': 'health',
+            'school': 'education', 'book': 'education', 'course': 'education',
+            'movie': 'entertainment', 'game': 'entertainment', 'subscription': 'entertainment'
+        }
+        category = 'other'
+        for word, cat in cat_map.items():
+            if word in description:
+                category = cat
+                break
+
+        payload = {
+            "amount": amount,
+            "currency": "NGN",
+            "category": category,
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "description": description
+        }
+        event = append_event(user_id, user_id, 'ExpenseLogged', payload)
+        name = get_user_name(user_id)
+        response_text = f"Got it, {name}. You spent {amount} NGN on {category}."
+        budget = calculate_daily_budget(user_id)
+        if budget:
+            total_budget = sum(budget.values())
+            daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
+            tone = "warning" if amount > daily_limit else "good"
+        else:
+            tone = "neutral"
+        return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
+
+    # 9. Income logging
+    income_patterns = [
+        r'(?:i\s+)?made\s+(\d+\.?\d*)\s*(?:profit|income|from|of)?\s*(.*)',
+        r'(?:i\s+)?earned\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
+        r'(?:i\s+)?received\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
+        r'i\s+get\s+(\d+\.?\d*)\s+(?:from\s+)?(.+)'  # pidgin
+    ]
+    income_match = None
+    for pat in income_patterns:
+        income_match = re.match(pat, text, re.IGNORECASE)
+        if income_match:
+            break
+
+    if income_match:
+        amount = float(income_match.group(1))
+        description = income_match.group(2).strip().lower() or 'income'
+        payload = {
+            "amount": amount,
+            "currency": "NGN",
+            "category": "income",
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "description": description
+        }
+        event = append_event(user_id, user_id, 'IncomeReceived', payload)
+        name = get_user_name(user_id)
+        response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
+        return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
+
+    # 10. Bank transfer (simple pattern: send X to account Y)
+    transfer_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text,
+                              re.IGNORECASE)
+    if not transfer_match:
+        transfer_match = re.match(r'transfer\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text,
+                                  re.IGNORECASE)
+    if transfer_match:
+        amount = float(transfer_match.group(1))
+        dest_account = transfer_match.group(2)
+        bank_name = transfer_match.group(3).strip() if transfer_match.group(3) else 'bank'
+        accounts = get_user_connected_accounts(user_id)
+        if not accounts:
+            return jsonify({"error": "No connected accounts."}), 400
+        source_id = accounts[0]['id']
+        dest_id = accounts[0]['id']  # default
+        payload = {
+            "amount": amount,
+            "currency": "NGN",
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "description": f"Transfer to {dest_account} ({bank_name})",
+            "source_account_id": source_id,
+            "destination_account_id": dest_id
+        }
+        event = append_event(user_id, user_id, 'TransferRequested', payload)
+        pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
+        src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
+        dst_label = f"{bank_name} {dest_account}"
+        msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
+        return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+
 
     try:
         parsed = parse_intent_groq(text)
@@ -500,16 +680,13 @@ def handle_query(text, user_id):
         score = get_credit_score(user_id)
         return jsonify({"answer": f"Your financial health score is {score['score']}/100. You're a {score['logo']}.", "tone": "neutral"})
 
-    # Net worth
+    # Net worth (true asset‑liability calculation)
     if 'net worth' in text_lower or 'networth' in text_lower:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='income'", (user_id,))
-        income = cur.fetchone()[0] or 0
-        cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type IN ('expense','transfer_executed','crypto_trade')", (user_id,))
-        expense = cur.fetchone()[0] or 0
-        conn.close()
-        return jsonify({"answer": f"Your net worth (income minus expenses) is ₦{income - expense:,.2f}.", "tone": "neutral"})
+        try:
+            result = calculate_net_worth(user_id)
+            return jsonify({"answer": result, "tone": "neutral"})
+        except Exception as e:
+            return jsonify({"answer": f"Could not calculate net worth: {str(e)}", "tone": "warning"})
 
     # Assets / accounts
     if any(w in text_lower for w in ['asset','account','wallet','bank','what do i own','what do i have']):

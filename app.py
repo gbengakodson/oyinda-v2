@@ -285,6 +285,10 @@ def handle_command():
         return jsonify(
             {"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
 
+    # 2b. Link bank command
+    if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
+        return jsonify({"open_mono": True, "message": "Opening bank connection…"})
+
     # 3. Balance / budget / net worth / credit score / debt keywords
     if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'budget', 'net worth', 'credit score',
                                      'health score', 'debt', 'owe', 'liability']):

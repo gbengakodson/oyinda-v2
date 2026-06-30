@@ -424,13 +424,11 @@
       // ---------- Check for pending swap/send confirmation ----------
       if (text.toLowerCase() === 'yes' && pendingAction) {
         addMessage('user', text);
-
         if (!signer) {
           addMessage('cfo', 'Please connect your wallet first (click the wallet icon).', 'warning');
           pendingAction = null;
           return;
         }
-
         if (pendingAction.type === 'swap') {
           await executeSwap(pendingAction.payload, pendingAction.event_id);
         } else if (pendingAction.type === 'send') {
@@ -451,6 +449,36 @@
           const data = await resp.json();
           const reply = data.message || data.answer || 'Done.';
           addMessage('cfo', reply, data.tone || null);
+
+          // Open Mono widget if backend requests it
+          if (data.open_mono) {
+            const monoFn = window['@mono.co/connect.js'];
+            if (!monoFn) {
+              addMessage('cfo', 'Mono library not loaded. Please refresh.', 'warning');
+            } else {
+              monoFn({
+                key: MONO_PUBLIC_KEY,
+                onSuccess: async (monoData) => {
+                  try {
+                    const monoResp = await fetch(`${API}/link/mono`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                      body: JSON.stringify({ code: monoData.code })
+                    });
+                    const monoResult = await monoResp.json();
+                    if (monoResp.ok) {
+                      addMessage('cfo', monoResult.message, 'income');
+                      loadConnectedAccounts();
+                    } else {
+                      addMessage('cfo', monoResult.error || 'Failed to link bank.', 'warning');
+                    }
+                  } catch (e) { addMessage('cfo', 'Network error while linking bank.', 'warning'); }
+                },
+                onClose: () => {},
+                onError: (err) => addMessage('cfo', 'Mono error: ' + err.message, 'warning')
+              });
+            }
+          }
 
           // Store pending action if required
           if (data.requires_confirmation) {
@@ -737,41 +765,6 @@
     // Initialize
     updateUI();
   </script>
-  <script>
-  (function() {
-    var btn = document.getElementById('linkBankBtn');
-    if (!btn) return;
-    btn.addEventListener('click', function(e) {
-      e.preventDefault();
-      var token = localStorage.getItem('oyinda_token') || '';
-      if (!token) { alert('Please login first.'); return; }
-      var connectFn = window['@mono.co/connect.js'];
-      if (!connectFn) { alert('Mono library not loaded. Refresh.'); return; }
-      connectFn({
-        key: MONO_PUBLIC_KEY,
-        onSuccess: async function(data) {
-          try {
-            var resp = await fetch('https://oyinda-v2.onrender.com/link/mono', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-              body: JSON.stringify({ code: data.code })
-            });
-            var result = await resp.json();
-            if (resp.ok) {
-              alert('Success: ' + result.message);
-              location.reload();
-            } else {
-              alert('Failed: ' + (result.error || 'Unknown error'));
-            }
-          } catch(err) {
-            alert('Network error while linking bank.');
-          }
-        },
-        onClose: function() {},
-        onError: function(err) { alert('Mono error: ' + err.message); }
-      });
-    });
-  })();
-  </script>
+
 </body>
 </html>

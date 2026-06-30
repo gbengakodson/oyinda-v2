@@ -192,45 +192,12 @@ def handle_command():
             except Exception as e:
                 return jsonify({"error": f"Order failed: {str(e)}"}), 500
 
-        # Transfer
-        if event_type == 'transfer':
-            source_id = parsed.get("source_account_id")
-            dest_id = parsed.get("destination_account_id")
-            accounts = get_user_connected_accounts(user_id)
-            if not accounts:
-                return jsonify({"error": "No connected accounts."}), 400
-            if not source_id:
-                source_id = accounts[0]['id']
-            if not dest_id:
-                dest_id = accounts[0]['id']
-            payload = {
-                "amount": amount,
-                "currency": currency,
-                "date": date,
-                "description": description,
-                "source_account_id": source_id,
-                "destination_account_id": dest_id
-            }
-            event = append_event(user_id, user_id, 'TransferRequested', payload)
-            pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
-            src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
-            dst_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
-            msg = f"Okay, I'll send {amount} {currency} from {src_label} to {dst_label}. Please confirm this transfer."
-            return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
-
-        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap') and not amount:
-            return jsonify(
-                {"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
-
-
         # -------- SWAP (DEX) --------
         if event_type == 'swap':
             token_in = parsed.get('token_in', '')
             token_out = parsed.get('token_out', '')
-            amount = parsed.get('amount')
             wallet_name = parsed.get('wallet', 'metamask').lower()
 
-            # Find the wallet account
             accounts = get_user_connected_accounts(user_id)
             wallet_account = None
             for acc in accounts:
@@ -240,8 +207,6 @@ def handle_command():
             if not wallet_account:
                 return jsonify({"error": f"No wallet matching '{wallet_name}' found."}), 400
 
-            # For DEX swap, we need the signer (MetaMask must be connected in browser)
-            # Frontend will ask user to confirm via MetaMask, so backend only validates and stores intent
             swap_payload = {
                 "token_in": token_in,
                 "token_out": token_out,
@@ -263,7 +228,6 @@ def handle_command():
         # -------- SEND TOKEN --------
         if event_type == 'send_token':
             token = parsed.get('token', '')
-            amount = parsed.get('amount')
             to_address = parsed.get('to_address', '')
             wallet_name = parsed.get('wallet', 'metamask').lower()
 
@@ -295,6 +259,39 @@ def handle_command():
                 "requires_confirmation": True,
                 "send_payload": send_payload
             })
+
+
+
+        # Transfer
+        if event_type == 'transfer':
+            source_id = parsed.get("source_account_id")
+            dest_id = parsed.get("destination_account_id")
+            accounts = get_user_connected_accounts(user_id)
+            if not accounts:
+                return jsonify({"error": "No connected accounts."}), 400
+            if not source_id:
+                source_id = accounts[0]['id']
+            if not dest_id:
+                dest_id = accounts[0]['id']
+            payload = {
+                "amount": amount,
+                "currency": currency,
+                "date": date,
+                "description": description,
+                "source_account_id": source_id,
+                "destination_account_id": dest_id
+            }
+            event = append_event(user_id, user_id, 'TransferRequested', payload)
+            pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
+            src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
+            dst_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
+            msg = f"Okay, I'll send {amount} {currency} from {src_label} to {dst_label}. Please confirm this transfer."
+            return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap') and not amount:
+            return jsonify(
+                {"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
+
 
         # Income / Expense / Asset / Liability / Goal
         if event_type == 'intention':

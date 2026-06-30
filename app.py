@@ -1257,6 +1257,158 @@ def link_exchange():
     # Optionally, store passphrase in a separate table or as part of api_secret_encrypted (we'll extend later)
     return jsonify({"message": f"{provider.capitalize()} account linked successfully.", "account_id": str(account_id)})
 
+
+@app.route('/link/bank', methods=['POST'])
+@jwt_required()
+def link_bank():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_number = data.get('account_number')
+    bank_code = data.get('bank_code')
+    if not account_number or not bank_code:
+        return jsonify({"error": "Account number and bank code required"}), 400
+
+    try:
+        from connectors.flutterwave import get_account_details
+        details = get_account_details(account_number, bank_code)
+        account_name = details.get('account_name', 'Unknown')
+        # Store as connected account
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, account_number, bank_code) VALUES (%s, 'bank', 'flutterwave', %s, 'NGN', %s, %s) RETURNING id",
+            (user_id, f"{account_name} - {bank_code}", account_number, bank_code)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"message": f"Bank account {account_number} linked ({account_name})."})
+    except Exception as e:
+        return jsonify({"error": f"Linking failed: {str(e)}"}), 500
+
+
+@app.route('/sync/bank', methods=['POST'])
+@jwt_required()
+def sync_bank():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_id = data.get('account_id')   # the connected_accounts id (UUID)
+    if not account_id:
+        return jsonify({"error": "Account ID required"}), 400
+
+    # Get the Okra account ID from connected_accounts
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT account_number, bank_name FROM connected_accounts WHERE id=%s AND user_id=%s", (account_id, user_id))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Account not found"}), 404
+
+    # For simplicity, we assume the account_number is the Okra account ID (we stored it there)
+    okra_account_id = row[0]
+    try:
+        from connectors.okra import get_transactions
+        txns = get_transactions(okra_account_id)
+        count = 0
+        for tx in txns:
+            # Idempotency: skip if already processed (using the Okra transaction ID)
+            # Here we just log them as Income/Expense events
+            tx_type = 'IncomeReceived' if tx.get('type') == 'credit' else 'ExpenseLogged'
+            amount = abs(tx.get('amount') / 100)  # kobo to Naira
+            description = tx.get('narration', '')
+            category = guess_category(description)
+            payload = {
+                "amount": amount,
+                "currency": "NGN",
+                "date": tx.get('date')[:10],
+                "description": description,
+                "category": category
+            }
+            append_event(user_id, account_id, tx_type, payload)
+            count += 1
+        return jsonify({"message": f"Synced {count} transactions."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route('/link/mono', methods=['POST'])
+@jwt_required()
+def link_mono():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    code = data.get('code')
+    if not code:
+        return jsonify({"error": "Mono auth code required"}), 400
+
+    try:
+        from connectors.mono import exchange_code, get_account_details
+        mono_resp = exchange_code(code)
+        mono_account_id = mono_resp.get('id')
+        if not mono_account_id:
+            return jsonify({"error": "Invalid Mono response"}), 400
+
+        details = get_account_details(mono_account_id)
+        account_number = details.get('account_number', '')
+        bank_name = details.get('institution', {}).get('name', 'Unknown Bank')
+        currency = details.get('currency', 'NGN')
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, account_number, bank_name) VALUES (%s, 'bank', 'mono', %s, %s, %s, %s) RETURNING id",
+            (user_id, f"{bank_name} Account", currency, account_number, bank_name)
+        )
+        account_id = cur.fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        return jsonify({"message": f"{bank_name} account ending {account_number[-3:]} linked successfully.", "account_id": str(account_id)})
+    except Exception as e:
+        return jsonify({"error": f"Linking failed: {str(e)}"}), 500
+
+def guess_category(narration):
+    narration = narration.lower()
+    if any(w in narration for w in ['food','rice','beans','restaurant']): return 'food'
+    if any(w in narration for w in ['uber','taxi','transport','fuel']): return 'transport'
+    if any(w in narration for w in ['rent','housing']): return 'housing'
+    if any(w in narration for w in ['electricity','water','utility','internet','data']): return 'utilities'
+    if any(w in narration for w in ['salary','wage','payment received']): return 'income'
+    return 'other'
+
+
+@app.route('/bank/transfer', methods=['POST'])
+@jwt_required()
+def bank_transfer():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    from_account_id = data.get('from_account_id')   # Oyinda connected_accounts UUID
+    to_bank_code = data.get('to_bank_code')          # e.g., "033" for UBA
+    to_account_number = data.get('to_account_number')
+    amount = data.get('amount')
+    narration = data.get('narration', 'Oyinda transfer')
+
+    if not from_account_id or not to_bank_code or not to_account_number or not amount:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Get the Okra account ID
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT account_number FROM connected_accounts WHERE id=%s AND user_id=%s", (from_account_id, user_id))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Account not found"}), 404
+
+    okra_account_id = row[0]
+    try:
+        from connectors.okra import initiate_transfer
+        result = initiate_transfer(okra_account_id, amount, to_bank_code, to_account_number, narration)
+        return jsonify({"message": "Transfer initiated.", "reference": result.get('data', {}).get('reference')})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/account/<account_id>', methods=['DELETE'])
 @jwt_required()
 def delete_account(account_id):

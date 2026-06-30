@@ -69,11 +69,34 @@ def get_user_name(user_id):
     conn.close()
     return row[0] if row else "there"
 
-def extract_date_range(date_param):
+def extract_date_range(date_param=None):
     today = datetime.utcnow().date()
     if not date_param:
         return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
-    dl = date_param.lower()
+    dl = date_param.lower().strip()
+
+    # Specific month names (e.g., "june", "march")
+    month_names = {
+        'january':1, 'february':2, 'march':3, 'april':4, 'may':5, 'june':6,
+        'july':7, 'august':8, 'september':9, 'october':10, 'november':11, 'december':12
+    }
+    if dl in month_names:
+        month = month_names[dl]
+        year = today.year
+        # If month is in the future, assume last year
+        if month > today.month:
+            year -= 1
+        start = f"{year}-{month:02d}-01"
+        # Calculate end of month
+        if month == 12:
+            end = f"{year}-12-31"
+        else:
+            next_month = month + 1
+            end = f"{year}-{next_month:02d}-01"
+            end = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        return start, end, dl.capitalize()
+
+    # Common relative phrases
     if 'today' in dl:
         return today.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), "today"
     if 'yesterday' in dl:
@@ -94,6 +117,15 @@ def extract_date_range(date_param):
         last_day_prev = first_day_this_month - timedelta(days=1)
         start_prev = last_day_prev.replace(day=1)
         return start_prev.strftime("%Y-%m-%d"), last_day_prev.strftime("%Y-%m-%d"), "last month"
+    if 'this year' in dl:
+        start = f"{today.year}-01-01"
+        return start, today.strftime("%Y-%m-%d"), "this year"
+    if 'last year' in dl:
+        start = f"{today.year-1}-01-01"
+        end = f"{today.year-1}-12-31"
+        return start, end, "last year"
+
+    # fallback all time
     return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
 
 # --------------- AUTH ---------------
@@ -204,6 +236,10 @@ def handle_command():
         name = get_user_name(user_id)
         return jsonify(
             {"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
+
+    # Catch all “how much …” / “what is my …” questions → query handler
+    if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many')):
+        return handle_query(text, user_id)
 
     # 3. Budget query
     if any(w in text_lower for w in ['budget', 'spend limit', 'daily limit', 'what can i spend']):

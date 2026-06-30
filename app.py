@@ -152,6 +152,81 @@ def handle_command():
                 del pending_transfers[user_id]
                 return jsonify({"error": f"Transfer failed: {ref}"}), 500
 
+    # ---------- Rule‑based swap detector (fast path) ----------
+    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
+    if swap_match:
+        amount = float(swap_match.group(1))
+        token_in = swap_match.group(2).upper()
+        token_out = swap_match.group(3).upper()
+        wallet_name = swap_match.group(4).strip().lower() or 'metamask'
+
+        # Find the wallet account
+        accounts = get_user_connected_accounts(user_id)
+        wallet_account = None
+        for acc in accounts:
+            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                wallet_account = acc
+                break
+        if not wallet_account:
+            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+        if not wallet_account:
+            return jsonify({"error": "No connected wallet found."}), 400
+
+        swap_payload = {
+            "token_in": token_in,
+            "token_out": token_out,
+            "amount": amount,
+            "wallet": wallet_account['id'],
+            "wallet_address": wallet_account['wallet_address'],
+            "network": wallet_account['network'],
+            "description": text
+        }
+        event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+        return jsonify({
+            "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+            "tone": "neutral",
+            "event_id": event['event_id'],
+            "requires_confirmation": True,
+            "swap_payload": swap_payload
+        })
+
+    # ---------- RULE-BASED SEND TOKEN DETECTOR (fast path) ----------
+    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text, re.IGNORECASE)
+    if send_match:
+        amount = float(send_match.group(1))
+        token = send_match.group(2).upper()
+        to_address = send_match.group(3)
+        wallet_name = send_match.group(4).strip().lower() or 'bsc wallet'
+
+        accounts = get_user_connected_accounts(user_id)
+        wallet_account = None
+        for acc in accounts:
+            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                wallet_account = acc
+                break
+        if not wallet_account:
+            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+        if not wallet_account:
+            return jsonify({"error": "No connected wallet found."}), 400
+
+        send_payload = {
+            "token": token,
+            "amount": amount,
+            "to_address": to_address,
+            "wallet": wallet_account['id'],
+            "wallet_address": wallet_account['wallet_address'],
+            "network": wallet_account['network'],
+            "description": text
+        }
+        event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
+        return jsonify({
+            "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
+            "tone": "neutral",
+            "event_id": event['event_id'],
+            "requires_confirmation": True,
+            "send_payload": send_payload
+        })
+
     try:
         parsed = parse_intent_groq(text)
         if not parsed:

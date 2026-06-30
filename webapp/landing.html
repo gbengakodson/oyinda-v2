@@ -367,6 +367,13 @@
       // ---------- Check for pending swap/send confirmation ----------
       if (text.toLowerCase() === 'yes' && pendingAction) {
         addMessage('user', text);
+
+        if (!signer) {
+          addMessage('cfo', 'Please connect your wallet first (click the wallet icon).', 'warning');
+          pendingAction = null;
+          return;
+        }
+
         if (pendingAction.type === 'swap') {
           await executeSwap(pendingAction.payload, pendingAction.event_id);
         } else if (pendingAction.type === 'send') {

@@ -643,6 +643,33 @@ def list_transactions():
 
 # --------------- MONO & EXCHANGE & WALLET ENDPOINTS (as before) ---------------
 # ... (include /link/mono, /sync/mono, /link/exchange, /sync/exchange, /crypto/order, /crypto/withdraw, /link/wallet, /crypto/wallet/prepare, /crypto/wallet/submit)
+@app.route('/wallet/swap_executed', methods=['POST'])
+@jwt_required()
+def wallet_swap_executed():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    tx_hash = data.get('tx_hash')
+    event_id = data.get('event_id')
+    if not tx_hash or not event_id:
+        return jsonify({"error": "tx_hash and event_id required"}), 400
+    append_event(user_id, user_id, 'SwapExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
+    return jsonify({"message": "Swap recorded successfully."})
+
+@app.route('/wallet/token_transfer_executed', methods=['POST'])
+@jwt_required()
+def token_transfer_executed():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    tx_hash = data.get('tx_hash')
+    event_id = data.get('event_id')
+    if not tx_hash or not event_id:
+        return jsonify({"error": "tx_hash and event_id required"}), 400
+    append_event(user_id, user_id, 'TokenTransferExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
+    return jsonify({"message": "Token transfer recorded."})
+
+
+
+
 
 @app.route('/confirm_transfer', methods=['POST'])
 @jwt_required()
@@ -673,31 +700,6 @@ def confirm_transfer():
         append_event(user_id, stream_id, 'TransferFailed', {**payload, "error": ref})
         return jsonify({"message": f"Transfer failed: {ref}", "tone": "warning"})
 
-
-
-@app.route('/wallet/swap_executed', methods=['POST'])
-@jwt_required()
-def wallet_swap_executed():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    tx_hash = data.get('tx_hash')
-    event_id = data.get('event_id')
-    if not tx_hash or not event_id:
-        return jsonify({"error": "tx_hash and event_id required"}), 400
-    append_event(user_id, user_id, 'SwapExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
-    return jsonify({"message": "Swap recorded successfully."})
-
-@app.route('/wallet/token_transfer_executed', methods=['POST'])
-@jwt_required()
-def token_transfer_executed():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    tx_hash = data.get('tx_hash')
-    event_id = data.get('event_id')
-    if not tx_hash or not event_id:
-        return jsonify({"error": "tx_hash and event_id required"}), 400
-    append_event(user_id, user_id, 'TokenTransferExecuted', {"tx_hash": tx_hash, "original_event_id": event_id})
-    return jsonify({"message": "Token transfer recorded."})
 
 
 

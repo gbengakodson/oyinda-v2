@@ -20,20 +20,28 @@ def parse_intent_groq(text):
         "```\n"
         "Do not include any other text.\n\n"
         "Fields:\n"
-        '- "type": one of "expense", "income", "transfer", "liability", "asset", "intention"\n'
+        '- "type": one of "expense", "income", "transfer", "liability", "asset", "intention", "swap", "send_token"\n'
         '  (rules:\n'
         '   - "expense": money spent on goods/services (food, transport, bills).\n'
         '   - "income": money earned (salary, side hustle, profit).\n'
         '   - "transfer": moving money between own accounts or investing.\n'
         '   - "liability": taking a loan or borrowing money.\n'
         '   - "asset": selling a physical/financial asset you owned or lending money.\n'
-        '   - "intention": savings goal, plan to buy something)\n'
+        '   - "intention": savings goal, plan to buy something.\n'
+        '   - "swap": exchanging one cryptocurrency for another via DEX. Extract token_in, token_out, amount, and optionally wallet name.\n'
+        '   - "send_token": sending a specific token from a wallet to an address. Extract token, amount, to_address, and optionally wallet name.\n'
+        '  )\n'
         '- "amount": number or null\n'
         '- "currency": three-letter code (e.g., NGN, USD) or null\n'
         '- "category": one of food, transport, housing, utilities, entertainment, health, clothing, education, income, loan, investment, other\n'
         '- "date": YYYY-MM-DD or null\n'
         '- "description": short summary\n'
-        '- "has_amount": true/false\n\n'
+        '- "has_amount": true/false\n'
+        '- "wallet": optional, name of the wallet (e.g., metamask, trust wallet, bsc wallet)\n'
+        '- "token_in": for swaps, the token you are selling\n'
+        '- "token_out": for swaps, the token you are buying\n'
+        '- "token": for send_token, the token to send\n'
+        '- "to_address": for send_token, the destination address\n\n'
         "Pidgin / Slang Examples:\n"
         'User: "i drop 5k for data"\n'
         'Response: type: expense, category: entertainment, amount: 5000, currency: NGN\n\n'
@@ -53,6 +61,13 @@ def parse_intent_groq(text):
         "Rules for 'invested':\n"
         '   - "i invested 50000 in dangote cement" → type: asset, category: other, amount: 50000\n'
         '   - "i invested 20k in mutual funds" → type: asset, category: investment, amount: 20000\n'
+        "Crypto swap & send examples:\n"
+        'User: "swap 50 USDT for BNB on metamask"\n'
+        'Response: type: swap, token_in: USDT, token_out: BNB, amount: 50, wallet: metamask\n'
+        'User: "send 100 USDC to 0xABC123 from my bsc wallet"\n'
+        'Response: type: send_token, token: USDC, amount: 100, to_address: 0xABC123, wallet: bsc wallet\n'
+        'User: "swap 1 ETH for USDC using trust wallet"\n'
+        'Response: type: swap, token_in: ETH, token_out: USDC, amount: 1, wallet: trust wallet\n'
         "Important: Do NOT treat questions, greetings, or budget queries as financial transactions.\n"
         "If the user is asking a question, greeting, or saying goodbye, return ONLY:\n"
         "```json\n"

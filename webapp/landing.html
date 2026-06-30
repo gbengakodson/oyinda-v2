@@ -202,6 +202,11 @@
         document.getElementById('accountList').innerHTML = '';
         document.getElementById('logoIconSidebar').textContent = '🦋';
       }
+        // Ensure the Link Bank button works
+      const linkBankBtn = document.querySelector('[title="Link Bank"]');
+      if (linkBankBtn) {
+        linkBankBtn.onclick = linkBank;
+      }
     }
 
     function handleLoginLogout() { if (userName) logout(); else showLogin(); }
@@ -546,13 +551,27 @@
     function linkBank() {
       if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
       const connectFn = window['@mono.co/connect.js'];
-      if (!connectFn) { addMessage('cfo', 'Mono not loaded. Refresh.', 'warning'); return; }
+      if (!connectFn) {
+        addMessage('cfo', 'Mono library not loaded. Please refresh.', 'warning');
+        return;
+      }
       connectFn({
         key: MONO_PUBLIC_KEY,
         onSuccess: async (data) => {
-          const resp = await fetch(`${API}/link/mono`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body: JSON.stringify({code: data.code}) });
-          const result = await resp.json();
-          addMessage('cfo', result.message || result.error, resp.ok ? 'income' : 'warning');
+          try {
+            const resp = await fetch(`${API}/link/mono`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ code: data.code })
+            });
+            const result = await resp.json();
+            if (resp.ok) {
+              addMessage('cfo', result.message, 'income');
+              loadConnectedAccounts();
+            } else {
+              addMessage('cfo', result.error || 'Failed to link bank.', 'warning');
+            }
+          } catch(e) { addMessage('cfo', 'Network error while linking bank.', 'warning'); }
         },
         onClose: () => {},
         onError: (err) => addMessage('cfo', 'Mono error: ' + err.message, 'warning')

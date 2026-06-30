@@ -718,14 +718,15 @@ def link_wallet():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, wallet_address, network) VALUES (%s, 'wallet', %s, %s, 'ETH', %s, %s) RETURNING id",
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, wallet_address, network) VALUES (%s, 'wallet', %s, %s, 'ETH', %s, %s) ON CONFLICT (user_id, wallet_address) DO NOTHING RETURNING id",
         (user_id, network.lower(), label, address, network)
     )
-    account_id = cur.fetchone()[0]
-    conn.commit()
-    conn.close()
-
-    return jsonify({"message": f"{label} linked successfully.", "account_id": str(account_id)})
+    row = cur.fetchone()
+    if row:
+        account_id = row[0]
+        return jsonify({"message": f"{label} linked successfully.", "account_id": str(account_id)})
+    else:
+        return jsonify({"message": f"{label} already linked."})
 
 
 # --------------- HEALTH ---------------

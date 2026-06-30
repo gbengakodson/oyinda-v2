@@ -194,6 +194,12 @@
         loadConnectedAccounts();
         loadTransactionHistory();
         fetchHealthScore();
+
+        // Wire the Link Bank button after the sidebar is built
+        const linkBankBtn = document.querySelector('[title="Link Bank"]');
+        if (linkBankBtn) {
+          linkBankBtn.addEventListener('click', linkBank);
+        }
       } else {
         emailDisplay.textContent = 'Not logged in';
         loginLogoutIcon.innerHTML = '🔑';
@@ -201,11 +207,6 @@
         document.getElementById('historyList').innerHTML = '';
         document.getElementById('accountList').innerHTML = '';
         document.getElementById('logoIconSidebar').textContent = '🦋';
-      }
-        // Ensure the Link Bank button works
-      const linkBankBtn = document.querySelector('[title="Link Bank"]');
-      if (linkBankBtn) {
-        linkBankBtn.onclick = linkBank;
       }
     }
 

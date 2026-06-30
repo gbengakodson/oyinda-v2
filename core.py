@@ -166,6 +166,16 @@ def update_credit_score(conn, user_id):
     conn.commit()
     cur.close()
 
+def get_credit_score(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT score, logo FROM credit_scores WHERE user_id=%s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"score": row[0], "logo": row[1]}
+    return {"score": 0, "logo": "butterfly"}
+
 
 def calculate_net_worth(user_id):
     accounts = get_user_connected_accounts(user_id)

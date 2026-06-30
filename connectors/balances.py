@@ -39,7 +39,7 @@ def get_account_balance(account: dict) -> str:
             return f"{account['label']}: balance unavailable for this account type."
     except Exception as e:
         print("BALANCE_FETCH_ERROR:", account.get('label'), str(e))
-        return f"{account['label']}: balance unavailable"
+        return f"{account['label']}: error: {str(e)}"
 
 def _get_bank_balance(account):
     return f"{account['label']}: bank balance fetching coming soon."

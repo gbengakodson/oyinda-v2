@@ -206,7 +206,10 @@ def calculate_net_worth(user_id):
                     assets.append(f"  └ {token_name}: {amount:,.4f} (≈ ₦{ngn_value:,.2f})")
 
             # If balance_str couldn't be parsed, show raw string
-            if not native_match and not token_line:
+            # If balance_str already contains the label, don't duplicate
+            if balance_str.startswith(acc['label']):
+                assets.append(balance_str)
+            else:
                 assets.append(f"{acc['label']}: {balance_str}")
 
         except Exception as e:
@@ -238,7 +241,10 @@ def create_default_connected_account(conn, user_id):
 def get_user_connected_accounts(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, account_type, provider, label, currency, wallet_address, network FROM connected_accounts WHERE user_id=%s AND is_active=true", (user_id,))
+    cur.execute(
+        "SELECT id, account_type, provider, label, currency, wallet_address, network, api_key_encrypted, api_secret_encrypted FROM connected_accounts WHERE user_id=%s AND is_active=true",
+        (user_id,)
+    )
     rows = cur.fetchall()
     conn.close()
     return [
@@ -249,7 +255,9 @@ def get_user_connected_accounts(user_id):
             "label": r[3],
             "currency": r[4],
             "wallet_address": r[5],
-            "network": r[6]
+            "network": r[6],
+            "api_key_encrypted": r[7],
+            "api_secret_encrypted": r[8],
         }
         for r in rows
     ]

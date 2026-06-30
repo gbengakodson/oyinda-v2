@@ -1235,7 +1235,7 @@ def debug_groq():
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}"}
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "qwen-3.6-27b",
         "messages": [{"role": "user", "content": "hello"}],
         "temperature": 0.0
     }

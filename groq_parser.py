@@ -82,13 +82,17 @@ def parse_intent_groq(text):
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "qwen-3.6-27b",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0
             },
             timeout=15
         )
-        content = response.json()["choices"][0]["message"]["content"]
+        resp_json = response.json()
+        if 'choices' not in resp_json:
+            print("GROQ_BAD_RESPONSE:", resp_json)
+            return None
+        content = resp_json["choices"][0]["message"]["content"]
 
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
         if match:
@@ -169,13 +173,17 @@ def classify_query_intent(text):
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "qwen-3.6-27b",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0
             },
             timeout=15
         )
-        content = response.json()["choices"][0]["message"]["content"]
+        resp_json = response.json()
+        if 'choices' not in resp_json:
+            print("GROQ_BAD_RESPONSE:", resp_json)
+            return None
+        content = resp_json["choices"][0]["message"]["content"]
         print("GROQ_RAW:", repr(content[:500]))   # first 500 chars
 
         match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)

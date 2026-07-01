@@ -35,11 +35,59 @@ def get_account_balance(account: dict) -> str:
             return _get_exchange_balance(account)
         elif acc_type == 'wallet':
             return _get_wallet_balance(account)
+        elif acc_type == 'savings':
+            return _get_savings_balance(account)
+        elif acc_type == 'forex':
+            return _get_forex_balance(account)
+        elif acc_type == 'stock':
+                return _get_stock_balance(account)
         else:
             return f"{account['label']}: balance unavailable for this account type."
+
     except Exception as e:
         print("BALANCE_FETCH_ERROR:", account.get('label'), str(e))
         return f"{account['label']}: error: {str(e)}"
+
+def _get_stock_balance(account):
+    provider = account.get('provider', '').lower()
+    if provider == 'bamboo':
+        api_key = decrypt(account['api_key_encrypted'])
+        connector = BambooConnector(api_key)
+        balance = connector.get_balance()
+        if not balance:
+            return f"{account['label']}: no balance data."
+        lines = [f"{k}: {v}" for k, v in balance.items()]
+        return f"{account['label']} holdings:\n" + "\n".join(lines)
+    else:
+        return f"{account['label']}: stock provider not yet supported."
+
+def _get_savings_balance(account):
+    provider = account.get('provider', '').lower()
+    if provider == 'piggyvest':
+        # Use PiggyVest connector (mock for now)
+        from connectors.piggyvest import PiggyVestConnector
+        connector = PiggyVestConnector()
+        balance = connector.get_balance()
+        return f"{account['label']}: Total Savings ₦{balance.get('total_savings', 0):,.2f}"
+    else:
+        return f"{account['label']}: savings provider not yet supported."
+
+def _get_forex_balance(account):
+    provider = account.get('provider', '').lower()
+    if provider == 'fxpro':
+        api_key = decrypt(account['api_key_encrypted'])
+        api_secret = decrypt(account['api_secret_encrypted'])
+        from connectors.forex import FxProConnector
+        connector = FxProConnector(api_key, api_secret)
+        balance = connector.get_balance()
+        if not balance:
+            return f"{account['label']}: no forex balance data."
+        # Format the forex balance nicely
+        lines = [f"{k}: {v}" for k, v in balance.items()]
+        return f"{account['label']} forex holdings:\n" + "\n".join(lines)
+    else:
+        return f"{account['label']}: forex provider not yet supported."
+
 
 def _get_bank_balance(account):
     return f"{account['label']}: bank balance fetching coming soon."

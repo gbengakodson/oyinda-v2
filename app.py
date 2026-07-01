@@ -1545,6 +1545,31 @@ def bank_callback():
 
 
 
+
+@app.route('/link/payment', methods=['POST'])
+@jwt_required()
+def link_payment():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    provider = data.get('provider', '').lower()
+    api_key = data.get('api_key')
+
+    if not provider or not api_key:
+        return jsonify({"error": "provider and api_key required"}), 400
+
+    try:
+        if provider == 'flutterwave':
+            result = link_flutterwave(user_id, api_key)
+        elif provider == 'paystack':
+            result = link_paystack(user_id, api_key)
+        else:
+            return jsonify({"error": "Unsupported provider"}), 400
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route('/debug/groq', methods=['GET'])
 def debug_groq():
     import requests

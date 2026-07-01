@@ -1569,6 +1569,43 @@ def link_payment():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/link/account', methods=['POST'])
+@jwt_required()
+def link_account():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    account_type = data.get('account_type', '').lower()
+    provider = data.get('provider', '').lower()
+    api_key = data.get('api_key', '')
+    api_secret = data.get('api_secret', '')
+
+    # Allowed types
+    allowed_types = ['stock', 'forex', 'savings', 'payment', 'exchange']
+    if account_type not in allowed_types:
+        return jsonify({"error": f"Invalid account type. Choose from: {', '.join(allowed_types)}"}), 400
+
+    if not provider:
+        return jsonify({"error": "Provider name is required."}), 400
+
+    # Encrypt credentials
+    from utils.crypto import encrypt
+    enc_key = encrypt(api_key) if api_key else ''
+    enc_secret = encrypt(api_secret) if api_secret else ''
+
+    # Store in connected_accounts
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, api_key_encrypted, api_secret_encrypted) VALUES (%s, %s, %s, %s, 'USD', %s, %s) RETURNING id",
+        (user_id, account_type, provider, f"{provider.capitalize()} {account_type.title()}", enc_key, enc_secret)
+    )
+    account_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
+
+
 
 @app.route('/debug/groq', methods=['GET'])
 def debug_groq():

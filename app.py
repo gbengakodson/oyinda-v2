@@ -22,6 +22,7 @@ app = Flask(__name__)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
+temp_links = {}
 
 def mock_execute_transfer(payload):
     return True, "MOCK-REF-" + str(uuid.uuid4())[:8]
@@ -1446,11 +1447,12 @@ def health():
     return jsonify(score)
 
 
+
+
 @app.route('/link/bank/start', methods=['POST'])
 @jwt_required()
 def start_bank_link():
     user_id = get_jwt_identity()
-    # get user details for Mono
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT name, email FROM users WHERE id=%s", (user_id,))
@@ -1458,6 +1460,9 @@ def start_bank_link():
     conn.close()
     if not user:
         return jsonify({"error": "User not found"}), 400
+
+    # Generate a unique ref by appending a short random UUID
+    unique_ref = f"{user_id}_{uuid.uuid4().hex[:8]}"
 
     try:
         import requests
@@ -1470,13 +1475,15 @@ def start_bank_link():
             },
             json={
                 "customer": {"name": user[0], "email": user[1]},
-                "meta": {"ref": user_id},
+                "meta": {"ref": unique_ref},
                 "scope": "auth",
                 "redirect_url": "https://oyinda-v2.onrender.com/link/bank/callback"
             }
         )
         data = resp.json()
         if data.get("status") == "successful":
+            # Store the mapping: unique_ref → user_id (for callback)
+            temp_links[unique_ref] = user_id   # define temp_links = {} at the top of app.py
             return jsonify({"mono_url": data["data"]["mono_url"]})
         else:
             return jsonify({"error": data.get("message", "Mono API error")}), 500

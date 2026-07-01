@@ -14,7 +14,7 @@ def _get_cipher():
 def encrypt(plaintext: str) -> str:
     cipher = _get_cipher()
     if cipher is None:
-        raise RuntimeError("ENCRYPTION_KEY not set or invalid")
+        raise RuntimeError("ENCRYPTION_KEY not set or invalid – please set it on Render")
     return cipher.encrypt(plaintext.encode()).decode()
 
 def decrypt(ciphertext: str) -> str:

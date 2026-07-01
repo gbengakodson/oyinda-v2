@@ -1,9 +1,9 @@
 # app.py – Oyinda V2 API (Final: voice, statements, swap, credit, bank linking)
 
-import os, re, uuid
+import os, re, uuid, requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory, send_file
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from io import BytesIO
 
@@ -1449,7 +1449,8 @@ def health():
 
 
 
-@app.route('/link/bank/start', methods=['POST'])
+@app.route('/link/bank/start', methods=['POST', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
 def start_bank_link():
     user_id = get_jwt_identity()
@@ -1461,11 +1462,10 @@ def start_bank_link():
     if not user:
         return jsonify({"error": "User not found"}), 400
 
-    # Generate a unique ref by appending a short random UUID
+    # Unique reference so Mono never complains about duplicates
     unique_ref = f"{user_id}_{uuid.uuid4().hex[:8]}"
 
     try:
-        import requests
         resp = requests.post(
             "https://api.withmono.com/v2/accounts/initiate",
             headers={
@@ -1477,18 +1477,71 @@ def start_bank_link():
                 "customer": {"name": user[0], "email": user[1]},
                 "meta": {"ref": unique_ref},
                 "scope": "auth",
-                "redirect_url": "https://oyinda-v2.onrender.com/link/bank/callback"
+                "redirect_url": f"https://oyinda-v2.onrender.com/link/bank/callback?ref={unique_ref}"
             }
         )
         data = resp.json()
         if data.get("status") == "successful":
-            # Store the mapping: unique_ref → user_id (for callback)
-            temp_links[unique_ref] = user_id   # define temp_links = {} at the top of app.py
+            # Store the mapping and the Mono customer ID for later use
+            temp_links[unique_ref] = {
+                "user_id": user_id,
+                "customer_id": data["data"]["customer"]
+            }
             return jsonify({"mono_url": data["data"]["mono_url"]})
         else:
             return jsonify({"error": data.get("message", "Mono API error")}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/link/bank/callback', methods=['GET'])
+def bank_callback():
+    unique_ref = request.args.get('ref')
+    status = request.args.get('status')
+
+    if not unique_ref or status != 'linked':
+        return "Bank linking failed or was cancelled.", 400
+
+    mapping = temp_links.pop(unique_ref, None)
+    if not mapping:
+        return "Invalid request.", 400
+
+    user_id = mapping["user_id"]
+    customer_id = mapping["customer_id"]
+
+    # Fetch the newly linked account(s) from Mono
+    try:
+        resp = requests.get(
+            f"https://api.withmono.com/v2/customers/{customer_id}/accounts",
+            headers={
+                "accept": "application/json",
+                "mono-sec-key": os.environ.get("MONO_SECRET_KEY")
+            }
+        )
+        data = resp.json()
+        accounts = data.get("data", [])
+        if not accounts:
+            return "No accounts found.", 500
+
+        # Link the first account to the user (you can later add logic to link all)
+        first = accounts[0]
+        account_number = first.get("account_number", "")
+        bank_name = first.get("institution", {}).get("name", "Unknown Bank")
+        currency = first.get("currency", "NGN")
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO connected_accounts (user_id, account_type, provider, label, currency, account_number, bank_name) VALUES (%s, 'bank', 'mono', %s, %s, %s, %s) RETURNING id",
+            (user_id, f"{bank_name} Account", currency, account_number, bank_name)
+        )
+        conn.commit()
+        conn.close()
+
+        return f"Bank account {account_number} from {bank_name} linked successfully. You can close this tab."
+
+    except Exception as e:
+        return f"Error fetching accounts: {str(e)}", 500
 
 
 

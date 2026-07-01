@@ -1446,6 +1446,43 @@ def health():
     return jsonify(score)
 
 
+@app.route('/link/bank/start', methods=['POST'])
+@jwt_required()
+def start_bank_link():
+    user_id = get_jwt_identity()
+    # get user details for Mono
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT name, email FROM users WHERE id=%s", (user_id,))
+    user = cur.fetchone()
+    conn.close()
+    if not user:
+        return jsonify({"error": "User not found"}), 400
+
+    try:
+        import requests
+        resp = requests.post(
+            "https://api.withmono.com/v2/accounts/initiate",
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "mono-sec-key": os.environ.get("MONO_SECRET_KEY")
+            },
+            json={
+                "customer": {"name": user[0], "email": user[1]},
+                "meta": {"ref": user_id},
+                "scope": "auth",
+                "redirect_url": "https://oyinda-v2.onrender.com/link/bank/callback"
+            }
+        )
+        data = resp.json()
+        if data.get("status") == "successful":
+            return jsonify({"mono_url": data["data"]["mono_url"]})
+        else:
+            return jsonify({"error": data.get("message", "Mono API error")}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/debug/groq', methods=['GET'])
@@ -1473,6 +1510,7 @@ def debug_groq():
             "error_message": str(e),
             "response_body": getattr(e, 'response', None) and e.response.text[:300]
         })
+
 
 # --------------- FRONTEND ---------------
 @app.route('/')

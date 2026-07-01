@@ -240,42 +240,43 @@ def handle_command():
             trade = pending_p2p_trades.pop(user_id)
             p2p_account_id = trade['account_id']
             try:
-                from connectors.yellowcard import YellowCardConnector
+                from connectors.bybit_p2p import BybitP2PConnector
                 accounts = get_user_connected_accounts(user_id)
                 p2p_account = next((a for a in accounts if a['id'] == p2p_account_id), None)
                 if not p2p_account:
                     return jsonify({"error": "P2P account not found."}), 400
                 api_key = decrypt(p2p_account['api_key_encrypted'])
                 api_secret = decrypt(p2p_account['api_secret_encrypted'])
-                connector = YellowCardConnector(api_key, api_secret)
+                connector = BybitP2PConnector(api_key, api_secret)
 
                 if trade['action'] == 'sell':
-                    result = connector.sell_crypto(trade['amount'], trade['currency'])
-                    # Append event: P2P sell executed
+                    result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
+                    # Append event
                     append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
                         "amount": trade['amount'],
                         "currency": trade['currency'],
                         "ngn_equivalent": trade['ngn_amount'],
                         "rate": trade['rate'],
-                        "order_id": result.get('id')
+                        "order_id": result.get('result', {}).get('orderId')
                     })
                     return jsonify({
-                                       "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. Funds will be sent to your bank account.",
+                                       "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
                                        "tone": "income"})
                 elif trade['action'] == 'buy':
-                    result = connector.buy_crypto(trade['ngn_amount'], trade['currency'])
+                    result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
                     append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
                         "amount_ngn": trade['amount'],
                         "crypto_amount": trade['crypto_amount'],
                         "currency": trade['currency'],
                         "rate": trade['rate'],
-                        "order_id": result.get('id')
+                        "order_id": result.get('result', {}).get('orderId')
                     })
                     return jsonify({
-                                       "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}.",
+                                       "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
                                        "tone": "income"})
             except Exception as e:
                 return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
+
 
     # ---------- Rule‑based swap detector (fast path) ----------
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
@@ -455,79 +456,42 @@ def handle_command():
             "send_payload": send_payload
         })
 
+    from connectors.bybit_p2p import BybitP2PConnector
+    api_key = decrypt(p2p_account['api_key_encrypted'])
+    api_secret = decrypt(p2p_account['api_secret_encrypted'])
+    connector = BybitP2PConnector(api_key, api_secret)
+    rate, ad_id = connector.get_best_sell_price(currency, 'NGN')
+    if not rate:
+        return jsonify({"error": "No P2P ads available for selling USDT to NGN."}), 500
+    ngn_amount = amount * rate
+    # Store ad_id and other details in pending_p2p_trades
+    pending_p2p_trades[user_id] = {
+        "action": "sell",
+        "amount": amount,
+        "currency": currency,
+        "rate": rate,
+        "ngn_amount": ngn_amount,
+        "account_id": p2p_account['id'],
+        "ad_id": ad_id
+    }
 
-    # P2P sell crypto (e.g., "sell 50 USDT for NGN")
-    sell_p2p_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC|BTC|ETH)\s*(?:for|to)\s*(naira|ngn)', text, re.IGNORECASE)
-    if sell_p2p_match:
-        amount = float(sell_p2p_match.group(1))
-        currency = sell_p2p_match.group(2).upper()
-        # Verify user has a linked P2P account
-        accounts = get_user_connected_accounts(user_id)
-        p2p_account = next((a for a in accounts if a['type'] == 'p2p'), None)
-        if not p2p_account:
-            return jsonify({"error": "No P2P account linked. Please link a Yellow Card account first."}), 400
-
-        # Get the rate and calculate NGN amount
-        try:
-            from connectors.yellowcard import YellowCardConnector
-            api_key = decrypt(p2p_account['api_key_encrypted'])
-            api_secret = decrypt(p2p_account['api_secret_encrypted'])
-            connector = YellowCardConnector(api_key, api_secret)
-            rate = connector.get_rate(currency, 'NGN')
-            if not rate:
-                return jsonify({"error": "Could not fetch current rate."}), 500
-            ngn_amount = amount * rate
-        except Exception as e:
-            return jsonify({"error": f"Rate fetch failed: {str(e)}"}), 500
-
-        # Store pending P2P trade
-        pending_p2p_trades[user_id] = {
-            "action": "sell",
-            "amount": amount,
-            "currency": currency,
-            "rate": rate,
-            "ngn_amount": ngn_amount,
-            "account_id": p2p_account['id']
-        }
-        return jsonify({
-            "message": f"Sell {amount} {currency} at rate ₦{rate:,.2f}? You will receive approximately ₦{ngn_amount:,.2f}. Type 'confirm' to proceed.",
-            "tone": "neutral"
-        })
-
-    #5b P2P buy crypto (e.g., "buy 5000 NGN worth of USDT")
-    buy_p2p_match = re.match(r'buy\s+(\d+\.?\d*)\s*(naira|ngn)\s*(?:worth\s+of)?\s*(USDT|USDC|BTC|ETH)', text, re.IGNORECASE)
-    if buy_p2p_match:
-        ngn_amount = float(buy_p2p_match.group(1))
-        currency = buy_p2p_match.group(3).upper()
-        accounts = get_user_connected_accounts(user_id)
-        p2p_account = next((a for a in accounts if a['type'] == 'p2p'), None)
-        if not p2p_account:
-            return jsonify({"error": "No P2P account linked. Please link a Yellow Card account first."}), 400
-
-        try:
-            from connectors.yellowcard import YellowCardConnector
-            api_key = decrypt(p2p_account['api_key_encrypted'])
-            api_secret = decrypt(p2p_account['api_secret_encrypted'])
-            connector = YellowCardConnector(api_key, api_secret)
-            rate = connector.get_rate('NGN', currency)
-            if not rate:
-                return jsonify({"error": "Could not fetch current rate."}), 500
-            crypto_amount = ngn_amount / rate
-        except Exception as e:
-            return jsonify({"error": f"Rate fetch failed: {str(e)}"}), 500
-
-        pending_p2p_trades[user_id] = {
-            "action": "buy",
-            "amount": ngn_amount,
-            "currency": currency,
-            "rate": rate,
-            "crypto_amount": crypto_amount,
-            "account_id": p2p_account['id']
-        }
-        return jsonify({
-            "message": f"Buy {crypto_amount:.4f} {currency} for ₦{ngn_amount:,.2f} at rate ₦{rate:,.2f}? Type 'confirm' to proceed.",
-            "tone": "neutral"
-        })
+    from connectors.bybit_p2p import BybitP2PConnector
+    api_key = decrypt(p2p_account['api_key_encrypted'])
+    api_secret = decrypt(p2p_account['api_secret_encrypted'])
+    connector = BybitP2PConnector(api_key, api_secret)
+    rate, ad_id = connector.get_best_buy_price('USDT', 'NGN')
+    if not rate:
+        return jsonify({"error": "No P2P ads available for buying USDT with NGN."}), 500
+    crypto_amount = ngn_amount / rate
+    pending_p2p_trades[user_id] = {
+        "action": "buy",
+        "amount": ngn_amount,
+        "currency": currency,
+        "rate": rate,
+        "crypto_amount": crypto_amount,
+        "account_id": p2p_account['id'],
+        "ad_id": ad_id
+    }
 
     # 6. Expense logging
     expense_patterns = [

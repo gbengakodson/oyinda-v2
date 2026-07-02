@@ -1545,9 +1545,19 @@ def health():
     return jsonify(score)
 
 @app.route('/debug/binance', methods=['GET'])
-@jwt_required()
 def debug_binance():
-    user_id = get_jwt_identity()
+    # Allow token via query param for browser access
+    token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return jsonify({"error": "Missing token"}), 401
+
+    try:
+        from flask_jwt_extended import decode_token
+        decoded = decode_token(token)
+        user_id = decoded['sub']
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+
     accounts = get_user_connected_accounts(user_id)
     binance_account = next((a for a in accounts if a['provider'] == 'binance'), None)
     if not binance_account:

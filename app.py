@@ -1546,7 +1546,7 @@ def health():
 
 @app.route('/debug/binance', methods=['GET'])
 def debug_binance():
-    token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request.args.get('token')
     if not token:
         return jsonify({"error": "Missing token"}), 401
 
@@ -1554,35 +1554,45 @@ def debug_binance():
         from flask_jwt_extended import decode_token
         decoded = decode_token(token)
         user_id = decoded['sub']
-    except Exception:
-        return jsonify({"error": "Invalid token"}), 401
+    except Exception as e:
+        return jsonify({"error": f"Invalid token: {str(e)}"}), 401
 
-    accounts = get_user_connected_accounts(user_id)
-    binance_account = next((a for a in accounts if a['provider'] == 'binance'), None)
-    if not binance_account:
+    # Fetch the stored Binance credentials directly from the database
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT api_key_encrypted, api_secret_encrypted FROM connected_accounts WHERE user_id=%s AND provider='binance'",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
         return jsonify({"error": "No Binance account linked."}), 404
 
-    # Directly call Binance API and show the raw response
-    import requests
     from utils.crypto import decrypt
-    from connectors.exchange import BinanceConnector
+    api_key = decrypt(row[0])
+    api_secret = decrypt(row[1])
 
-    api_key = decrypt(binance_account['api_key_encrypted'])
-    api_secret = decrypt(binance_account['api_secret_encrypted'])
-    connector = BinanceConnector(api_key, api_secret)
+    # Call Binance API manually
+    import requests, hmac, hashlib, time
+    base_url = "https://api.binance.com"
+    endpoint = "/api/v3/account"
+    timestamp = int(time.time() * 1000)
+    query_string = f"timestamp={timestamp}"
+    signature = hmac.new(api_secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+    url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
+    headers = {"X-MBX-APIKEY": api_key}
 
     try:
-        balances = connector.get_balances()
-        return jsonify({"status": "ok", "balances": balances})
-    except Exception as e:
-        raw_response = None
-        if hasattr(e, 'response') and e.response is not None:
-            raw_response = e.response.text
+        resp = requests.get(url, headers=headers, timeout=10)
+        # Return everything: status, response body, and headers
         return jsonify({
-            "status": "error",
-            "message": str(e),
-            "raw_response": raw_response
+            "http_status": resp.status_code,
+            "response": resp.text,
+            "headers": dict(resp.headers)
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 

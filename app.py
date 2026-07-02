@@ -1544,6 +1544,23 @@ def health():
     score = get_credit_score(user_id)
     return jsonify(score)
 
+@app.route('/debug/binance', methods=['GET'])
+@jwt_required()
+def debug_binance():
+    user_id = get_jwt_identity()
+    accounts = get_user_connected_accounts(user_id)
+    binance_account = next((a for a in accounts if a['provider'] == 'binance'), None)
+    if not binance_account:
+        return jsonify({"error": "No Binance account linked."}), 404
+
+    try:
+        from connectors.balances import get_account_balance
+        result = get_account_balance(binance_account)
+        return jsonify({"balance": result})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "type": type(e).__name__})
 
 
 

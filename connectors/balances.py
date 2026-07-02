@@ -94,14 +94,17 @@ def _get_bank_balance(account):
 
 def _get_exchange_balance(account):
     if account.get('provider') == 'binance':
-        api_key = decrypt(account['api_key_encrypted'])
-        api_secret = decrypt(account['api_secret_encrypted'])
-        connector = BinanceConnector(api_key, api_secret)
-        balances = connector.get_balances()
-        if not balances:
-            return f"{account['label']}: no balances found."
-        lines = [f"{asset}: {data['free']}" for asset, data in balances.items() if data['free'] > 0]
-        return f"{account['label']} holdings:\n" + "\n".join(lines)
+        try:
+            api_key = decrypt(account['api_key_encrypted'])
+            api_secret = decrypt(account['api_secret_encrypted'])
+            connector = BinanceConnector(api_key, api_secret)
+            balances = connector.get_balances()
+            if not balances:
+                return f"{account['label']}: no balances found."
+            lines = [f"{asset}: {data['free']}" for asset, data in balances.items() if data['free'] > 0]
+            return f"{account['label']} holdings:\n" + "\n".join(lines)
+        except Exception as e:
+            return f"{account['label']}: error ({str(e)})"
     else:
         return f"{account['label']}: exchange not supported yet."
 

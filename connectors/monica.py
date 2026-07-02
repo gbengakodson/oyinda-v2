@@ -2,7 +2,7 @@
 import requests
 
 class MonicaConnector:
-    BASE_URL = "https://api.monica.im/v1"
+    BASE_URL = "https://api.monica.cash/v1"   # Correct domain
 
     def __init__(self, api_key):
         self.api_key = api_key

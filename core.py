@@ -189,8 +189,11 @@ def calculate_net_worth(user_id):
     for acc in accounts:
         try:
             from connectors.balances import get_account_balance
-            balance_str = get_account_balance(acc)   # e.g. "BSC Wallet (0x2295...): 0.0083 BNB\nTokens: USDT: 25.72, USDC: 51.65"
+            balance_str = get_account_balance(acc)
             import re
+
+            native_parsed = False
+            token_parsed = False
 
             # Parse native balance (first line)
             native_match = re.search(r'([\d,]+\.?\d*)\s*(BNB|ETH|MATIC|TRX|SOL)', balance_str)
@@ -201,11 +204,12 @@ def calculate_net_worth(user_id):
                 ngn_value = amount * rate
                 total_assets_ngn += ngn_value
                 assets.append(f"{acc['label']}: {amount:,.4f} {currency} (≈ ₦{ngn_value:,.2f})")
+                native_parsed = True
 
-            # Parse token balances (line starting with "Tokens:" or "Tokens: ")
+            # Parse token balances (line starting with "Tokens:")
             token_line = re.search(r'Tokens:\s*(.*)', balance_str)
             if token_line:
-                token_string = token_line.group(1)   # e.g. "USDT: 25.7232, USDC: 51.6500"
+                token_string = token_line.group(1)
                 tokens = re.findall(r'(\w+):\s*([\d,]+\.?\d*)', token_string)
                 for token_name, amount_str in tokens:
                     amount = float(amount_str.replace(',', ''))
@@ -214,14 +218,11 @@ def calculate_net_worth(user_id):
                     ngn_value = amount * rate
                     total_assets_ngn += ngn_value
                     assets.append(f"  └ {token_name}: {amount:,.4f} (≈ ₦{ngn_value:,.2f})")
+                token_parsed = True
 
-            # If balance_str couldn't be parsed, show raw string
-            # If balance_str already contains the label, don't duplicate
-            if balance_str.startswith(acc['label']):
-                assets.append(balance_str)
-            else:
+            # Only show raw string if we couldn't parse anything
+            if not native_parsed and not token_parsed:
                 assets.append(f"{acc['label']}: {balance_str}")
-
         except Exception as e:
             assets.append(f"{acc['label']}: error ({str(e)})")
 

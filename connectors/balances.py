@@ -44,9 +44,26 @@ def get_account_balance(account: dict) -> str:
         else:
             return f"{account['label']}: balance unavailable for this account type."
 
+
     except Exception as e:
-        print("BALANCE_FETCH_ERROR:", account.get('label'), str(e))
-        return f"{account['label']}: error: {str(e)}"
+
+        err_msg = str(e)
+
+        # Try to extract the Binance API error message if available
+
+        if hasattr(e, 'response') and e.response is not None:
+
+            try:
+
+                err_data = e.response.json()
+
+                err_msg = err_data.get('msg', err_msg)
+
+            except:
+
+                pass
+
+        return f"{account['label']}: error ({err_msg})"
 
 def _get_stock_balance(account):
     provider = account.get('provider', '').lower()

@@ -456,42 +456,7 @@ def handle_command():
             "send_payload": send_payload
         })
 
-    from connectors.bybit_p2p import BybitP2PConnector
-    api_key = decrypt(p2p_account['api_key_encrypted'])
-    api_secret = decrypt(p2p_account['api_secret_encrypted'])
-    connector = BybitP2PConnector(api_key, api_secret)
-    rate, ad_id = connector.get_best_sell_price(currency, 'NGN')
-    if not rate:
-        return jsonify({"error": "No P2P ads available for selling USDT to NGN."}), 500
-    ngn_amount = amount * rate
-    # Store ad_id and other details in pending_p2p_trades
-    pending_p2p_trades[user_id] = {
-        "action": "sell",
-        "amount": amount,
-        "currency": currency,
-        "rate": rate,
-        "ngn_amount": ngn_amount,
-        "account_id": p2p_account['id'],
-        "ad_id": ad_id
-    }
 
-    from connectors.bybit_p2p import BybitP2PConnector
-    api_key = decrypt(p2p_account['api_key_encrypted'])
-    api_secret = decrypt(p2p_account['api_secret_encrypted'])
-    connector = BybitP2PConnector(api_key, api_secret)
-    rate, ad_id = connector.get_best_buy_price('USDT', 'NGN')
-    if not rate:
-        return jsonify({"error": "No P2P ads available for buying USDT with NGN."}), 500
-    crypto_amount = ngn_amount / rate
-    pending_p2p_trades[user_id] = {
-        "action": "buy",
-        "amount": ngn_amount,
-        "currency": currency,
-        "rate": rate,
-        "crypto_amount": crypto_amount,
-        "account_id": p2p_account['id'],
-        "ad_id": ad_id
-    }
 
     #5b ---------- SELL USDT via MONICA (automated) ----------
     sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?',
@@ -960,6 +925,8 @@ def handle_query(text, user_id):
             result = calculate_net_worth(user_id)
             return jsonify({"answer": result, "tone": "neutral"})
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return jsonify({"answer": f"Could not calculate net worth: {str(e)}", "tone": "warning"})
 
     # Assets / accounts

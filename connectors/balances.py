@@ -104,7 +104,10 @@ def _get_exchange_balance(account):
             lines = [f"{asset}: {data['free']}" for asset, data in balances.items() if data['free'] > 0]
             return f"{account['label']} holdings:\n" + "\n".join(lines)
         except Exception as e:
-            return f"{account['label']}: error ({str(e)})"
+            err_msg = str(e).strip()
+            if not err_msg:
+                err_msg = "invalid API key or network error"
+            return f"{account['label']}: error ({err_msg})"
     else:
         return f"{account['label']}: exchange not supported yet."
 

@@ -186,11 +186,26 @@ def calculate_net_worth(user_id):
         'USDT':1500.0, 'USDC':1500.0, 'BUSD':1500.0, 'DAI':1500.0
     }
 
+    # Deduplicate wallets by address
+    seen_addresses = set()
+    unique_accounts = []
     for acc in accounts:
+        addr = acc.get('wallet_address')
+        if addr:
+            if addr in seen_addresses:
+                continue
+            seen_addresses.add(addr)
+        unique_accounts.append(acc)
+
+    for acc in unique_accounts:
         try:
             from connectors.balances import get_account_balance
             balance_str = get_account_balance(acc)
             import re
+
+            # If the balance_str already starts with the label, we'll use it as is
+            # and not prepend the label again.
+            # We'll still parse for native/token amounts.
 
             native_parsed = False
             token_parsed = False
@@ -206,7 +221,7 @@ def calculate_net_worth(user_id):
                 assets.append(f"{acc['label']}: {amount:,.4f} {currency} (≈ ₦{ngn_value:,.2f})")
                 native_parsed = True
 
-            # Parse token balances (line starting with "Tokens:")
+            # Parse token balances
             token_line = re.search(r'Tokens:\s*(.*)', balance_str)
             if token_line:
                 token_string = token_line.group(1)
@@ -220,9 +235,10 @@ def calculate_net_worth(user_id):
                     assets.append(f"  └ {token_name}: {amount:,.4f} (≈ ₦{ngn_value:,.2f})")
                 token_parsed = True
 
-            # Only show raw string if we couldn't parse anything
+            # If we parsed nothing, show the raw string (but don't double-label)
             if not native_parsed and not token_parsed:
-                assets.append(f"{acc['label']}: {balance_str}")
+                # balance_str likely already contains the label; just use it
+                assets.append(balance_str)
         except Exception as e:
             assets.append(f"{acc['label']}: error ({str(e)})")
 

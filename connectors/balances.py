@@ -45,11 +45,10 @@ def get_account_balance(account: dict) -> str:
             return f"{account['label']}: balance unavailable for this account type."
 
 
+
     except Exception as e:
 
         err_msg = str(e)
-
-        # Try to extract the Binance API error message if available
 
         if hasattr(e, 'response') and e.response is not None:
 

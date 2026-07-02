@@ -1546,7 +1546,6 @@ def health():
 
 @app.route('/debug/binance', methods=['GET'])
 def debug_binance():
-    # Allow token via query param for browser access
     token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
     if not token:
         return jsonify({"error": "Missing token"}), 401
@@ -1563,14 +1562,27 @@ def debug_binance():
     if not binance_account:
         return jsonify({"error": "No Binance account linked."}), 404
 
+    # Directly call Binance API and show the raw response
+    import requests
+    from utils.crypto import decrypt
+    from connectors.exchange import BinanceConnector
+
+    api_key = decrypt(binance_account['api_key_encrypted'])
+    api_secret = decrypt(binance_account['api_secret_encrypted'])
+    connector = BinanceConnector(api_key, api_secret)
+
     try:
-        from connectors.balances import get_account_balance
-        result = get_account_balance(binance_account)
-        return jsonify({"balance": result})
+        balances = connector.get_balances()
+        return jsonify({"status": "ok", "balances": balances})
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e), "type": type(e).__name__})
+        raw_response = None
+        if hasattr(e, 'response') and e.response is not None:
+            raw_response = e.response.text
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "raw_response": raw_response
+        })
 
 
 

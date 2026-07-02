@@ -235,47 +235,47 @@ def handle_command():
                 del pending_transfers[user_id]
                 return jsonify({"error": f"Transfer failed: {ref}"}), 500
 
-        # Check for pending P2P trade confirmation
-        if text.strip().lower() in ['confirm', 'yes', 'ok'] and user_id in pending_p2p_trades:
-            trade = pending_p2p_trades.pop(user_id)
-            p2p_account_id = trade['account_id']
-            try:
-                from connectors.bybit_p2p import BybitP2PConnector
-                accounts = get_user_connected_accounts(user_id)
-                p2p_account = next((a for a in accounts if a['id'] == p2p_account_id), None)
-                if not p2p_account:
-                    return jsonify({"error": "P2P account not found."}), 400
-                api_key = decrypt(p2p_account['api_key_encrypted'])
-                api_secret = decrypt(p2p_account['api_secret_encrypted'])
-                connector = BybitP2PConnector(api_key, api_secret)
+    # Check for pending P2P trade confirmation
+    if text.strip().lower() in ['confirm', 'yes', 'ok'] and user_id in pending_p2p_trades:
+        trade = pending_p2p_trades.pop(user_id)
+        p2p_account_id = trade['account_id']
+        try:
+            from connectors.bybit_p2p import BybitP2PConnector
+            accounts = get_user_connected_accounts(user_id)
+            p2p_account = next((a for a in accounts if a['id'] == p2p_account_id), None)
+            if not p2p_account:
+                return jsonify({"error": "P2P account not found."}), 400
+            api_key = decrypt(p2p_account['api_key_encrypted'])
+            api_secret = decrypt(p2p_account['api_secret_encrypted'])
+            connector = BybitP2PConnector(api_key, api_secret)
 
-                if trade['action'] == 'sell':
-                    result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
-                    # Append event
-                    append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
-                        "amount": trade['amount'],
-                        "currency": trade['currency'],
-                        "ngn_equivalent": trade['ngn_amount'],
-                        "rate": trade['rate'],
-                        "order_id": result.get('result', {}).get('orderId')
-                    })
-                    return jsonify({
-                                       "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
-                                       "tone": "income"})
-                elif trade['action'] == 'buy':
-                    result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
-                    append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
-                        "amount_ngn": trade['amount'],
-                        "crypto_amount": trade['crypto_amount'],
-                        "currency": trade['currency'],
-                        "rate": trade['rate'],
-                        "order_id": result.get('result', {}).get('orderId')
-                    })
-                    return jsonify({
-                                       "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
-                                       "tone": "income"})
-            except Exception as e:
-                return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
+            if trade['action'] == 'sell':
+                result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
+                # Append event
+                append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
+                    "amount": trade['amount'],
+                    "currency": trade['currency'],
+                    "ngn_equivalent": trade['ngn_amount'],
+                    "rate": trade['rate'],
+                    "order_id": result.get('result', {}).get('orderId')
+                })
+                return jsonify({
+                                   "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
+                                   "tone": "income"})
+            elif trade['action'] == 'buy':
+                result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
+                append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
+                    "amount_ngn": trade['amount'],
+                    "crypto_amount": trade['crypto_amount'],
+                    "currency": trade['currency'],
+                    "rate": trade['rate'],
+                    "order_id": result.get('result', {}).get('orderId')
+                })
+                return jsonify({
+                                   "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
+                                   "tone": "income"})
+        except Exception as e:
+            return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
 
 
     # ---------- Rule‑based swap detector (fast path) ----------
@@ -492,6 +492,53 @@ def handle_command():
         "account_id": p2p_account['id'],
         "ad_id": ad_id
     }
+
+    #5b ---------- SELL USDT via MONICA (automated) ----------
+    sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?',
+                                 text, re.IGNORECASE)
+    if not sell_monica_match:
+        sell_monica_match = re.match(r'convert\s+(\d+\.?\d*)\s*(USDT|USDC)\s+to\s+(?:ngn|naira)', text, re.IGNORECASE)
+    if sell_monica_match:
+        amount = float(sell_monica_match.group(1))
+        currency = sell_monica_match.group(2).upper()
+
+        # 1. Find Monica account
+        accounts = get_user_connected_accounts(user_id)
+        monica_account = next((a for a in accounts if a.get('provider', '').lower() == 'monica'), None)
+        if not monica_account:
+            return jsonify({"error": "No Monica account linked. Please link it under P2P."}), 400
+
+        # 2. Get Monica deposit address
+        try:
+            from connectors.monica import MonicaConnector
+            api_key = decrypt(monica_account['api_key_encrypted'])
+            connector = MonicaConnector(api_key)
+            deposit_address = connector.get_deposit_address("TRC20")  # or BEP20
+            if not deposit_address:
+                return jsonify({"error": "Could not get Monica deposit address."}), 500
+        except Exception as e:
+            return jsonify({"error": f"Monica API error: {str(e)}"}), 500
+
+        # 3. Build the token‑transfer payload for the user’s BSC wallet
+        wallet_accounts = [a for a in accounts if a['type'] == 'wallet']
+        if not wallet_accounts:
+            return jsonify({"error": "No connected crypto wallet."}), 400
+        wallet_account = wallet_accounts[0]  # use the first wallet; could let user choose
+
+        # Return a special response that the frontend will turn into a MetaMask transaction
+        return jsonify({
+            "action": "monica_sell",
+            "message": f"Send {amount} {currency} to Monica's deposit address. Confirm in your wallet.",
+            "data": {
+                "amount": amount,
+                "token": currency,
+                "to_address": deposit_address,
+                "network": wallet_account['network'],
+                "wallet_address": wallet_account['wallet_address'],
+                "monica_account_id": monica_account['id']
+            },
+            "tone": "neutral"
+        })
 
     # 6. Expense logging
     expense_patterns = [

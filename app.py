@@ -1181,7 +1181,7 @@ def generate_statement():
     for evt in events:
         stream_id, event_type, payload, created_at = evt
         payload = json.loads(payload) if isinstance(payload, str) else payload
-        amount = payload.get('amount', 0)
+        amount = payload.get('amount', 0) or 0  # guard against None
         currency = payload.get('currency', 'NGN')
 
         inst_id = stream_id
@@ -1190,6 +1190,7 @@ def generate_statement():
             inst_name = 'Informal'
             inst_id = 'manual'
 
+        running_balances.setdefault(inst_id, 0)
         if event_type in ('ExpenseLogged', 'TransferExecuted', 'TokenTransferExecuted',
                           'SwapExecuted', 'P2PBuyExecuted'):
             withdrawal = amount

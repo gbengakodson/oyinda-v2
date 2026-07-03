@@ -21,6 +21,7 @@ import io
 import hashlib
 
 
+
 pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
@@ -1120,9 +1121,19 @@ def handle_query(text, user_id):
 # --------------- STATEMENT (PDF/JSON) ---------------
 
 @app.route('/statement', methods=['GET'])
-@jwt_required()
 def generate_statement():
-    user_id = get_jwt_identity()
+    # Accept token via query parameter or header
+    token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return jsonify({"error": "Missing token"}), 401
+
+    try:
+        from flask_jwt_extended import decode_token
+        decoded = decode_token(token)
+        user_id = decoded['sub']
+    except Exception:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
     from_date = request.args.get('from', '1900-01-01')
     to_date = request.args.get('to', datetime.utcnow().strftime('%Y-%m-%d'))
     fmt = request.args.get('format', 'markdown')
@@ -1136,7 +1147,7 @@ def generate_statement():
             'name': acc['label'],
             'type': acc['type'].upper(),
             'currency': acc.get('currency', 'NGN'),
-            'address': '',      # you can store later
+            'address': '',
             'swift': '',
             'contact': ''
         }
@@ -1165,33 +1176,27 @@ def generate_statement():
 
     # ---------- 3. Build transaction ledger ----------
     ledger = []
-    running_balances = defaultdict(lambda: 0)   # per institution
-    total_starting = 0
-    total_ending = 0
+    running_balances = defaultdict(lambda: 0)
 
     for evt in events:
         stream_id, event_type, payload, created_at = evt
         payload = json.loads(payload) if isinstance(payload, str) else payload
         amount = payload.get('amount', 0)
         currency = payload.get('currency', 'NGN')
-        # Determine institution
+
         inst_id = stream_id
         inst_name = institutions.get(inst_id, {}).get('name', 'Unknown')
         if not institutions.get(inst_id):
-            # Fallback: use "Manual / Informal"
             inst_name = 'Informal'
             inst_id = 'manual'
 
-        # Determine debit/credit
         if event_type in ('ExpenseLogged', 'TransferExecuted', 'TokenTransferExecuted',
                           'SwapExecuted', 'P2PBuyExecuted'):
-            # Money going out
             withdrawal = amount
             deposit = 0
             running_balances[inst_id] -= amount
         elif event_type in ('IncomeReceived', 'CryptoOrderExecuted', 'ExchangeOrderExecuted',
                             'P2PSellExecuted'):
-            # Money coming in
             withdrawal = 0
             deposit = amount
             running_balances[inst_id] += amount
@@ -1215,18 +1220,12 @@ def generate_statement():
     # ---------- 4. Compute summary figures ----------
     total_deposits = sum(item['deposit'] for item in ledger)
     total_withdrawals = sum(item['withdrawal'] for item in ledger)
-    # Starting balances (before from_date) – we'll need to fetch previous running balances
-    # For now, start at 0 and note it
-    starting_balances = {inst_id: 0 for inst_id in institutions}
-    # Actually, we should calculate the balance just before the period
-    # We'll skip for now and assume starting balances are 0 (you can enhance later)
 
     # ---------- 5. Generate Markdown ----------
     md = f"# OFFICIAL BANK & ASSET STATEMENT\n\n"
     md += f"**Statement Period:** {from_date} to {to_date}\n"
     md += f"**Date of Issue:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
 
-    # Customer Info
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT name, email FROM users WHERE id=%s", (user_id,))
@@ -1237,28 +1236,23 @@ def generate_statement():
         md += f"**Email:** {user[1]}\n"
     md += f"**Customer ID:** {user_id}\n\n"
 
-    # Institutions Header
     md += "## Linked Institutions\n\n"
     for inst_id, info in institutions.items():
         md += f"- **{info['name']}** ({info['type']}) – {info['currency']}\n"
     md += "\n"
 
-    # Account Summary Table
     md += "## Account Summary\n\n"
     md += "| Institution | Starting Balance | Total Deposits (+) | Total Withdrawals (-) | Ending Balance |\n"
     md += "|-------------|-----------------|-------------------|-----------------------|----------------|\n"
     for inst_id, info in institutions.items():
-        sb = starting_balances.get(inst_id, 0)
+        sb = 0  # Starting balance before period – can be improved later
         eb = running_balances[inst_id]
-        # Per institution deposits/withdrawals
         inst_items = [it for it in ledger if it['institution'] == info['name']]
         inst_dep = sum(it['deposit'] for it in inst_items)
         inst_wth = sum(it['withdrawal'] for it in inst_items)
         md += f"| {info['name']} | {sb:,.2f} | {inst_dep:,.2f} | {inst_wth:,.2f} | {eb:,.2f} |\n"
-    # Total row
-    md += f"| **TOTAL** | **{sum(starting_balances.values()):,.2f}** | **{total_deposits:,.2f}** | **{total_withdrawals:,.2f}** | **{sum(running_balances.values()):,.2f}** |\n\n"
+    md += f"| **TOTAL** | **0.00** | **{total_deposits:,.2f}** | **{total_withdrawals:,.2f}** | **{sum(running_balances.values()):,.2f}** |\n\n"
 
-    # Transaction Ledger
     md += "## Transaction Ledger\n\n"
     md += "| Date | Institution | Description | Withdrawal (-) | Deposit (+) | Running Balance |\n"
     md += "|------|-------------|-------------|----------------|-------------|-----------------|\n"
@@ -1268,7 +1262,6 @@ def generate_statement():
         rb = f"{item['running_balance']:,.2f}"
         md += f"| {item['date']} | {item['institution']} | {item['description']} | {wd} | {dp} | {rb} |\n"
 
-    # Footer
     md += "\n---\n"
     md += "**Official Verification:** This statement was generated by Oyinda and is valid for financial review.\n"
     md += f"**Verification Hash:** `{hashlib.sha256(md.encode()).hexdigest()[:12]}`\n"
@@ -1278,23 +1271,24 @@ def generate_statement():
     if fmt == 'json':
         return jsonify({"statement": md})
     elif fmt == 'pdf':
-        # Simple PDF conversion using ReportLab (already installed)
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.lib import colors
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
-        elements = []
-        styles = getSampleStyleSheet()
-        for line in md.split('\n'):
-            elements.append(Paragraph(line, styles['Normal']))
-            elements.append(Spacer(1, 6))
-        doc.build(elements)
-        buffer.seek(0)
-        return send_file(buffer, as_attachment=True, download_name=f'oyinda_statement_{from_date}_{to_date}.pdf')
+        try:
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=A4)
+            elements = []
+            styles = getSampleStyleSheet()
+            for line in md.split('\n'):
+                if line.strip():
+                    elements.append(Paragraph(line, styles['Normal']))
+                    elements.append(Spacer(1, 6))
+            doc.build(elements)
+            buffer.seek(0)
+            return send_file(buffer, as_attachment=True, download_name=f'oyinda_statement_{from_date}_{to_date}.pdf')
+        except ImportError:
+            return jsonify({"error": "PDF generation not available"}), 500
     else:
-        # Default: plain text markdown
         return md, 200, {'Content-Type': 'text/markdown; charset=utf-8'}
 
 

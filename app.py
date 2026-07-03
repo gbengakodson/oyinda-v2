@@ -828,6 +828,11 @@ def handle_command():
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
+    # At the end of handle_command, after a successful response:
+    cur.execute("INSERT INTO usage_log (user_id, event, details) VALUES (%s, %s, %s)",
+                (user_id, 'command', json.dumps({"text": text[:200]})))
+    conn.commit()
+
 
 
 

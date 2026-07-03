@@ -566,7 +566,6 @@ def handle_command():
         r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
         r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
         r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'  # pidgin
-        r'(?:i\s+)?bought\s+(.+)\s+(\d+\.?\d*)'
     ]
     expense_match = None
     for pat in expense_patterns:
@@ -575,15 +574,8 @@ def handle_command():
             break
 
     if expense_match:
-        # Detect which pattern matched by counting groups
-        if expense_match.lastindex == 2 and not expense_match.group(2).replace('.', '').isdigit():
-            # This is the "bought <item> <amount>" pattern (groups: 1=item, 2=amount)
-            description = expense_match.group(1).strip().lower()
-            amount = float(expense_match.group(2))
-        else:
-            # Original pattern: amount first, description second
-            amount = float(expense_match.group(1))
-            description = expense_match.group(2).strip().lower()
+        amount = float(expense_match.group(1))
+        description = expense_match.group(2).strip().lower()
         # Guess category from description
         cat_map = {
             'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',

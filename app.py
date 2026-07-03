@@ -1752,7 +1752,7 @@ def debug_binance():
     except Exception as e:
         return jsonify({"error": f"Invalid token: {str(e)}"}), 401
 
-    # Fetch the stored Binance credentials directly from the database
+    # Fetch stored credentials
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -1780,10 +1780,9 @@ def debug_binance():
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
-        # Return everything: status, response body, and headers
         return jsonify({
             "http_status": resp.status_code,
-            "response": resp.text,
+            "response_body": resp.text,
             "headers": dict(resp.headers)
         })
     except Exception as e:

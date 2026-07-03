@@ -1181,16 +1181,40 @@ def generate_statement():
     for evt in events:
         stream_id, event_type, payload, created_at = evt
         payload = json.loads(payload) if isinstance(payload, str) else payload
+
         amount = payload.get('amount', 0) or 0  # guard against None
         currency = payload.get('currency', 'NGN')
 
+        # ---------- Determine the real institution ----------
         inst_id = stream_id
-        inst_name = institutions.get(inst_id, {}).get('name', 'Unknown')
-        if not institutions.get(inst_id):
+        inst_name = institutions.get(inst_id, {}).get('name', None)
+
+        # For executed crypto/trade events, the real institution is in the original request event
+        if not inst_name and event_type in ('SwapExecuted', 'TokenTransferExecuted',
+                                            'ExchangeOrderExecuted', 'CryptoOrderExecuted'):
+            original_event_id = payload.get('original_event_id')
+            if original_event_id:
+                conn2 = get_conn()
+                cur2 = conn2.cursor()
+                cur2.execute("SELECT stream_id FROM events WHERE event_id = %s", (original_event_id,))
+                orig_row = cur2.fetchone()
+                cur2.close()
+                conn2.close()
+                if orig_row:
+                    orig_stream_id = orig_row[0]
+                    if orig_stream_id in institutions:
+                        inst_id = orig_stream_id
+                        inst_name = institutions[inst_id]['name']
+
+        # If still unknown, label as Informal
+        if not inst_name:
             inst_name = 'Informal'
             inst_id = 'manual'
 
+        # Ensure a running balance exists for this institution
         running_balances.setdefault(inst_id, 0)
+
+        # Classify the transaction
         if event_type in ('ExpenseLogged', 'TransferExecuted', 'TokenTransferExecuted',
                           'SwapExecuted', 'P2PBuyExecuted'):
             withdrawal = amount
@@ -1269,28 +1293,72 @@ def generate_statement():
     md += "**Disclaimer:** This is a computer-generated document. No signature required.\n"
 
     # ---------- 6. Output ----------
-    if fmt == 'json':
-        return jsonify({"statement": md})
-    elif fmt == 'pdf':
+    if fmt == 'pdf':
         try:
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import getSampleStyleSheet
+            import markdown
+            from weasyprint import HTML
+
+            # Add CSS styling for the statement
+            styled_html = f"""
+            <html>
+            <head>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    margin: 40px;
+                    color: #333;
+                }}
+                h1 {{
+                    color: #d63384;  /* light pink */
+                }}
+                h2 {{
+                    color: #495057;
+                    border-bottom: 2px solid #e9ecef;
+                    padding-bottom: 5px;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 20px 0;
+                }}
+                th, td {{
+                    border: 1px solid #dee2e6;
+                    padding: 8px;
+                    text-align: left;
+                }}
+                th {{
+                    background-color: #f8f9fa;  /* light grey */
+                    font-weight: bold;
+                }}
+                tr:nth-child(even) {{
+                    background-color: #f8f9fa;
+                }}
+                tr:nth-child(odd) {{
+                    background-color: #ffffff;
+                }}
+                .footer {{
+                    margin-top: 40px;
+                    font-size: 12px;
+                    color: #6c757d;
+                }}
+                .verification {{
+                    background-color: #fff3f3;
+                    padding: 10px;
+                    border-radius: 5px;
+                }}
+            </style>
+            </head>
+            <body>
+            {markdown.markdown(md, extensions=['tables'])}
+            </body>
+            </html>
+            """
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4)
-            elements = []
-            styles = getSampleStyleSheet()
-            for line in md.split('\n'):
-                if line.strip():
-                    elements.append(Paragraph(line, styles['Normal']))
-                    elements.append(Spacer(1, 6))
-            doc.build(elements)
+            HTML(string=styled_html).write_pdf(buffer)
             buffer.seek(0)
             return send_file(buffer, as_attachment=True, download_name=f'oyinda_statement_{from_date}_{to_date}.pdf')
         except ImportError:
-            return jsonify({"error": "PDF generation not available"}), 500
-    else:
-        return md, 200, {'Content-Type': 'text/markdown; charset=utf-8'}
+            return jsonify({"error": "PDF generation libraries not installed."}), 500
 
 
 

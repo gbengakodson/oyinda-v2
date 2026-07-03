@@ -9,3 +9,5 @@ requests
 cryptography
 reportlab
 web3
+weasyprint
+markdown

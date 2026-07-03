@@ -18,6 +18,8 @@ def encrypt(plaintext: str) -> str:
     return cipher.encrypt(plaintext.encode()).decode()
 
 def decrypt(ciphertext: str) -> str:
+    if not ciphertext:
+        return None
     cipher = _get_cipher()
     if cipher is None:
         raise RuntimeError("ENCRYPTION_KEY not set or invalid")

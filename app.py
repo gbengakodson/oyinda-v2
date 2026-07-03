@@ -1707,9 +1707,12 @@ def bank_transfer():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/account/<account_id>', methods=['DELETE'])
-@jwt_required()
+@app.route('/account/<account_id>', methods=['DELETE', 'OPTIONS'])
+@jwt_required(optional=True)   # allow OPTIONS without JWT
 def delete_account(account_id):
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200   # preflight okay
+
     user_id = get_jwt_identity()
     conn = get_conn()
     cur = conn.cursor()

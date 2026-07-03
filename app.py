@@ -1741,52 +1741,56 @@ def health():
 
 @app.route('/debug/binance', methods=['GET'])
 def debug_binance():
-    token = request.args.get('token')
-    if not token:
-        return jsonify({"error": "Missing token"}), 401
-
     try:
+        token = request.args.get('token')
+        if not token:
+            return jsonify({"error": "Missing token"}), 401
+
         from flask_jwt_extended import decode_token
         decoded = decode_token(token)
         user_id = decoded['sub']
-    except Exception as e:
-        return jsonify({"error": f"Invalid token: {str(e)}"}), 401
 
-    # Fetch stored credentials
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT api_key_encrypted, api_secret_encrypted FROM connected_accounts WHERE user_id=%s AND provider='binance'",
-        (user_id,)
-    )
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "No Binance account linked."}), 404
+        # Fetch stored credentials
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT api_key_encrypted, api_secret_encrypted FROM connected_accounts WHERE user_id=%s AND provider='binance'",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": "No Binance account linked."}), 404
 
-    from utils.crypto import decrypt
-    api_key = decrypt(row[0])
-    api_secret = decrypt(row[1])
+        from utils.crypto import decrypt
+        try:
+            api_key = decrypt(row[0])
+            api_secret = decrypt(row[1])
+        except Exception as e:
+            return jsonify({"error": f"Decryption failed: {str(e)}"}), 500
 
-    # Call Binance API manually
-    import requests, hmac, hashlib, time
-    base_url = "https://api.binance.com"
-    endpoint = "/api/v3/account"
-    timestamp = int(time.time() * 1000)
-    query_string = f"timestamp={timestamp}"
-    signature = hmac.new(api_secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-    url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
-    headers = {"X-MBX-APIKEY": api_key}
+        # Call Binance API manually
+        import requests, hmac, hashlib, time
+        base_url = "https://api.binance.com"
+        endpoint = "/api/v3/account"
+        timestamp = int(time.time() * 1000)
+        query_string = f"timestamp={timestamp}"
+        signature = hmac.new(api_secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+        url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
+        headers = {"X-MBX-APIKEY": api_key}
 
-    try:
         resp = requests.get(url, headers=headers, timeout=10)
         return jsonify({
             "http_status": resp.status_code,
-            "response_body": resp.text,
-            "headers": dict(resp.headers)
+            "response_body": resp.text
         })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 
 

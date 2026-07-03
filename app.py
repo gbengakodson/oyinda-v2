@@ -23,12 +23,14 @@ import hashlib
 
 
 pending_transfers = {}  # user_id -> payload
+pending_ambiguous = {}   # user_id -> { amount, description }
 pending_p2p_trades = {}
 app = Flask(__name__)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
 temp_links = {}
+CRON_SECRET = os.environ.get('CRON_SECRET', 'change-me-to-a-random-string')
 
 def mock_execute_transfer(payload):
     return True, "MOCK-REF-" + str(uuid.uuid4())[:8]
@@ -283,6 +285,49 @@ def handle_command():
             return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
 
 
+    # ---------- Resolve pending ambiguous transaction ----------
+    if user_id in pending_ambiguous:
+        info = pending_ambiguous.pop(user_id)
+        reply = text.strip().lower()
+
+        # Determine transaction type from the user’s reply
+        if reply in ['spent', 'spend', 'expense', 'bought', 'paid'] or \
+           any(word in reply for word in ['spent', 'spend', 'expense', 'bought', 'paid']):
+            trans_type = 'ExpenseLogged'
+            tone = 'neutral'
+            response_text = f"Got it. You spent {info['amount']} NGN on {info.get('description', 'other')}."
+        elif reply in ['income', 'earned', 'earn', 'profit', 'made', 'received'] or \
+             any(word in reply for word in ['income', 'earned', 'profit', 'made', 'received']):
+            trans_type = 'IncomeReceived'
+            tone = 'income'
+            response_text = f"Great! You earned {info['amount']} NGN."
+        elif reply in ['loan', 'borrow', 'borrowed', 'liability'] or \
+             any(word in reply for word in ['loan', 'borrow', 'liability']):
+            trans_type = 'ExpenseLogged'   # we treat loans as expense for now
+            category = 'loan'
+            response_text = f"Understood. You took a loan of {info['amount']} NGN."
+            tone = 'warning'
+        else:
+            # Still unclear – ask again
+            pending_ambiguous[user_id] = info
+            return jsonify({
+                "message": f"I didn't get that. Was {info['amount']} NGN spent, earned, or a loan? Please reply 'spent', 'income', or 'loan'.",
+                "tone": "neutral"
+            })
+
+        # Log the transaction
+        payload = {
+            "amount": info['amount'],
+            "currency": "NGN",
+            "category": category if trans_type == 'ExpenseLogged' else 'income',
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "description": info.get('description', text)
+        }
+        append_event(user_id, user_id, trans_type, payload)
+        name = get_user_name(user_id)
+        return jsonify({"message": response_text, "tone": tone})
+
+
     # ---------- Rule‑based swap detector (fast path) ----------
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
     if swap_match:
@@ -516,6 +561,7 @@ def handle_command():
         r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
         r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
         r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'  # pidgin
+        r'(?:i\s+)?bought\s+(.+)\s+(\d+\.?\d*)'
     ]
     expense_match = None
     for pat in expense_patterns:
@@ -524,8 +570,15 @@ def handle_command():
             break
 
     if expense_match:
-        amount = float(expense_match.group(1))
-        description = expense_match.group(2).strip().lower()
+        # Detect which pattern matched by counting groups
+        if expense_match.lastindex == 2 and not expense_match.group(2).replace('.', '').isdigit():
+            # This is the "bought <item> <amount>" pattern (groups: 1=item, 2=amount)
+            description = expense_match.group(1).strip().lower()
+            amount = float(expense_match.group(2))
+        else:
+            # Original pattern: amount first, description second
+            amount = float(expense_match.group(1))
+            description = expense_match.group(2).strip().lower()
         # Guess category from description
         cat_map = {
             'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',
@@ -1121,7 +1174,28 @@ def handle_query(text, user_id):
 
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
-    return jsonify({"answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'", "tone": "neutral"})
+    # ---------- Smart fallback ----------
+    amount_match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)', text)
+    if amount_match:
+        amount_str = amount_match.group(1).replace(',', '')
+        try:
+            amount = float(amount_str)
+            pending_ambiguous[user_id] = {
+                "amount": amount,
+                "description": text
+            }
+            return jsonify({
+                "message": f"Did you spend, earn, or take a loan of {amount}? Reply 'spent', 'income', or 'loan'.",
+                "tone": "neutral"
+            })
+        except ValueError:
+            pass
+
+    # If no number, ask for clarification
+    return jsonify({
+        "message": "I didn't quite understand. Could you tell me the amount? For example, 'I spent 500 on food'.",
+        "tone": "neutral"
+    })
 
 # --------------- STATEMENT (PDF/JSON) ---------------
 
@@ -1957,6 +2031,62 @@ def link_account():
     return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
 
 
+@app.route('/cron/remind', methods=['POST'])
+def cron_remind():
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    if secret != CRON_SECRET:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    # Find users who haven't logged any event today
+    conn = get_conn()
+    cur = conn.cursor()
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    cur.execute("""
+        SELECT u.id, u.email, u.name
+        FROM users u
+        WHERE NOT EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.user_id = u.id
+              AND e.created_at::date = %s::date
+              AND e.event_type IN ('ExpenseLogged', 'IncomeReceived')
+        )
+    """, (today,))
+    users = cur.fetchall()
+
+    for user in users:
+        # Log reminder – replace with real email sending later
+        cur.execute(
+            "INSERT INTO reminder_log (user_id, email) VALUES (%s, %s)",
+            (user[0], user[1])
+        )
+        # TODO: send actual email using SendGrid / SMTP
+        # send_email(user[2], user[1], "Don't forget to log your transactions today!")
+
+    conn.commit()
+    conn.close()
+    return jsonify({"reminders_sent": len(users)})
+
+
+@app.route('/feedback', methods=['POST'])
+@jwt_required()
+def submit_feedback():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    message = data.get('message')
+    if not message or not message.strip():
+        return jsonify({"error": "Message required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO feedback (user_id, message) VALUES (%s, %s)",
+        (user_id, message.strip())
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Thank you! Feedback received."})
+
+
 
 @app.route('/debug/groq', methods=['GET'])
 def debug_groq():
@@ -1989,6 +2119,43 @@ def debug_groq():
 @app.route('/')
 def landing():
     return send_from_directory('webapp', 'landing.html')
+
+@app.route('/admin/summary', methods=['GET'])
+@jwt_required()
+def admin_summary():
+    user_id = get_jwt_identity()
+    # Hardcoded admin email – replace with your email
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT email FROM users WHERE id=%s", (user_id,))
+    user = cur.fetchone()
+    if not user or user[0] not in ['gbengha2016@gmail.com', 'admin@oyinda.com']:   # your admin emails
+        return jsonify({"error": "Unauthorized"}), 403
+
+    # Count beta signups
+    cur.execute("SELECT COUNT(*) FROM beta_waitlist")
+    beta_signups = cur.fetchone()[0]
+
+    # Count active users (users who logged a command in last 7 days)
+    cur.execute("SELECT COUNT(DISTINCT user_id) FROM events WHERE created_at > now() - interval '7 days'")
+    active_users = cur.fetchone()[0]
+
+    # Total commands executed (all events)
+    cur.execute("SELECT COUNT(*) FROM events")
+    total_commands = cur.fetchone()[0]
+
+    # Recent feedback
+    cur.execute("SELECT f.message, u.email, f.created_at FROM feedback f JOIN users u ON f.user_id = u.id ORDER BY f.created_at DESC LIMIT 20")
+    feedback_rows = cur.fetchall()
+    feedback = [{"message": r[0], "email": r[1], "date": r[2].isoformat()} for r in feedback_rows]
+
+    conn.close()
+    return jsonify({
+        "beta_signups": beta_signups,
+        "active_users": active_users,
+        "total_commands": total_commands,
+        "recent_feedback": feedback
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

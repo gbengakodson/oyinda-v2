@@ -98,23 +98,47 @@ class BybitP2PConnector:
         return float(best_ad["price"]), best_ad["id"]
 
     def place_buy_order(self, amount, token="USDT", currency="NGN", ad_id=None):
-        """Place a P2P buy order (buy crypto with fiat)."""
+        """
+        Place a P2P buy order (buy crypto with fiat).
+        If ad_id is not provided, it finds the best ad automatically.
+        Returns a dict with order details and payment information.
+        """
+        # 1. Get the best ad if not specified
         if not ad_id:
-            _, ad_id = self.get_best_buy_price(token, currency)
+            best_price, ad_id = self.get_best_buy_price(token, currency)
             if not ad_id:
-                raise Exception("No available P2P ads to buy USDT with NGN.")
+                raise Exception(f"No available P2P ads to buy {token} with {currency}.")
+
+        # 2. Build the request payload
         params = {
             "adId": ad_id,
             "amount": str(amount),
             "tokenId": token,
             "currencyId": currency,
-            "side": "0"
+            "side": "0"  # 0 = buy
         }
         headers = self._headers(params)
+
+        # 3. Place the order
         resp = requests.post(
             f"{self.BASE_URL}/order/create",
             json=params,
             headers=headers
         )
         resp.raise_for_status()
-        return resp.json()
+        order = resp.json()
+
+        # 4. Extract payment details (the merchant's bank account to pay)
+        payment_info = order.get("result", {}).get("payments", [{}])[0]
+        result = {
+            "order_id": order["result"]["orderId"],
+            "amount_crypto": amount,
+            "amount_fiat": float(payment_info.get("amount", 0)),
+            "bank_name": payment_info.get("bankName", "Unknown"),
+            "account_number": payment_info.get("accountNumber", ""),
+            "account_name": payment_info.get("accountName", ""),
+            "reference": order["result"].get("reference", ""),
+            "ad_id": ad_id,
+            "bybit_order_url": f"https://www.bybit.com/fiat/trade/otc/orderDetail?orderId={order['result']['orderId']}"
+        }
+        return result

@@ -284,26 +284,24 @@ def handle_command():
         except Exception as e:
             return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
 
-
     # ---------- Resolve pending ambiguous transaction ----------
     if user_id in pending_ambiguous:
         info = pending_ambiguous.pop(user_id)
         reply = text.strip().lower()
 
-        # Determine transaction type from the user’s reply
-        if reply in ['spent', 'spend', 'expense', 'bought', 'paid'] or \
-           any(word in reply for word in ['spent', 'spend', 'expense', 'bought', 'paid']):
+        # Determine transaction type from the user's reply
+        if any(word in reply for word in ['spent', 'spend', 'expense', 'bought', 'paid']):
             trans_type = 'ExpenseLogged'
-            tone = 'neutral'
+            category = 'other'
             response_text = f"Got it. You spent {info['amount']} NGN on {info.get('description', 'other')}."
-        elif reply in ['income', 'earned', 'earn', 'profit', 'made', 'received'] or \
-             any(word in reply for word in ['income', 'earned', 'profit', 'made', 'received']):
+            tone = 'neutral'
+        elif any(word in reply for word in ['income', 'earned', 'earn', 'profit', 'made', 'received']):
             trans_type = 'IncomeReceived'
-            tone = 'income'
+            category = 'income'
             response_text = f"Great! You earned {info['amount']} NGN."
-        elif reply in ['loan', 'borrow', 'borrowed', 'liability'] or \
-             any(word in reply for word in ['loan', 'borrow', 'liability']):
-            trans_type = 'ExpenseLogged'   # we treat loans as expense for now
+            tone = 'income'
+        elif any(word in reply for word in ['loan', 'borrow', 'borrowed', 'liability']):
+            trans_type = 'ExpenseLogged'
             category = 'loan'
             response_text = f"Understood. You took a loan of {info['amount']} NGN."
             tone = 'warning'
@@ -319,12 +317,19 @@ def handle_command():
         payload = {
             "amount": info['amount'],
             "currency": "NGN",
-            "category": category if trans_type == 'ExpenseLogged' else 'income',
+            "category": category,
             "date": datetime.utcnow().strftime("%Y-%m-%d"),
             "description": info.get('description', text)
         }
         append_event(user_id, user_id, trans_type, payload)
         name = get_user_name(user_id)
+        budget = calculate_daily_budget(user_id) if trans_type == 'ExpenseLogged' else None
+        if budget:
+            total_budget = sum(budget.values())
+            daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
+            tone = "warning" if info['amount'] > daily_limit else "good"
+        else:
+            tone = "neutral"
         return jsonify({"message": response_text, "tone": tone})
 
 
@@ -1175,7 +1180,7 @@ def handle_query(text, user_id):
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
     # ---------- Smart fallback ----------
-    amount_match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)', text)
+    amount_match = re.search(r'(\d[\d,]*\.?\d*)', text)
     if amount_match:
         amount_str = amount_match.group(1).replace(',', '')
         try:
@@ -1185,7 +1190,7 @@ def handle_query(text, user_id):
                 "description": text
             }
             return jsonify({
-                "message": f"Did you spend, earn, or take a loan of {amount}? Reply 'spent', 'income', or 'loan'.",
+                "message": f"Did you spend, earn, or take a loan of {amount:,.2f}? Reply 'spent', 'income', or 'loan'.",
                 "tone": "neutral"
             })
         except ValueError:

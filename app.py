@@ -1205,7 +1205,7 @@ def generate_statement():
             deposit = 0
 
         description = payload.get('description', event_type)
-        date_str = created_at[:10]
+        date_str = created_at.strftime('%Y-%m-%d')
 
         ledger.append({
             'date': date_str,

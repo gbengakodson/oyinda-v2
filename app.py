@@ -97,7 +97,7 @@ def ask_next_question(user_id):
         })
 
     # Step 2: Category‑specific questions
-    if category in ['food', 'transport', 'housing', 'utilities', 'health', 'education'] and state == "collecting_category":
+    if category in ['food', 'transport', 'housing', 'utilities', 'health', 'education', 'saving', 'investment'] and state == "collecting_category":
         if category == 'food':
             p["state"] = "collecting_quantity"
             return jsonify({
@@ -453,8 +453,8 @@ def handle_command():
                 'utilities': ['data', 'internet', 'electricity', 'bill'],
                 'health': ['doctor', 'medicine', 'hospital'],
                 'education': ['school', 'book', 'course'],
-                'investment': ['invest', 'bamboo', 'stocks'],
-                'savings': ['saved', 'piggyvest'],
+                'investment': ['invest', 'investment', 'stocks', 'bamboo'],
+                'savings': ['save', 'savings', 'saved', 'piggyvest'],
                 'loan': ['borrow', 'loan']
             }
             matched = False

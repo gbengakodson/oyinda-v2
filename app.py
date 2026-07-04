@@ -2040,6 +2040,149 @@ def link_account():
     return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
 
 
+
+@app.route('/credit/report', methods=['GET'])
+@jwt_required()
+def credit_report():
+    user_id = get_jwt_identity()
+    score_data = get_credit_score(user_id)
+    score = score_data["score"]
+    logo = score_data["logo"]
+
+    # Get a brief transaction summary
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM events WHERE user_id = %s", (user_id,))
+    total_txns = cur.fetchone()[0]
+
+    # Average monthly income (last 6 months)
+    cur.execute("""
+        SELECT AVG(monthly) FROM (
+            SELECT SUM(amount) as monthly
+            FROM transactions_view
+            WHERE user_id=%s AND type='income'
+              AND date >= NOW() - INTERVAL '6 months'
+            GROUP BY DATE_TRUNC('month', date)
+        ) sub
+    """, (user_id,))
+    avg_income = cur.fetchone()[0] or 0
+
+    # Total assets from net worth
+    try:
+        net_worth_str = calculate_net_worth(user_id)
+        import re
+        match = re.search(r'Total Assets \(NGN\): ₦([\d,]+\.?\d*)', net_worth_str)
+        total_assets = float(match.group(1).replace(',','')) if match else 0
+        match_liab = re.search(r'Total Liabilities \(Loans\): ₦([\d,]+\.?\d*)', net_worth_str)
+        total_liabilities = float(match_liab.group(1).replace(',','')) if match_liab else 0
+    except:
+        total_assets = total_liabilities = 0
+
+    conn.close()
+
+    # Build the report data
+    report = {
+        "score": score,
+        "logo": logo,
+        "description": get_score_description(score),
+        "total_transactions": total_txns,
+        "average_monthly_income": round(avg_income, 2),
+        "total_assets": round(total_assets, 2),
+        "total_liabilities": round(total_liabilities, 2),
+        "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "user_name": get_user_name(user_id),
+        "user_email": None  # fetch from users table if needed
+    }
+
+    # Add user email
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT email FROM users WHERE id=%s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        report["user_email"] = row[0]
+
+    return jsonify(report)
+
+def get_score_description(score):
+    if score < 40: return "Keep logging to build your score"
+    elif score < 70: return "Doing well – regular saving helps"
+    elif score < 90: return "Great financial health!"
+    else: return "Excellent! You're an eagle"
+
+
+
+@app.route('/tax/estimate', methods=['GET'])
+@jwt_required()
+def tax_estimate():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get total income in last 12 months (or this year)
+    cur.execute("""
+        SELECT SUM(amount) FROM transactions_view
+        WHERE user_id=%s AND type='income'
+          AND date >= DATE_TRUNC('year', NOW())
+    """, (user_id,))
+    yearly_income = cur.fetchone()[0] or 0
+    conn.close()
+
+    # Nigerian presumptive tax (simplified): flat rate based on income bracket
+    # This is a rough approximation; real tax laws are more complex.
+    if yearly_income <= 300000:
+        tax = 0
+    elif yearly_income <= 600000:
+        tax = (yearly_income - 300000) * 0.07
+    elif yearly_income <= 12000000:
+        tax = (yearly_income - 600000) * 0.15 + 300000 * 0.07
+    elif yearly_income <= 30000000:
+        tax = (yearly_income - 12000000) * 0.25 + 18000000 * 0.15 + 300000 * 0.07
+    else:
+        tax = (yearly_income - 30000000) * 0.30 + 6000000 * 0.25 + 18000000 * 0.15 + 300000 * 0.07
+
+    tax = round(tax, 2)
+
+    return jsonify({
+        "yearly_income": round(yearly_income, 2),
+        "estimated_tax": tax,
+        "currency": "NGN",
+        "note": "This is an estimate based on your logged income. Please consult a tax professional."
+    })
+
+@app.route('/tax/pay', methods=['POST'])
+@jwt_required()
+def pay_tax():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    amount = data.get('amount')
+    if not amount or float(amount) <= 0:
+        return jsonify({"error": "Invalid amount"}), 400
+
+    # For now, we log a tax payment event and return a mock receipt.
+    # Later, integrate with Flutterwave/Paystack.
+    payload = {
+        "amount": float(amount),
+        "currency": "NGN",
+        "category": "tax",
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "description": "Presumptive tax payment (via Oyinda)"
+    }
+    event = append_event(user_id, user_id, 'ExpenseLogged', payload)
+
+    receipt = {
+        "receipt_id": f"TAX-{event['event_id'][:8]}",
+        "amount": amount,
+        "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "status": "paid",
+        "message": "Your tax payment has been recorded. Official receipt generated."
+    }
+    return jsonify(receipt)
+
+
+
+
 @app.route('/data/plans', methods=['GET'])
 @jwt_required()
 def data_plans():

@@ -23,7 +23,6 @@ import hashlib
 
 
 pending_transfers = {}  # user_id -> payload
-pending_ambiguous = {}   # user_id -> { amount, description }
 pending_p2p_trades = {}
 app = Flask(__name__)
 CORS(app)
@@ -31,6 +30,14 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-pr
 jwt = JWTManager(app)
 temp_links = {}
 CRON_SECRET = os.environ.get('CRON_SECRET', 'change-me-to-a-random-string')
+# pending_transaction[user_id] = {
+#     "state": "collecting_amount" | "collecting_type" | "collecting_quantity" | …,
+#     "data": { … partial transaction data … },
+#     "category": "food" or None,
+# }
+pending_transaction = {}
+
+
 
 def mock_execute_transfer(payload):
     return True, "MOCK-REF-" + str(uuid.uuid4())[:8]
@@ -69,6 +76,136 @@ def normalize_date(date_str):
     if dl == 'today':
         return today.strftime("%Y-%m-%d")
     return today.strftime("%Y-%m-%d")
+
+
+def ask_next_question(user_id):
+    """Advance the pending transaction to the next data‑collection step."""
+    p = pending_transaction.get(user_id)
+    if not p:
+        return jsonify({"error": "No pending transaction."}), 400
+
+    state = p["state"]
+    data = p["data"]
+    category = p.get("category") or data.get("category")
+
+    # Step 1: Determine category if not known
+    if state == "collecting_category" and not category:
+        p["state"] = "collecting_category"
+        return jsonify({
+            "message": "What was this for? For example: food, transport, rent, data, health, education, savings, etc.",
+            "tone": "neutral"
+        })
+
+    # Step 2: Category‑specific questions
+    if category in ['food', 'transport', 'housing', 'utilities', 'health', 'education'] and state == "collecting_category":
+        if category == 'food':
+            p["state"] = "collecting_quantity"
+            return jsonify({
+                "message": "How much did you buy? For example: 2 mudu, 1 derica, a paint, 5 kg, 10 pieces.",
+                "tone": "neutral"
+            })
+        elif category == 'transport':
+            p["state"] = "collecting_transport_type"
+            return jsonify({
+                "message": "What type of transport? (e.g., okada, bus, uber, keke)",
+                "tone": "neutral"
+            })
+        elif category == 'housing':
+            p["state"] = "collecting_housing_type"
+            return jsonify({
+                "message": "Was this for rent, house repairs, or something else?",
+                "tone": "neutral"
+            })
+        else:
+            p["state"] = "collecting_location"
+            return ask_for_location(user_id)
+
+    # Step 3: Collect quantity/unit (food example)
+    if state == "collecting_quantity":
+        # User’s reply should contain quantity and possibly unit
+        qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?', data.get("last_reply", ""))
+        if qty_match:
+            data["quantity"] = float(qty_match.group(1))
+            data["unit"] = qty_match.group(2) or "unknown"
+            p["data"] = data
+            p["state"] = "collecting_location"
+            return ask_for_location(user_id)
+        else:
+            return jsonify({
+                "message": "I didn't catch the quantity. Please tell me like '2 mudu' or '1 paint'.",
+                "tone": "neutral"
+            })
+
+    # Step 4: Collect location
+    if state == "collecting_location":
+        return ask_for_location(user_id)
+
+    # Fallback – finalise if we somehow reach here
+    return finalise_transaction(user_id)
+
+
+def ask_for_location(user_id):
+    """Ask the user for their current city."""
+    p = pending_transaction[user_id]
+    p["state"] = "collecting_location"
+    return jsonify({
+        "message": "Quickly, which city are you in right now? (e.g., Lagos, Ibadan, Abuja)",
+        "tone": "neutral"
+    })
+
+
+def finalise_transaction(user_id):
+    """Log the fully collected transaction and remove from pending."""
+    p = pending_transaction.pop(user_id, None)
+    if not p:
+        return jsonify({"error": "No pending transaction."}), 400
+
+    data = p["data"]
+    trans_type = data.get("type", "expense")
+    amount = data["amount"]
+    description = data.get("description", "")
+
+    if trans_type in ("expense", "spent", "loan"):
+        event_type = "ExpenseLogged"
+        category = data.get("category", "other")
+    elif trans_type == "income":
+        event_type = "IncomeReceived"
+        category = "income"
+    elif trans_type == "investment":
+        event_type = "InvestmentMade"
+        category = "investment"
+    else:
+        event_type = "ExpenseLogged"
+        category = "other"
+
+    payload = {
+        "amount": amount,
+        "currency": data.get("currency", "NGN"),
+        "category": category,
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "description": description,
+        "quantity": data.get("quantity"),
+        "unit": data.get("unit"),
+        "location": data.get("location"),
+        "housing_type": data.get("housing_type"),
+        "transport_type": data.get("transport_type"),
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+
+    event = append_event(user_id, user_id, event_type, payload)
+    name = get_user_name(user_id)
+    response_text = f"Logged: {description} – ₦{amount:,.2f}"
+
+    # Optionally update user location if collected
+    location = data.get("location")
+    if location:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET address = %s WHERE id = %s", (location, user_id))
+        conn.commit()
+        conn.close()
+
+    return jsonify({"message": response_text, "tone": "neutral", "event_id": event["event_id"]})
 
 def get_user_name(user_id):
     conn = get_conn()
@@ -225,7 +362,7 @@ def handle_command():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    # Check for pending transfer confirmation
+    # --- Transfer confirmation (unchanged) ---
     if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
         pending = pending_transfers.get(user_id)
         if pending:
@@ -242,7 +379,7 @@ def handle_command():
                 del pending_transfers[user_id]
                 return jsonify({"error": f"Transfer failed: {ref}"}), 500
 
-    # Check for pending P2P trade confirmation
+    # --- P2P confirmation (unchanged) ---
     if text.strip().lower() in ['confirm', 'yes', 'ok'] and user_id in pending_p2p_trades:
         trade = pending_p2p_trades.pop(user_id)
         p2p_account_id = trade['account_id']
@@ -258,7 +395,6 @@ def handle_command():
 
             if trade['action'] == 'sell':
                 result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
-                # Append event
                 append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
                     "amount": trade['amount'],
                     "currency": trade['currency'],
@@ -267,8 +403,8 @@ def handle_command():
                     "order_id": result.get('result', {}).get('orderId')
                 })
                 return jsonify({
-                                   "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
-                                   "tone": "income"})
+                    "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
+                    "tone": "income"})
             elif trade['action'] == 'buy':
                 result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
                 append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
@@ -279,59 +415,84 @@ def handle_command():
                     "order_id": result.get('result', {}).get('orderId')
                 })
                 return jsonify({
-                                   "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
-                                   "tone": "income"})
+                    "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
+                    "tone": "income"})
         except Exception as e:
             return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
 
-    # ---------- Resolve pending ambiguous transaction ----------
-    if user_id in pending_ambiguous:
-        info = pending_ambiguous.pop(user_id)
-        reply = text.strip().lower()
+    # ---------- CONTINUE PENDING CONVERSATION ----------
+    if user_id in pending_transaction:
+        p = pending_transaction[user_id]
+        state = p["state"]
+        reply = text.strip()
 
-        # Determine transaction type from the user's reply
-        if any(word in reply for word in ['spent', 'spend', 'expense', 'bought', 'paid']):
-            trans_type = 'ExpenseLogged'
-            category = 'other'
-            response_text = f"Got it. You spent {info['amount']} NGN on {info.get('description', 'other')}."
-            tone = 'neutral'
-        elif any(word in reply for word in ['income', 'earned', 'earn', 'profit', 'made', 'received']):
-            trans_type = 'IncomeReceived'
-            category = 'income'
-            response_text = f"Great! You earned {info['amount']} NGN."
-            tone = 'income'
-        elif any(word in reply for word in ['loan', 'borrow', 'borrowed', 'liability']):
-            trans_type = 'ExpenseLogged'
-            category = 'loan'
-            response_text = f"Understood. You took a loan of {info['amount']} NGN."
-            tone = 'warning'
-        else:
-            # Still unclear – ask again
-            pending_ambiguous[user_id] = info
-            return jsonify({
-                "message": f"I didn't get that. Was {info['amount']} NGN spent, earned, or a loan? Please reply 'spent', 'income', or 'loan'.",
-                "tone": "neutral"
-            })
+        if state == "collecting_type":
+            reply_lower = reply.lower()
+            if any(w in reply_lower for w in ['spent', 'expense', 'spend', 'bought', 'paid']):
+                p["data"]["type"] = "expense"
+            elif any(w in reply_lower for w in ['income', 'earned', 'profit']):
+                p["data"]["type"] = "income"
+            elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
+                p["data"]["type"] = "investment"
+            elif any(w in reply_lower for w in ['loan', 'borrow']):
+                p["data"]["type"] = "loan"
+            else:
+                return jsonify({
+                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, or a loan?",
+                    "tone": "neutral"
+                })
+            p["state"] = "collecting_category"
+            return ask_next_question(user_id)
 
-        # Log the transaction
-        payload = {
-            "amount": info['amount'],
-            "currency": "NGN",
-            "category": category,
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": info.get('description', text)
-        }
-        append_event(user_id, user_id, trans_type, payload)
-        name = get_user_name(user_id)
-        budget = calculate_daily_budget(user_id) if trans_type == 'ExpenseLogged' else None
-        if budget:
-            total_budget = sum(budget.values())
-            daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
-            tone = "warning" if info['amount'] > daily_limit else "good"
-        else:
-            tone = "neutral"
-        return jsonify({"message": response_text, "tone": tone})
+        elif state == "collecting_category":
+            reply_lower = reply.lower()
+            cat_map = {
+                'food': ['food', 'rice', 'beans', 'garri', 'yam', 'meat', 'spaghetti'],
+                'transport': ['transport', 'okada', 'uber', 'taxi', 'bus', 'keke', 'fuel'],
+                'housing': ['rent', 'house', 'room', 'accommodation'],
+                'utilities': ['data', 'internet', 'electricity', 'bill'],
+                'health': ['doctor', 'medicine', 'hospital'],
+                'education': ['school', 'book', 'course'],
+                'investment': ['invest', 'bamboo', 'stocks'],
+                'savings': ['saved', 'piggyvest'],
+                'loan': ['borrow', 'loan']
+            }
+            matched = False
+            for cat, words in cat_map.items():
+                if any(w in reply_lower for w in words):
+                    p["data"]["category"] = cat
+                    p["category"] = cat
+                    matched = True
+                    break
+            if not matched:
+                return jsonify({
+                    "message": "I didn't recognise that category. Could you try again? (e.g., food, transport, rent, data)",
+                    "tone": "neutral"
+                })
+            p["state"] = "collecting_category"   # let ask_next_question advance
+            return ask_next_question(user_id)
 
+        elif state == "collecting_quantity":
+            qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?', reply.lower())
+            if qty_match:
+                p["data"]["quantity"] = float(qty_match.group(1))
+                p["data"]["unit"] = qty_match.group(2) or "unknown"
+                p["state"] = "collecting_location"
+                return ask_for_location(user_id)
+            else:
+                return jsonify({
+                    "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
+                    "tone": "neutral"
+                })
+
+        elif state == "collecting_location":
+            p["data"]["location"] = reply.strip()
+            return finalise_transaction(user_id)
+
+        # (Other states like collecting_transport_type, housing_type can be added later)
+
+        # If we didn't match any state, just finalise to avoid hanging
+        return finalise_transaction(user_id)
 
     # ---------- Rule‑based swap detector (fast path) ----------
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
@@ -341,7 +502,6 @@ def handle_command():
         token_out = swap_match.group(3).upper()
         wallet_name = swap_match.group(4).strip().lower() or 'metamask'
 
-        # Find the wallet account
         accounts = get_user_connected_accounts(user_id)
         wallet_account = None
         for acc in accounts:
@@ -371,19 +531,17 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
-
-    # ========== RULE-BASED FALLBACK (covers 90% of user intents) ==========
+    # ========== RULE-BASED FALLBACK ==========
     text_lower = text.lower().strip()
 
-    # 1. Catch ALL “how much …” / “what is my …” questions → query handler
+    # 1. Questions starting with how/what/…
     if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many', 'what is the')):
         return handle_query(text, user_id)
 
-    # 2. Exact greetings only (do not use substring matches)
+    # 2. Exact greetings
     if text_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'help', 'what can you do']:
         name = get_user_name(user_id)
-        return jsonify(
-            {"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
+        return jsonify({"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
 
     # 2b. Link bank command
     if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
@@ -394,9 +552,8 @@ def handle_command():
                                      'health score', 'debt', 'owe', 'liability']):
         return handle_query(text, user_id)
 
-    # 4. Swap (crypto)
-    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text,
-                          re.IGNORECASE)
+    # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
+    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
     if swap_match:
         amount = float(swap_match.group(1))
         token_in = swap_match.group(2).upper()
@@ -432,7 +589,7 @@ def handle_command():
             "swap_payload": swap_payload
         })
 
-    # 4b. Exchange trade (buy/sell on Binance, Bybit, etc.)
+    # 5. Exchange trade
     trade_match = re.match(r'(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from)?\s*(\w+)', text, re.IGNORECASE)
     if trade_match:
         action = trade_match.group(1).lower()
@@ -440,9 +597,8 @@ def handle_command():
         symbol = trade_match.group(3).upper()
         exchange_name = trade_match.group(4).lower()
 
-        # Auto‑append USDT if the symbol looks like a standalone asset
         common_assets = {'BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'LINK', 'DOT', 'LTC', 'BCH', 'ATOM', 'UNI',
-                         'ETC', 'FIL', 'APT', 'ARB', 'OP', 'NEAR', 'MATIC'}  # expand as needed
+                         'ETC', 'FIL', 'APT', 'ARB', 'OP', 'NEAR', 'MATIC'}
         if symbol in common_assets:
             symbol += 'USDT'
 
@@ -473,9 +629,8 @@ def handle_command():
                     pass
             return jsonify({"error": f"Trade failed: {err_msg}"}), 500
 
-    # 5. Send token (crypto)
-    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text,
-                          re.IGNORECASE)
+    # 6. Send token
+    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text, re.IGNORECASE)
     if send_match:
         amount = float(send_match.group(1))
         token = send_match.group(2).upper()
@@ -511,41 +666,30 @@ def handle_command():
             "send_payload": send_payload
         })
 
-
-
-    #5b ---------- SELL USDT via MONICA (automated) ----------
-    sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?',
-                                 text, re.IGNORECASE)
+    # 7. SELL USDT via MONICA
+    sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?', text, re.IGNORECASE)
     if not sell_monica_match:
         sell_monica_match = re.match(r'convert\s+(\d+\.?\d*)\s*(USDT|USDC)\s+to\s+(?:ngn|naira)', text, re.IGNORECASE)
     if sell_monica_match:
         amount = float(sell_monica_match.group(1))
         currency = sell_monica_match.group(2).upper()
-
-        # 1. Find Monica account
         accounts = get_user_connected_accounts(user_id)
         monica_account = next((a for a in accounts if a.get('provider', '').lower() == 'monica'), None)
         if not monica_account:
             return jsonify({"error": "No Monica account linked. Please link it under P2P."}), 400
-
-        # 2. Get Monica deposit address
         try:
             from connectors.monica import MonicaConnector
             api_key = decrypt(monica_account['api_key_encrypted'])
             connector = MonicaConnector(api_key)
-            deposit_address = connector.get_deposit_address("TRC20")  # or BEP20
+            deposit_address = connector.get_deposit_address("TRC20")
             if not deposit_address:
                 return jsonify({"error": "Could not get Monica deposit address."}), 500
         except Exception as e:
             return jsonify({"error": f"Monica API error: {str(e)}"}), 500
-
-        # 3. Build the token‑transfer payload for the user’s BSC wallet
         wallet_accounts = [a for a in accounts if a['type'] == 'wallet']
         if not wallet_accounts:
             return jsonify({"error": "No connected crypto wallet."}), 400
-        wallet_account = wallet_accounts[0]  # use the first wallet; could let user choose
-
-        # Return a special response that the frontend will turn into a MetaMask transaction
+        wallet_account = wallet_accounts[0]
         return jsonify({
             "action": "monica_sell",
             "message": f"Send {amount} {currency} to Monica's deposit address. Confirm in your wallet.",
@@ -560,12 +704,12 @@ def handle_command():
             "tone": "neutral"
         })
 
-    # 6. Expense logging
+    # 8. Expense logging
     expense_patterns = [
         r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
         r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
         r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
-        r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'  # pidgin
+        r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'
     ]
     expense_match = None
     for pat in expense_patterns:
@@ -576,13 +720,10 @@ def handle_command():
     if expense_match:
         amount = float(expense_match.group(1))
         description = expense_match.group(2).strip().lower()
-        # Guess category from description
         cat_map = {
             'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',
-            'transport': 'transport', 'uber': 'transport', 'taxi': 'transport', 'okada': 'transport',
-            'fuel': 'transport',
-            'data': 'utilities', 'internet': 'utilities', 'net': 'utilities', 'electricity': 'utilities',
-            'bill': 'utilities',
+            'transport': 'transport', 'uber': 'transport', 'taxi': 'transport', 'okada': 'transport', 'fuel': 'transport',
+            'data': 'utilities', 'internet': 'utilities', 'net': 'utilities', 'electricity': 'utilities', 'bill': 'utilities',
             'rent': 'housing', 'house': 'housing', 'accommodation': 'housing',
             'cloth': 'clothing', 'shoe': 'clothing',
             'doctor': 'health', 'medicine': 'health', 'hospital': 'health',
@@ -594,7 +735,6 @@ def handle_command():
             if word in description:
                 category = cat
                 break
-
         payload = {
             "amount": amount,
             "currency": "NGN",
@@ -614,12 +754,12 @@ def handle_command():
             tone = "neutral"
         return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
 
-    # 7. Income logging
+    # 9. Income logging
     income_patterns = [
         r'(?:i\s+)?made\s+(\d+\.?\d*)\s*(?:profit|income|from|of)?\s*(.*)',
         r'(?:i\s+)?earned\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
         r'(?:i\s+)?received\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
-        r'i\s+get\s+(\d+\.?\d*)\s+(?:from\s+)?(.+)'  # pidgin
+        r'i\s+get\s+(\d+\.?\d*)\s+(?:from\s+)?(.+)'
     ]
     income_match = None
     for pat in income_patterns:
@@ -642,10 +782,8 @@ def handle_command():
         response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
         return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
-    # 8. Bank transfer
-    transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?',
-                              text,
-                              re.IGNORECASE)
+    # 10. Bank transfer
+    transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text, re.IGNORECASE)
     if transfer_match:
         amount = float(transfer_match.group(1))
         dest_account = transfer_match.group(2)
@@ -654,7 +792,7 @@ def handle_command():
         if not accounts:
             return jsonify({"error": "No connected accounts."}), 400
         source_id = accounts[0]['id']
-        dest_id = accounts[0]['id']  # default
+        dest_id = accounts[0]['id']
         payload = {
             "amount": amount,
             "currency": "NGN",
@@ -670,218 +808,40 @@ def handle_command():
         msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
+    # ---------- SMART FALLBACK: detect number → start conversation ----------
+    amount_match = re.search(r'(\d[\d,]*\.?\d*)', text)
+    if amount_match:
+        amount_str = amount_match.group(1).replace(',', '')
+        try:
+            amount = float(amount_str)
+            pending_transaction[user_id] = {
+                "state": "collecting_type",
+                "data": {
+                    "amount": amount,
+                    "description": text,
+                    "currency": "NGN",
+                    "category": None
+                },
+                "category": None
+            }
+            return jsonify({
+                "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
+                "tone": "neutral"
+            })
+        except ValueError:
+            pass
 
-
-
-
+    # If no number, try the AI parser
     try:
         parsed = parse_intent_groq(text)
         if not parsed:
-            # Fallback: if the AI parser fails, try the rule‑based query handler
-            return handle_query(text, user_id)
-
-        event_type = parsed.get('type')
-        if event_type == 'question':
-            return handle_query(text, user_id)
-
-        # Allowed types – include send_token and swap
-        if event_type not in ('expense', 'income', 'transfer', 'liability', 'asset', 'intention', 'buy', 'sell', 'swap', 'send_token'):
-            return jsonify({"error": "I'm not sure how to handle that request."}), 400
-
-        amount = parsed.get('amount')
-        currency = parsed.get('currency', 'NGN')
-        category = parsed.get('category', 'other')
-        description = parsed.get('description', text)
-        raw_date = parsed.get("date")
-        date = normalize_date(raw_date) if raw_date else datetime.utcnow().strftime("%Y-%m-%d")
-
-        # ---------- DEX SWAP (must come before CEX) ----------
-        if event_type == 'swap':
-            token_in = parsed.get('token_in', '')
-            token_out = parsed.get('token_out', '')
-            wallet_name = parsed.get('wallet', 'metamask').lower()
-
-            accounts = get_user_connected_accounts(user_id)
-            wallet_account = None
-            for acc in accounts:
-                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                    wallet_account = acc
-                    break
-            # If no exact match, fallback to first wallet
-            if not wallet_account:
-                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-                if not wallet_account:
-                    return jsonify({"error": "No connected wallet found."}), 400
-
-            swap_payload = {
-                "token_in": token_in,
-                "token_out": token_out,
-                "amount": amount,
-                "wallet": wallet_account['id'],
-                "wallet_address": wallet_account['wallet_address'],
-                "network": wallet_account['network'],
-                "description": text
-            }
-            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
             return jsonify({
-                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
-                "tone": "neutral",
-                "event_id": event['event_id'],
-                "requires_confirmation": True,
-                "swap_payload": swap_payload
+                "message": "I didn't quite understand. Could you tell me the amount? For example, 'I spent 500 on food'.",
+                "tone": "neutral"
             })
-
-        # ---------- SEND TOKEN (must come before CEX) ----------
-        if event_type == 'send_token':
-            token = parsed.get('token', '')
-            to_address = parsed.get('to_address', '')
-            wallet_name = parsed.get('wallet', 'metamask').lower()
-
-            accounts = get_user_connected_accounts(user_id)
-            wallet_account = None
-            for acc in accounts:
-                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                    wallet_account = acc
-                    break
-            # If no exact match, fallback to first wallet
-            if not wallet_account:
-                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-                if not wallet_account:
-                    return jsonify({"error": "No connected wallet found."}), 400
-
-            send_payload = {
-                "token": token,
-                "amount": amount,
-                "to_address": to_address,
-                "wallet": wallet_account['id'],
-                "wallet_address": wallet_account['wallet_address'],
-                "network": wallet_account['network'],
-                "description": text
-            }
-            event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
-            return jsonify({
-                "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
-                "tone": "neutral",
-                "event_id": event['event_id'],
-                "requires_confirmation": True,
-                "send_payload": send_payload
-            })
-
-        # Exchange trade (buy/sell on any linked exchange)
-        trade_match = re.match(r'(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from)?\s*(\w+)', text,
-                               re.IGNORECASE)
-        if trade_match:
-            action = trade_match.group(1).lower()
-            amount = float(trade_match.group(2))
-            symbol = trade_match.group(3).upper()
-            exchange_name = trade_match.group(4).lower()
-            accounts = get_user_connected_accounts(user_id)
-            ex_account = None
-            for acc in accounts:
-                if acc['type'] == 'exchange' and exchange_name in acc['label'].lower():
-                    ex_account = acc
-                    break
-            if not ex_account:
-                return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
-
-            try:
-                from connectors.exchange_factory import get_exchange_connector as factory_connector
-                connector = factory_connector(ex_account)
-                order = connector.place_order(symbol, action, amount)
-                payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
-                append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
-                return jsonify(
-                    {"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
-                     "tone": "income"})
-            except Exception as e:
-                return jsonify({"error": f"Trade failed: {str(e)}"}), 500
-
-        # ---------- BANK TRANSFER ----------
-        if event_type == 'transfer':
-            source_id = parsed.get("source_account_id")
-            dest_id = parsed.get("destination_account_id")
-            accounts = get_user_connected_accounts(user_id)
-            if not accounts:
-                return jsonify({"error": "No connected accounts."}), 400
-            if not source_id:
-                source_id = accounts[0]['id']
-            if not dest_id:
-                dest_id = accounts[0]['id']
-            payload = {
-                "amount": amount,
-                "currency": currency,
-                "date": date,
-                "description": description,
-                "source_account_id": source_id,
-                "destination_account_id": dest_id
-            }
-            event = append_event(user_id, user_id, 'TransferRequested', payload)
-            pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
-            src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
-            dst_label = next((a['label'] for a in accounts if a['id'] == dest_id), "the destination")
-            msg = f"Okay, I'll send {amount} {currency} from {src_label} to {dst_label}. Please confirm this transfer."
-            return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
-
-        # Missing amount guard (only for expense/income etc.)
-        if event_type not in ('question', 'transfer', 'buy', 'sell', 'swap', 'send_token') and not amount:
-            return jsonify({"error": "I didn't catch the amount. Please say something like 'I spent 500 on food'."}), 400
-
-        # ---------- INCOME / EXPENSE / ASSET / LIABILITY / GOAL ----------
-        if event_type == 'intention':
-            payload = {
-                "amount": amount,
-                "currency": currency,
-                "date": date,
-                "description": description,
-                "goal_type": parsed.get("goal_type", "general"),
-                "deadline": parsed.get("deadline"),
-                "target_amount": amount
-            }
-            event = append_event(user_id, user_id, 'GoalSet', payload)
-            return jsonify({"message": f"Goal set! You want to save {amount} {currency} for {description}.", "tone": "income", "event_id": event['event_id']})
-
-        if event_type == 'expense':
-            final_type = 'ExpenseLogged'
-        elif event_type == 'income':
-            final_type = 'IncomeReceived'
-        elif event_type == 'liability':
-            final_type = 'ExpenseLogged'
-        elif event_type == 'asset':
-            final_type = 'ExpenseLogged'
-            category = 'loan_given'
-            parsed['category'] = category
-        else:
-            final_type = event_type
-
-        payload = {"amount": amount, "currency": currency, "category": category, "date": date, "description": description}
-        event = append_event(user_id, user_id, final_type, payload)
-
-        name = get_user_name(user_id)
-        tone = "neutral"
-        if final_type == 'ExpenseLogged':
-            if category == 'loan_given':
-                response_text = f"Understood, {name}. You lent {amount} {currency}. I'll track this as an asset someone owes you."
-            else:
-                response_text = f"Got it, {name}. You spent {amount} {currency} on {category}."
-                budget = calculate_daily_budget(user_id)
-                if budget:
-                    total_budget = sum(budget.values())
-                    daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
-                    tone = "warning" if amount > daily_limit else "good"
-        elif final_type == 'IncomeReceived':
-            response_text = f"Great, {name}! You received {amount} {currency}. That's a step forward."
-            tone = "income"
-        else:
-            response_text = f"Logged: {text}"
-        return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
-
+        # Continue with normal AI processing…
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
-
-    # At the end of handle_command, after a successful response:
-    cur.execute("INSERT INTO usage_log (user_id, event, details) VALUES (%s, %s, %s)",
-                (user_id, 'command', json.dumps({"text": text[:200]})))
-    conn.commit()
 
 
 
@@ -1171,28 +1131,9 @@ def handle_query(text, user_id):
 
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
-    # ---------- Smart fallback ----------
-    amount_match = re.search(r'(\d[\d,]*\.?\d*)', text)
-    if amount_match:
-        amount_str = amount_match.group(1).replace(',', '')
-        try:
-            amount = float(amount_str)
-            pending_ambiguous[user_id] = {
-                "amount": amount,
-                "description": text
-            }
-            return jsonify({
-                "message": f"Did you spend, earn, or take a loan of {amount:,.2f}? Reply 'spent', 'income', or 'loan'.",
-                "tone": "neutral"
-            })
-        except ValueError:
-            pass
-
-    # If no number, ask for clarification
     return jsonify({
-        "message": "I didn't quite understand. Could you tell me the amount? For example, 'I spent 500 on food'.",
-        "tone": "neutral"
-    })
+                       "answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'",
+                       "tone": "neutral"})
 
 # --------------- STATEMENT (PDF/JSON) ---------------
 

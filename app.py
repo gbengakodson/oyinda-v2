@@ -30,7 +30,7 @@ pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
 socketio.init_app(app)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": ["https://oyinda-web.onrender.com", "http://localhost:5173"]}})
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
 temp_links = {}

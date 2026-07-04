@@ -19,7 +19,10 @@ import json
 from collections import defaultdict
 import io
 import hashlib
-from signaling import socketio
+try:
+    from signaling import socketio
+except ImportError:
+    socketio = None
 
 
 
@@ -2261,7 +2264,8 @@ def admin_summary():
     })
 
 
-socketio.init_app(app)
-
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    if socketio is not None:
+        socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    else:
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

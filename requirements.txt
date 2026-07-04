@@ -11,3 +11,5 @@ reportlab
 web3
 weasyprint
 markdown
+flask-socketio
+gevent-websocket

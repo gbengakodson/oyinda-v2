@@ -1751,8 +1751,18 @@ def api_accounts():
 @jwt_required()
 def health():
     user_id = get_jwt_identity()
-    score = get_credit_score(user_id)
-    return jsonify(score)
+    score_data = get_credit_score(user_id)
+    score = score_data["score"]
+    # Plain‑language description
+    if score < 40:
+        desc = "Keep logging to build your score"
+    elif score < 70:
+        desc = "Doing well – regular saving helps"
+    elif score < 90:
+        desc = "Great financial health!"
+    else:
+        desc = "Excellent! You’re an eagle"
+    return jsonify({"score": score, "logo": score_data["logo"], "description": desc})
 
 @app.route('/debug/binance', methods=['GET'])
 def debug_binance():
@@ -1967,6 +1977,40 @@ def link_account():
     conn.close()
 
     return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
+
+
+@app.route('/streak', methods=['GET'])
+@jwt_required()
+def streak():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get consecutive days from today backwards
+    today = datetime.utcnow().date()
+    streak = 0
+    while True:
+        cur.execute("SELECT 1 FROM daily_activity_log WHERE user_id = %s AND date = %s", (user_id, today))
+        if cur.fetchone():
+            streak += 1
+            today = today - timedelta(days=1)
+        else:
+            break
+    conn.close()
+
+    # Check if reward already given this month
+    first_of_month = datetime.utcnow().replace(day=1).date()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM data_rewards WHERE user_id = %s AND awarded_at >= %s", (user_id, first_of_month))
+    already_rewarded = cur.fetchone() is not None
+    conn.close()
+
+    return jsonify({
+        "streak": streak,
+        "next_reward_at": 30,
+        "eligible": streak >= 30 and not already_rewarded
+    })
 
 
 @app.route('/cron/remind', methods=['POST'])

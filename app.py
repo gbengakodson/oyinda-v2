@@ -2036,6 +2036,70 @@ def link_account():
     return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
 
 
+@app.route('/data/plans', methods=['GET'])
+@jwt_required()
+def data_plans():
+    network = request.args.get('network', 'mtn').lower()
+    try:
+        from connectors.vtpass import get_data_plans
+        plans = get_data_plans(network)
+        # Simplify plan list for frontend
+        simplified = [{"name": p["name"], "price": p["variation_amount"], "code": p["variation_code"]} for p in plans]
+        return jsonify({"plans": simplified})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/data/redeem', methods=['POST'])
+@jwt_required()
+def redeem_data():
+    user_id = get_jwt_identity()
+    data_req = request.get_json()
+    network = data_req.get('network', 'mtn')
+    plan_code = data_req.get('plan_code')
+    phone = data_req.get('phone')
+    amount = float(data_req.get('amount', 0))   # in Naira
+
+    if not network or not plan_code or not phone or amount <= 0:
+        return jsonify({"error": "Missing fields"}), 400
+
+    # 1. Check user's Oyinda data balance
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT data_balance_mb FROM users WHERE id = %s", (user_id,))
+    bal = cur.fetchone()[0] or 0
+    # Convert MB to Naira (roughly ₦1 per 10 MB)
+    naira_value = bal * 0.1   # 10 MB = ₦1
+    if naira_value < amount:
+        conn.close()
+        return jsonify({"error": f"Insufficient data credit. You have {bal:.0f} MB (≈ ₦{naira_value:.2f})."}), 400
+
+    # 2. Buy data from VTpass
+    try:
+        from connectors.vtpass import buy_data
+        result = buy_data(phone, network, plan_code)
+        if result.get("code") != "000":
+            conn.close()
+            return jsonify({"error": result.get("response_description", "VTpass error")}), 500
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"VTpass error: {str(e)}"}), 500
+
+    # 3. Deduct Oyinda balance (convert Naira back to MB)
+    mb_deducted = amount / 0.1   # ₦1 → 10 MB
+    cur.execute(
+        "UPDATE users SET data_balance_mb = GREATEST(0, data_balance_mb - %s) WHERE id = %s",
+        (mb_deducted, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "message": f"Successfully purchased {plan_code}! {mb_deducted:.0f} MB deducted from your Oyinda balance.",
+        "new_balance_mb": bal - mb_deducted
+    })
+
+
 @app.route('/streak', methods=['GET'])
 @jwt_required()
 def streak():

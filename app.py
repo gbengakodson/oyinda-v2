@@ -145,7 +145,24 @@ def ask_next_question(user_id):
 
 
 def ask_for_location(user_id):
-    """Ask the user for their current city."""
+    """Check if we can reuse a recent location; if not, ask the user."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT address, last_location_update FROM users WHERE id = %s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    # If we have a location updated within the last 7 days, reuse it
+    if row and row[0] and row[1]:
+        last_update = row[1]
+        if datetime.utcnow() - last_update < timedelta(days=7):
+            # Reuse recent location
+            p = pending_transaction[user_id]
+            p["data"]["location"] = row[0]  # city name stored in address
+            p["state"] = "finalise"
+            return finalise_transaction(user_id)
+
+    # Otherwise, ask the user
     p = pending_transaction[user_id]
     p["state"] = "collecting_location"
     return jsonify({
@@ -201,7 +218,10 @@ def finalise_transaction(user_id):
     if location:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("UPDATE users SET address = %s WHERE id = %s", (location, user_id))
+        cur.execute(
+            "UPDATE users SET address = %s, last_location_update = now() WHERE id = %s",
+            (location, user_id)
+        )
         conn.commit()
         conn.close()
 
@@ -434,6 +454,9 @@ def handle_command():
                 p["data"]["type"] = "income"
             elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
                 p["data"]["type"] = "investment"
+                p["data"]["category"] = "investment"
+                p["category"] = "investment"
+                return ask_for_location(user_id)
             elif any(w in reply_lower for w in ['loan', 'borrow']):
                 p["data"]["type"] = "loan"
             else:
@@ -824,10 +847,31 @@ def handle_command():
                 },
                 "category": None
             }
-            return jsonify({
-                "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
-                "tone": "neutral"
-            })
+
+            # Detect probable type from keywords
+            if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
+                pending_transaction[user_id]["data"]["type"] = "expense"
+                pending_transaction[user_id]["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            elif any(word in text.lower() for word in ['earned', 'made', 'profit', 'income', 'received']):
+                pending_transaction[user_id]["data"]["type"] = "income"
+                pending_transaction[user_id]["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
+                pending_transaction[user_id]["data"]["type"] = "investment"
+                pending_transaction[user_id]["data"]["category"] = "investment"
+                pending_transaction[user_id]["category"] = "investment"
+                return ask_for_location(user_id)
+            elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
+                pending_transaction[user_id]["data"]["type"] = "loan"
+                pending_transaction[user_id]["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            else:
+                # No clear type – ask the basic question
+                return jsonify({
+                    "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
+                    "tone": "neutral"
+                })
         except ValueError:
             pass
 

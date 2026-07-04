@@ -23,6 +23,7 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # Get last version and previous hash
         cur.execute(
             "SELECT version, event_hash FROM events WHERE stream_id=%s ORDER BY version DESC LIMIT 1",
             (stream_id,)
@@ -40,8 +41,29 @@ def append_event(user_id: str, stream_id: str, event_type: str, payload: dict, m
             (str(new_event_id), user_id, stream_id, event_type, json.dumps(payload), json.dumps(metadata), next_version, previous_hash, event_hash)
         )
         conn.commit()
+
+        # Run projections
         handle_projection(conn, user_id, stream_id, event_type, payload, str(new_event_id))
+
+        # ----- NEW: Record daily activity & data reward -----
+        try:
+            cur.execute(
+                "INSERT INTO daily_activity_log (user_id, date) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (user_id, datetime.utcnow().date())
+            )
+            if cur.rowcount == 1:   # A new day was inserted
+                # Give 33.33 MB data credit (1 GB / 30 days)
+                cur.execute(
+                    "UPDATE users SET data_balance_mb = COALESCE(data_balance_mb, 0) + 33.33 WHERE id = %s",
+                    (user_id,)
+                )
+            conn.commit()
+        except Exception:
+            pass  # Never let activity logging break the main event flow
+        # ------------------------------------------------------
+
         return {"event_id": str(new_event_id), "version": next_version}
+
     except Exception as e:
         conn.rollback()
         raise e

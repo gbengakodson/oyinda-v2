@@ -1,770 +1,137 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Oyinda – Your AI Financial Companion</title>
-  <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Mono Connect -->
-  <script src="https://connect.withmono.com/connect.js"></script>
-  <!-- WalletConnect & ethers -->
-  <script src="https://unpkg.com/@walletconnect/web3-provider@1.7.8/dist/umd/index.min.js"></script>
-  <script src="https://unpkg.com/ethers@5.7.2/dist/ethers.umd.min.js"></script>
-  <style>
-  @keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .message-animate { animation: fadeInUp 0.3s ease; }
-  .sidebar-hidden { transform: translateX(-100%); }
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { FaArrowRight, FaCheckCircle, FaLock, FaChartLine, FaWallet, FaExchangeAlt } from 'react-icons/fa';
 
-  @media (max-width: 768px) {
-    .sidebar {
-      position: fixed;
-      z-index: 40;
-      height: 100%;
-      transition: transform 0.3s;
+export default function Landing() {
+  const [email, setEmail] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  const handleJoinBeta = async () => {
+    if (!email) return;
+    try {
+      await fetch('https://oyinda-v2.onrender.com/beta/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      setSubmitted(true);
+    } catch (e) {
+      alert('Something went wrong. Please try again.');
     }
-    .main-area {
-      margin-left: 0 !important;
-    }
-    .scroll-container {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-      scrollbar-gutter: auto;
-    }
-    .scroll-container::-webkit-scrollbar {
-      display: none;
-    }
-  }
+  };
 
-  /* Desktop: reserve scrollbar space so centering stays true */
-  .scroll-container {
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-  }
-  .action-icon, [title="Link Bank"] {
-    position: relative;
-    z-index: 10;   /* ensures it's always clickable */
-  }
-</style>
-</head>
-<body class="bg-gray-100 flex h-screen overflow-hidden">
-  <!-- Sidebar -->
-  <div id="sidebar" class="w-64 bg-white border-r flex flex-col flex-shrink-0 sidebar-hidden md:translate-x-0 md:static fixed z-40 h-full transition-transform">
-    <!-- Logo area -->
-    <div class="p-4 flex items-center gap-2 text-xl font-bold text-emerald-600">
-      <span id="logoIconSidebar" class="text-2xl">🦋</span> Oyinda
-    </div>
-
-    <!-- Quick action icons -->
-    <!-- Quick action icons -->
-    <div class="flex gap-3 px-4 mb-4">
-      <!-- Link Bank (working) -->
-      <div class="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center cursor-pointer hover:bg-gray-200" title="Link Bank"
-           onclick="(function(){
-             var t = localStorage.getItem('oyinda_token') || '';
-             if (!t) { alert('Please login first.'); return; }
-             var fn = window['@mono.co/connect.js'];
-             if (!fn) { alert('Mono not loaded. Refresh.'); return; }
-             fn({
-               key: MONO_PUBLIC_KEY,
-               onSuccess: async function(data) {
-                 var r = await fetch('https://oyinda-v2.onrender.com/link/mono', {
-                   method:'POST',
-                   headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
-                   body: JSON.stringify({code: data.code})
-                 });
-                 var d = await r.json();
-                 alert(d.message || d.error);
-                 if(r.ok) location.reload();
-               },
-               onClose: function(){},
-               onError: function(err){ alert('Mono error: ' + err.message); }
-             });
-           })();">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-gray-700"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
-      </div>
-
-      <!-- Link Exchange -->
-      <div onclick="linkExchange()" class="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center cursor-pointer hover:bg-gray-200" title="Link Exchange">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-gray-700"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
-      </div>
-
-      <!-- Connect Wallet -->
-      <div onclick="connectWallet()" class="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center cursor-pointer hover:bg-gray-200" title="Connect Wallet">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-gray-700"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg>
-      </div>
-    </div>
-
-    <!-- Transaction history -->
-    <div class="flex-1 overflow-y-auto px-4 text-sm" id="historyList"></div>
-
-    <!-- Connected accounts -->
-    <div class="px-4 pb-2 text-xs" id="accountList"></div>
-          <!-- Wallet Activity (on-chain transactions) -->
-    <div class="px-4 pb-2">
-      <div class="text-xs font-semibold text-gray-400 mt-4 mb-1">Wallet Activity</div>
-      <div id="walletHistory" class="text-xs text-gray-600"></div>
-    </div>
-
-    <!-- Footer -->
-    <div class="p-4 border-t flex items-center justify-between text-sm text-gray-500">
-      <span id="userEmailDisplay" class="truncate">Not logged in</span>
-      <span id="creditIndicator" class="text-sm"></span>
-      <div class="flex gap-2 items-center">
-        <span id="loginLogoutIcon" onclick="handleLoginLogout()" class="cursor-pointer text-lg">🔑</span>
-        <span onclick="copyConversation()" class="cursor-pointer text-lg" title="Copy conversation">
-          <!-- Copy icon -->
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        </span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Main area -->
-  <div class="flex-1 flex flex-col main-area md:ml-0 ml-0 relative">
-    <!-- Hamburger for mobile -->
-    <button class="md:hidden absolute top-4 left-4 z-50 bg-white p-2 rounded shadow" onclick="toggleSidebar()">☰</button>
-
-
-    <!-- Chat messages -->
-    <div id="chat" class="flex-1 overflow-y-auto w-full scroll-container"><div id="chat-messages" class="max-w-2xl mx-auto w-full px-4 py-6 flex flex-col gap-4"></div></div>
-
-    <!-- Floating input card -->
-    <div class="w-full max-w-2xl mx-auto mb-6 px-4">
-      <div class="bg-white rounded-2xl shadow-lg border p-3 flex flex-col gap-3">
-        <textarea id="userInput" placeholder="Speak with Oyinda!" rows="2" class="w-full resize-none outline-none text-base p-2" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); sendMessage();}"></textarea>
-        <div class="flex items-center justify-between">
-          <div class="flex gap-2 items-center">
-            <div id="analyzeToggle" onclick="toggleAnalyze()" class="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 rounded-full px-3 py-1 text-sm cursor-pointer">✨ Analyze</div>
-            <button onclick="downloadStatement()" class="p-1 hover:bg-gray-100 rounded">📄</button>
+  return (
+    <div className="bg-white min-h-screen font-sans">
+      {/* Hero Section */}
+      <header className="bg-gradient-to-br from-emerald-500 via-teal-600 to-cyan-700 text-white">
+        <div className="max-w-5xl mx-auto px-6 py-20 text-center">
+          <div className="text-6xl mb-4">🦋</div>
+          <h1 className="text-5xl font-extrabold mb-4">Oyinda</h1>
+          <p className="text-xl mb-8 max-w-2xl mx-auto">
+            Your AI Chief Financial Officer. Track all your money — bank accounts, crypto wallets, stocks, and savings — in one place.
+            Send, swap, and invest by just speaking.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <button
+              onClick={() => document.getElementById('waitlist').scrollIntoView({ behavior: 'smooth' })}
+              className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-bold px-8 py-3 rounded-full text-lg"
+            >
+              Join the Beta
+            </button>
+            <Link
+              to="/login"
+              className="bg-white/20 hover:bg-white/30 text-white font-semibold px-8 py-3 rounded-full text-lg border border-white/40"
+            >
+              Login <FaArrowRight className="inline ml-2" />
+            </Link>
           </div>
-          <div class="flex gap-2 items-center">
-            <button onclick="startVoice()" class="p-1 hover:bg-gray-100 rounded text-lg">🎤</button>
-            <button onclick="sendMessage()" class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold">↑</button>
+          <div className="mt-8 flex justify-center gap-6 text-sm text-emerald-100">
+            <span>🔒 Bank‑grade security</span>
+            <span>📱 Works on any device</span>
+            <span>🇳🇬 Built for Nigerians</span>
           </div>
         </div>
-      </div>
+      </header>
+
+      {/* Features */}
+      <section className="py-20 bg-gray-50">
+        <div className="max-w-6xl mx-auto px-6 grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="bg-white p-6 rounded-2xl shadow-md text-center">
+            <FaWallet className="text-emerald-500 text-4xl mx-auto mb-4" />
+            <h3 className="font-bold text-lg mb-2">Unified Dashboard</h3>
+            <p className="text-gray-600">See your bank, crypto, and investment balances all at once.</p>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-md text-center">
+            <FaExchangeAlt className="text-emerald-500 text-4xl mx-auto mb-4" />
+            <h3 className="font-bold text-lg mb-2">Voice‑Powered Transactions</h3>
+            <p className="text-gray-600">Send money, swap crypto, or buy stocks just by speaking.</p>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-md text-center">
+            <FaChartLine className="text-emerald-500 text-4xl mx-auto mb-4" />
+            <h3 className="font-bold text-lg mb-2">Smart Financial Insights</h3>
+            <p className="text-gray-600">Get daily budgets, net worth tracking, and tax estimates automatically.</p>
+          </div>
+        </div>
+      </section>
+
+      {/* How it Works */}
+      <section className="py-20">
+        <div className="max-w-4xl mx-auto px-6 text-center">
+          <h2 className="text-3xl font-bold mb-12">Three steps to financial control</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div>
+              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">1</div>
+              <h4 className="font-bold mb-2">Connect Your Accounts</h4>
+              <p className="text-gray-600">Link your bank, crypto wallet, and investment apps securely.</p>
+            </div>
+            <div>
+              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">2</div>
+              <h4 className="font-bold mb-2">Speak or Type</h4>
+              <p className="text-gray-600">Tell Oyinda what you want—log expenses, send money, or ask for a statement.</p>
+            </div>
+            <div>
+              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">3</div>
+              <h4 className="font-bold mb-2">Watch Your Money Grow</h4>
+              <p className="text-gray-600">Oyinda guides you with daily budgets, investment ideas, and tax planning.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Waitlist */}
+      <section id="waitlist" className="py-20 bg-gradient-to-br from-emerald-500 to-teal-600 text-white">
+        <div className="max-w-lg mx-auto px-6 text-center">
+          <h2 className="text-3xl font-bold mb-4">Be the first to try Oyinda</h2>
+          <p className="mb-8">We're onboarding a small group of beta testers. Enter your email to get early access.</p>
+          {!submitted ? (
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="flex-1 px-4 py-3 rounded-full text-gray-900"
+              />
+              <button
+                onClick={handleJoinBeta}
+                className="bg-yellow-400 hover:bg-yellow-300 text-gray-900 font-bold px-6 py-3 rounded-full"
+              >
+                Get Early Access
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 text-yellow-200 text-lg">
+              <FaCheckCircle /> You're on the list! We'll notify you.
+            </div>
+          )}
+          <p className="text-sm text-emerald-100 mt-6">100 beta spots available. No spam, ever.</p>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="py-6 text-center text-gray-500 text-sm">
+        © 2026 Oyinda. All rights reserved.
+      </footer>
     </div>
-  </div>
-
-  <!-- Auth dialogs (unchanged) -->
-  <div id="loginDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50" onclick="if(event.target===this) hideDialogs()">
-    <div class="bg-white p-6 rounded-2xl w-80">
-      <h2 class="text-xl font-bold mb-4">Login</h2>
-      <input id="loginEmail" placeholder="Email" class="w-full mb-3 p-2 border rounded-lg">
-      <input id="loginPassword" type="password" placeholder="Password" class="w-full mb-3 p-2 border rounded-lg">
-      <button onclick="doLogin()" class="w-full bg-emerald-500 text-white py-2 rounded-lg font-bold">Login</button>
-      <button onclick="hideDialogs()" class="w-full mt-2 bg-gray-300 py-2 rounded-lg">Cancel</button>
-    </div>
-  </div>
-  <div id="registerDialog" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50" onclick="if(event.target===this) hideDialogs()">
-    <div class="bg-white p-6 rounded-2xl w-80">
-      <h2 class="text-xl font-bold mb-4">Register</h2>
-      <input id="regName" placeholder="Your name" class="w-full mb-3 p-2 border rounded-lg">
-      <input id="regEmail" placeholder="Email" class="w-full mb-3 p-2 border rounded-lg">
-      <input id="regPassword" type="password" placeholder="Password" class="w-full mb-3 p-2 border rounded-lg">
-      <button onclick="doRegister()" class="w-full bg-emerald-500 text-white py-2 rounded-lg font-bold">Register</button>
-      <button onclick="hideDialogs()" class="w-full mt-2 bg-gray-300 py-2 rounded-lg">Cancel</button>
-    </div>
-  </div>
-
-  <script>
-
-    const TOKEN_ADDRESSES = {
-      bsc: {
-        'USDT': '0x55d398326f99059fF775485246999027B3197955',
-        'USDC': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
-        'BNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',  // WBNB
-        'BUSD': '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
-      },
-      eth: {
-        'USDT': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-        'USDC': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-        'DAI': '0x6B175474E89094C44Da98b954EedeAC495271d0F',
-      }
-    };
-
-    const ERC20_ABI = [
-      "function transfer(address to, uint256 amount) returns (bool)"
-    ];
-
-    const ROUTER_ADDRESS = {
-      bsc: '0x10ED43C718714eb63d5aA57B78B54704E256024E', // PancakeSwap Router
-      eth: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'  // Uniswap V2 Router
-    };
-    const ROUTER_ABI = [
-      'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)'
-    ];
-
-    let pendingAction = null;  // { type: 'swap' | 'send', payload, event_id }
-
-    // ---------- CONFIG ----------
-    const API = 'https://oyinda-v2.onrender.com';
-    const MONO_PUBLIC_KEY = 'test_pk_otw9gnq5i870ipmiyucx'; // sandbox
-    let token = localStorage.getItem('oyinda_token') || '';
-    let userName = localStorage.getItem('oyinda_user') || '';
-    let wcProvider = null, ethersProvider = null, signer = null;
-
-    // ---------- UI helpers ----------
-    function toggleSidebar() {
-      document.getElementById('sidebar').classList.toggle('sidebar-hidden');
-    }
-
-    function updateUI() {
-      const emailDisplay = document.getElementById('userEmailDisplay');
-      const loginLogoutIcon = document.getElementById('loginLogoutIcon');
-      if (userName) {
-        emailDisplay.textContent = userName;
-        loginLogoutIcon.innerHTML = '🔓';
-        loginLogoutIcon.onclick = logout;
-        loadConnectedAccounts();
-        loadTransactionHistory();
-        fetchHealthScore();
-
-        // Wire the Link Bank button after the sidebar is built
-        const linkBankBtn = document.querySelector('[title="Link Bank"]');
-        if (linkBankBtn) {
-          linkBankBtn.addEventListener('click', linkBank);
-        }
-      } else {
-        emailDisplay.textContent = 'Not logged in';
-        loginLogoutIcon.innerHTML = '🔑';
-        loginLogoutIcon.onclick = showLogin;
-        document.getElementById('historyList').innerHTML = '';
-        document.getElementById('accountList').innerHTML = '';
-        document.getElementById('logoIconSidebar').textContent = '🦋';
-      }
-    }
-
-    function handleLoginLogout() { if (userName) logout(); else showLogin(); }
-
-    async function fetchHealthScore() {
-      if (!token) return;
-      try {
-        const resp = await fetch(`${API}/health`, { headers: { 'Authorization': `Bearer ${token}` } });
-        if (resp.ok) {
-          const data = await resp.json();
-          const score = data.score;
-          const indicator = document.getElementById('creditIndicator');
-          if (indicator) {
-            indicator.textContent = score >= 70 ? '💡' : '';
-          }
-        }
-      } catch(e) {}
-    }
-
-    async function loadConnectedAccounts() {
-      if (!token) return;
-      try {
-        const resp = await fetch(`${API}/api/accounts`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (!resp.ok) return;
-        const accounts = await resp.json();
-        window._connectedAccounts = accounts; // store full objects
-        const html = accounts.map(acc => {
-          const label = acc.label + (acc.currency ? ` (${acc.currency})` : '');
-          return `<div class="flex justify-between items-center py-1 px-2 bg-green-50 rounded mb-1 text-gray-700">
-            <span>• ${label}</span>
-            <span class="cursor-pointer text-red-400 hover:text-red-600 ml-2" onclick="disconnectAccount('${acc.id}')">✕</span>
-          </div>`;
-        }).join('');
-        document.getElementById('accountList').innerHTML = html || '<div class="text-gray-400">No accounts linked</div>';
-      } catch(e) {}
-    }
-
-    async function disconnectAccount(accountId) {
-      if (!confirm('Disconnect this account?')) return;
-      try {
-        const resp = await fetch(`${API}/account/${accountId}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (resp.ok) {
-          loadConnectedAccounts();
-          addMessage('cfo', 'Account disconnected.', 'good');
-        } else {
-          const data = await resp.json();
-          addMessage('cfo', data.error || 'Failed to disconnect.', 'warning');
-        }
-      } catch(e) { addMessage('cfo', 'Network error.', 'warning'); }
-    }
-
-    async function loadTransactionHistory() {
-      if (!token) return;
-      try {
-        const resp = await fetch(`${API}/transactions?per_page=10`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const transactions = data.transactions || [];
-        const now = new Date();
-        const today = now.toISOString().split('T')[0];
-        const yesterday = new Date(now - 86400000).toISOString().split('T')[0];
-        let grouped = {};
-        transactions.forEach(tx => {
-          const d = tx.date.split('T')[0];
-          if (d === today) grouped['Today'] = grouped['Today'] || [];
-          else if (d === yesterday) grouped['Yesterday'] = grouped['Yesterday'] || [];
-          else if ((new Date() - new Date(d)) / 86400000 <= 7) grouped['7 Days'] = grouped['7 Days'] || [];
-          else if ((new Date() - new Date(d)) / 86400000 <= 30) grouped['30 Days'] = grouped['30 Days'] || [];
-          else grouped['Older'] = grouped['Older'] || [];
-          if (grouped['Today']) grouped['Today'].push(tx);
-        });
-        let html = '';
-        for (let header of ['Today','Yesterday','7 Days','30 Days','Older']) {
-          if (grouped[header]) {
-            html += `<div class="text-xs text-gray-400 font-semibold mt-3 mb-1">${header}</div>`;
-            grouped[header].forEach(tx => {
-              html += `<div class="text-sm text-gray-700 py-1 cursor-pointer hover:bg-gray-50 rounded px-1">${tx.type}: ₦${tx.amount} <span class="text-gray-400">${tx.description || ''}</span></div>`;
-            });
-          }
-        }
-        document.getElementById('historyList').innerHTML = html || '<div class="text-gray-400 text-sm">No transactions</div>';
-      } catch(e) {}
-    }
-
-    // ---------- Auth ----------
-    function showLogin() { document.getElementById('loginDialog').style.display = 'flex'; }
-    function showRegister() { document.getElementById('registerDialog').style.display = 'flex'; }
-    function hideDialogs() {
-      document.getElementById('loginDialog').style.display = 'none';
-      document.getElementById('registerDialog').style.display = 'none';
-    }
-
-    function handleLoginLogout() {
-      if (userName) {
-        logout();
-      } else {
-        showLogin();
-      }
-    }
-
-    async function doLogin() {
-      const email = document.getElementById('loginEmail').value.trim();
-      const password = document.getElementById('loginPassword').value.trim();
-      if (!email || !password) return;
-      try {
-        const resp = await fetch(`${API}/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
-        if (resp.ok) {
-          const data = await resp.json();
-          token = data.token; userName = data.user.name;
-          localStorage.setItem('oyinda_token', token); localStorage.setItem('oyinda_user', userName);
-          updateUI(); hideDialogs();
-          addMessage('cfo', data.message);
-        } else alert('Invalid email or password.');
-      } catch(e) { alert('Network error'); }
-    }
-
-    async function doRegister() {
-      const name = document.getElementById('regName').value.trim();
-      const email = document.getElementById('regEmail').value.trim();
-      const password = document.getElementById('regPassword').value.trim();
-      if (!name || !email || !password) return;
-      try {
-        const resp = await fetch(`${API}/register`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, email, password, account_type:'personal'}) });
-        if (resp.ok) {
-          const data = await resp.json();
-          token = data.token; userName = name;
-          localStorage.setItem('oyinda_token', token); localStorage.setItem('oyinda_user', userName);
-          updateUI(); hideDialogs();
-          addMessage('cfo', data.message);
-        } else alert((await resp.json()).error || 'Registration failed');
-      } catch(e) { alert('Network error'); }
-    }
-
-    function logout() {
-      token = ''; userName = '';
-      localStorage.removeItem('oyinda_token'); localStorage.removeItem('oyinda_user');
-      updateUI();
-      document.getElementById('chat-messages').innerHTML = '';
-      addMessage('cfo', 'You have been logged out.');
-    }
-
-    // ---------- Messages ----------
-    function addMessage(role, content, tone = null) {
-      const chat = document.getElementById('chat-messages');
-      const div = document.createElement('div');
-      div.className = 'message-animate max-w-[80%] px-0 py-1 ' + (role === 'user' ? 'self-end' : 'self-start');
-      const inner = document.createElement('div');
-      if (role === 'user') {
-        inner.className = 'text-right font-semibold text-emerald-600 text-lg';
-      } else {
-        let toneClass = 'text-gray-800 text-base';
-        if (tone === 'warning') toneClass = 'text-red-600';
-        else if (tone === 'good') toneClass = 'text-blue-600';
-        else if (tone === 'income') toneClass = 'text-green-600';
-        inner.className = toneClass;
-      }
-      inner.textContent = content;
-      div.appendChild(inner);
-      chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
-    function copyConversation() {
-      const messages = [...document.getElementById('chat').children].map(el => el.innerText).join('\n');
-      navigator.clipboard.writeText(messages).then(() => alert('Conversation copied!'));
-    }
-
-    // ---------- Send ----------
-
-
-    async function sendMessage() {
-      if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-      const input = document.getElementById('userInput');
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = '';
-
-      // ---------- Check for pending swap/send confirmation ----------
-      if (text.toLowerCase() === 'yes' && pendingAction) {
-        addMessage('user', text);
-        if (!signer) {
-          addMessage('cfo', 'Please connect your wallet first (click the wallet icon).', 'warning');
-          pendingAction = null;
-          return;
-        }
-        if (pendingAction.type === 'swap') {
-          await executeSwap(pendingAction.payload, pendingAction.event_id);
-        } else if (pendingAction.type === 'send') {
-          await executeTokenTransfer(pendingAction.payload, pendingAction.event_id);
-        }
-        pendingAction = null;
-        return;
-      }
-
-      addMessage('user', text);
-      try {
-        const resp = await fetch(`${API}/command`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ text })
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          const reply = data.message || data.answer || 'Done.';
-          addMessage('cfo', reply, data.tone || null);
-
-          // Open Mono widget if backend requests it
-          if (data.open_mono) {
-            const monoFn = window['@mono.co/connect.js'];
-            if (!monoFn) {
-              addMessage('cfo', 'Mono library not loaded. Please refresh.', 'warning');
-            } else {
-              monoFn({
-                key: MONO_PUBLIC_KEY,
-                onSuccess: async (monoData) => {
-                  try {
-                    const monoResp = await fetch(`${API}/link/mono`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                      body: JSON.stringify({ code: monoData.code })
-                    });
-                    const monoResult = await monoResp.json();
-                    if (monoResp.ok) {
-                      addMessage('cfo', monoResult.message, 'income');
-                      loadConnectedAccounts();
-                    } else {
-                      addMessage('cfo', monoResult.error || 'Failed to link bank.', 'warning');
-                    }
-                  } catch (e) { addMessage('cfo', 'Network error while linking bank.', 'warning'); }
-                },
-                onClose: () => {},
-                onError: (err) => addMessage('cfo', 'Mono error: ' + err.message, 'warning')
-              });
-            }
-          }
-
-          // Store pending action if required
-          if (data.requires_confirmation) {
-            pendingAction = {
-              type: data.swap_payload ? 'swap' : 'send',
-              payload: data.swap_payload || data.send_payload,
-              event_id: data.event_id
-            };
-          } else {
-            pendingAction = null;
-          }
-
-          loadTransactionHistory(); loadConnectedAccounts();
-        } else if (resp.status === 401) {
-          addMessage('cfo', 'Session expired. Please login again.', 'warning');
-          logout();
-        } else {
-          const err = await resp.json();
-          addMessage('cfo', err.error || 'Could not process.', 'warning');
-        }
-      } catch(e) { addMessage('cfo', 'Network error.', 'warning'); }
-    }
-
-    async function executeSwap(payload, eventId) {
-      if (!signer) return addMessage('cfo', 'Wallet not connected.', 'warning');
-      const network = payload.network?.toLowerCase() || 'bsc';
-      const tokenIn = payload.token_in.toUpperCase();
-      const tokenOut = payload.token_out.toUpperCase();
-      const tokenInAddr = TOKEN_ADDRESSES[network]?.[tokenIn];
-      const tokenOutAddr = TOKEN_ADDRESSES[network]?.[tokenOut];
-      if (!tokenInAddr || !tokenOutAddr) {
-        return addMessage('cfo', `Token address missing: ${tokenIn}=${tokenInAddr}, ${tokenOut}=${tokenOutAddr}`, 'warning');
-      }
-
-      try {
-        const amount = ethers.utils.parseUnits(String(payload.amount), 18);
-        const routerAddr = ROUTER_ADDRESS[network];
-        const routerContract = new ethers.Contract(routerAddr, ROUTER_ABI, signer);
-        const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
-        const userAddr = await signer.getAddress();
-
-        // If the tokenIn is not the native token (BNB/ETH), we need to approve the router first.
-        if (tokenIn !== 'BNB' && tokenIn !== 'ETH') {
-          const tokenContract = new ethers.Contract(tokenInAddr, [
-            'function approve(address spender, uint256 amount) public returns (bool)'
-          ], signer);
-          addMessage('cfo', `Approving ${payload.amount} ${tokenIn} for swap…`, 'neutral');
-          const approveTx = await tokenContract.approve(routerAddr, amount);
-          await approveTx.wait();
-          addMessage('cfo', 'Approval confirmed.', 'income');
-        }
-
-        const path = [tokenInAddr, tokenOutAddr];
-        const tx = await routerContract.swapExactTokensForTokens(amount, 0, path, userAddr, deadline);
-        addMessage('cfo', `Swap submitted: ${tx.hash}`, 'income');
-        await fetch(`${API}/wallet/swap_executed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ tx_hash: tx.hash, event_id: eventId })
-        });
-      } catch (e) {
-        addMessage('cfo', 'Swap failed: ' + (e.reason || e.message), 'warning');
-      }
-    }
-
-    async function executeTokenTransfer(payload, eventId) {
-      if (!signer) return addMessage('cfo', 'Wallet not connected.', 'warning');
-      const network = payload.network?.toLowerCase() || 'bsc';
-      const token = payload.token.toUpperCase();
-      const tokenAddr = TOKEN_ADDRESSES[network][token];
-      if (!tokenAddr) return addMessage('cfo', 'Token not supported.', 'warning');
-      try {
-        const contract = new ethers.Contract(tokenAddr, ERC20_ABI, signer);
-        const decimals = 18; // could be 6 for USDT/USDC, but ethers assumes 18; we'll handle later if needed
-        const amount = ethers.utils.parseUnits(String(payload.amount), decimals);
-        const tx = await contract.transfer(payload.to_address, amount);
-        addMessage('cfo', `Transfer submitted: ${tx.hash}`, 'income');
-        await fetch(`${API}/wallet/token_transfer_executed`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ tx_hash: tx.hash, event_id: eventId })
-        });
-      } catch (e) { addMessage('cfo', 'Transfer failed: ' + e.message, 'warning'); }
-    }
-
-
-    async function loadWalletTransactions(walletAddress, network) {
-      if (!walletAddress) return;
-      const baseUrl = network === 'bsc' ? 'https://api.bscscan.com/api' : 'https://api.etherscan.io/api';
-      const params = new URLSearchParams({
-        module: 'account',
-        action: 'txlist',
-        address: walletAddress,
-        startblock: 0,
-        endblock: 99999999,
-        page: 1,
-        offset: 10,
-        sort: 'desc',
-        apikey: network === 'bsc' ? '22DA2IEBN6DF2J96QJX37GZK9U54I217HR' : '' // your key
-      });
-      try {
-        const resp = await fetch(`${baseUrl}?${params}`);
-        const data = await resp.json();
-        if (data.status === '1') {
-          const txns = data.result;
-          let html = '';
-          txns.forEach(tx => {
-            const date = new Date(tx.timeStamp * 1000).toLocaleDateString();
-            const value = ethers.utils.formatEther(tx.value);
-            html += `<div class="tx-item">${date} - ${tx.from === walletAddress ? 'Sent' : 'Received'} ${value} ETH</div>`;
-          });
-          document.getElementById('walletHistory').innerHTML = html || '<div>No transactions</div>';
-        }
-      } catch (e) {}
-    }
-
-    // ---------- Voice ----------
-    function startVoice() {
-      if (!('webkitSpeechRecognition' in window)) { addMessage('cfo', 'Voice not supported.', 'warning'); return; }
-      const recognition = new webkitSpeechRecognition();
-      recognition.lang = 'en-NG';
-      recognition.onresult = (e) => { document.getElementById('userInput').value = e.results[0][0].transcript; };
-      recognition.onerror = (e) => addMessage('cfo', 'Voice error: ' + e.error, 'warning');
-      recognition.start();
-    }
-
-    // ---------- Link Bank ----------
-    function linkBank() {
-      if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-      const connectFn = window['@mono.co/connect.js'];
-      if (!connectFn) {
-        addMessage('cfo', 'Mono library not loaded. Please refresh.', 'warning');
-        return;
-      }
-      connectFn({
-        key: MONO_PUBLIC_KEY,
-        onSuccess: async (data) => {
-          try {
-            const resp = await fetch(`${API}/link/mono`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ code: data.code })
-            });
-            const result = await resp.json();
-            if (resp.ok) {
-              addMessage('cfo', result.message, 'income');
-              loadConnectedAccounts();
-            } else {
-              addMessage('cfo', result.error || 'Failed to link bank.', 'warning');
-            }
-          } catch(e) { addMessage('cfo', 'Network error while linking bank.', 'warning'); }
-        },
-        onClose: () => {},
-        onError: (err) => addMessage('cfo', 'Mono error: ' + err.message, 'warning')
-      });
-    }
-
-    // ---------- Link Exchange ----------
-    async function linkExchange() {
-      if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-      const provider = prompt('Enter exchange (binance, bybit, kucoin):', 'binance');
-      if (!provider) return;
-      const apiKey = prompt('Enter API Key:');
-      if (!apiKey) return;
-      const apiSecret = prompt('Enter API Secret:');
-      if (!apiSecret) return;
-      const passphrase = provider === 'kucoin' ? prompt('Enter KuCoin Passphrase:') : '';
-
-      try {
-        const resp = await fetch(`${API}/link/exchange`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ provider, api_key: apiKey, api_secret: apiSecret, passphrase })
-        });
-        const data = await resp.json();
-        if (resp.ok) {
-          addMessage('cfo', data.message, 'income');
-          loadConnectedAccounts(); // refresh sidebar
-        } else {
-          addMessage('cfo', data.error || 'Failed to link exchange.', 'warning');
-        }
-      } catch(e) {
-        addMessage('cfo', 'Network error while linking exchange.', 'warning');
-      }
-    }
-
-    // ---------- Connect Wallet ----------
-    async function connectWallet() {
-      if (!token) { addMessage('cfo', 'Please login first.', 'warning'); return; }
-
-      // --- MetaMask (desktop) ---
-      if (window.ethereum && window.ethereum.isMetaMask) {
-          try {
-            await window.ethereum.request({ method: 'eth_requestAccounts' });
-            ethersProvider = new ethers.providers.Web3Provider(window.ethereum);
-            signer = ethersProvider.getSigner();
-            const address = await signer.getAddress();
-
-            // Detect network
-            const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-            const networkMap = {
-              '0x1': 'Ethereum',
-              '0x38': 'BSC',        // Binance Smart Chain
-              '0x61': 'BSC Testnet'
-            };
-            const network = networkMap[chainId] || 'Unknown';
-            addMessage('cfo', `MetaMask connected: ${address} (${network})`, 'income');
-
-            // Check if this wallet address is already linked
-            const alreadyLinked = (window._connectedAccounts || []).some(
-              acc => acc.wallet_address && acc.wallet_address.toLowerCase() === address.toLowerCase()
-            );
-
-            if (!alreadyLinked) {
-              // Save to server – first time
-              try {
-                const resp = await fetch(`${API}/link/wallet`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                  body: JSON.stringify({ address, network })
-                });
-                const data = await resp.json();
-                if (resp.ok) {
-                  addMessage('cfo', `Wallet saved: ${data.message}`, 'income');
-                  loadConnectedAccounts(); // refresh sidebar list
-                } else {
-                  addMessage('cfo', 'Sync issue: ' + (data.error || ''), 'warning');
-                }
-              } catch(e) {
-                addMessage('cfo', 'Connected locally, sync failed.', 'warning');
-              }
-            } else {
-              // Already linked – just notify, no duplicate saved
-              addMessage('cfo', `MetaMask already linked (${address.substring(0,6)}...). Ready for transactions.`, 'income');
-            }
-            return;
-          } catch (e) {
-            addMessage('cfo', 'MetaMask connection failed.', 'warning');
-            return;
-          }
-        }
-
-      // --- WalletConnect fallback (mobile / TronLink) ---
-      if (!window.WalletConnectProvider || !window.ethers) {
-        addMessage('cfo', 'Wallet connection not available.', 'warning');
-        return;
-      }
-      try {
-        wcProvider = new WalletConnectProvider.default({
-          rpc: { 1: 'https://mainnet.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161' }
-        });
-        await wcProvider.enable();
-        ethersProvider = new ethers.providers.Web3Provider(wcProvider);
-        signer = ethersProvider.getSigner();
-        const address = await signer.getAddress();
-        addMessage('cfo', `Wallet connected: ${address}`, 'income');
-
-        const resp = await fetch(`${API}/link/wallet`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ address, network: 'WalletConnect' })
-        });
-        const data = await resp.json();
-        if (resp.ok) {
-          addMessage('cfo', `Wallet saved.`, 'income');
-          loadConnectedAccounts();
-        }
-      } catch(e) {
-        addMessage('cfo', 'Wallet connection failed.', 'warning');
-      }
-    }
-
-    // ---------- Swap ----------
-    async function swapTokens() { /* unchanged */ }
-
-    function downloadStatement() {
-      const from = prompt('From (YYYY-MM-DD):', '2020-01-01');
-      const to = prompt('To (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
-      window.open(`${API}/statement?from=${from}&to=${to}&format=pdf`, '_blank');
-    }
-
-    function toggleAnalyze() { addMessage('cfo', 'Analyze feature coming soon – it will assess your financial health.', 'neutral'); }
-
-    // Initialize
-    updateUI();
-  </script>
-
-</body>
-</html>
+  );
+}

@@ -19,6 +19,7 @@ import json
 from collections import defaultdict
 import io
 import hashlib
+from signaling import socketio
 
 
 
@@ -1790,6 +1791,18 @@ def api_accounts():
     return jsonify(accounts)
 
 
+@app.route('/balance/data', methods=['GET'])
+@jwt_required()
+def data_balance():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT data_balance_mb FROM users WHERE id = %s", (user_id,))
+    bal = cur.fetchone()[0] or 0
+    conn.close()
+    return jsonify({"data_balance_mb": bal, "equivalent_minutes": bal // 0.5})  # 0.5 MB/min
+
+
 # --------------- HEALTH ---------------
 @app.route('/health', methods=['GET'])
 @jwt_required()
@@ -2183,5 +2196,8 @@ def admin_summary():
         "recent_feedback": feedback
     })
 
+
+socketio.init_app(app)
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

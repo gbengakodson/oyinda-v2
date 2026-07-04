@@ -2047,8 +2047,15 @@ def data_plans():
     try:
         from connectors.vtpass import get_data_plans
         plans = get_data_plans(network)
-        # Simplify plan list for frontend
-        simplified = [{"name": p["name"], "price": p["variation_amount"], "code": p["variation_code"]} for p in plans]
+        # Simplify for frontend: name, price, code
+        simplified = [
+            {
+                "name": plan["name"],
+                "price": plan["variation_amount"],
+                "code": plan["variation_code"]
+            }
+            for plan in plans
+        ]
         return jsonify({"plans": simplified})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2062,7 +2069,7 @@ def redeem_data():
     network = data_req.get('network', 'mtn')
     plan_code = data_req.get('plan_code')
     phone = data_req.get('phone')
-    amount = float(data_req.get('amount', 0))   # in Naira
+    amount = float(data_req.get('amount', 0))
 
     if not network or not plan_code or not phone or amount <= 0:
         return jsonify({"error": "Missing fields"}), 400
@@ -2072,7 +2079,6 @@ def redeem_data():
     cur = conn.cursor()
     cur.execute("SELECT data_balance_mb FROM users WHERE id = %s", (user_id,))
     bal = cur.fetchone()[0] or 0
-    # Convert MB to Naira (roughly ₦1 per 10 MB)
     naira_value = bal * 0.1   # 10 MB = ₦1
     if naira_value < amount:
         conn.close()
@@ -2081,7 +2087,7 @@ def redeem_data():
     # 2. Buy data from VTpass
     try:
         from connectors.vtpass import buy_data
-        result = buy_data(phone, network, plan_code)
+        result = buy_data(phone, network, plan_code, amount)
         if result.get("code") != "000":
             conn.close()
             return jsonify({"error": result.get("response_description", "VTpass error")}), 500
@@ -2089,8 +2095,8 @@ def redeem_data():
         conn.close()
         return jsonify({"error": f"VTpass error: {str(e)}"}), 500
 
-    # 3. Deduct Oyinda balance (convert Naira back to MB)
-    mb_deducted = amount / 0.1   # ₦1 → 10 MB
+    # 3. Deduct Oyinda balance
+    mb_deducted = amount / 0.1
     cur.execute(
         "UPDATE users SET data_balance_mb = GREATEST(0, data_balance_mb - %s) WHERE id = %s",
         (mb_deducted, user_id)
@@ -2099,7 +2105,7 @@ def redeem_data():
     conn.close()
 
     return jsonify({
-        "message": f"Successfully purchased {plan_code}! {mb_deducted:.0f} MB deducted from your Oyinda balance.",
+        "message": f"Successfully purchased {plan_code}! {mb_deducted:.0f} MB deducted.",
         "new_balance_mb": bal - mb_deducted
     })
 

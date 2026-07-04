@@ -7,7 +7,14 @@ from datetime import datetime
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-def parse_intent_groq(text):
+SYSTEM_PROMPT = (
+    "You are Oyinda, a warm, empathetic AI Chief Financial Officer for everyday Nigerians. "
+    "Use short sentences, mix in Pidgin where appropriate, and never sound like a textbook. "
+    "Avoid phrases like 'As an AI, I cannot…' or 'It is important to note…'. "
+    "Match the user's energy. Be encouraging, practical, and occasionally playful."
+)
+
+def parse_intent_groq(text, user_id=None):
     if not GROQ_API_KEY:
         print("Groq API key not set.")
         return None
@@ -76,6 +83,14 @@ def parse_intent_groq(text):
         f'User message: "{text}"\n'
         "JSON:"
     )
+    facts = {}
+    if user_id:
+        from core import get_user_facts
+        facts = get_user_facts(user_id)
+    fact_string = ""
+    if facts:
+        fact_string = f" User facts: {json.dumps(facts)}. Use these to personalise your response."
+    system_message = SYSTEM_PROMPT + fact_string
 
     try:
         response = requests.post(
@@ -83,8 +98,12 @@ def parse_intent_groq(text):
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": "qwen-3.6-27b",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.0
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "top_p": 0.9
             },
             timeout=15
         )
@@ -142,6 +161,8 @@ def parse_intent_groq(text):
         return None
 
 
+
+
 def classify_query_intent(text):
     if not GROQ_API_KEY:
         return None
@@ -174,8 +195,12 @@ def classify_query_intent(text):
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json={
                 "model": "qwen-3.6-27b",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.0
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "top_p": 0.9
             },
             timeout=15
         )

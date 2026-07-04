@@ -83,6 +83,33 @@ def normalize_date(date_str):
     return today.strftime("%Y-%m-%d")
 
 
+def get_last_context(user_id):
+    """Return the last logged expense/income details for context."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT description, category FROM transactions_view WHERE user_id=%s ORDER BY date DESC LIMIT 1",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"description": row[0], "category": row[1]}
+    return None
+
+
+def store_user_fact(user_id, fact_key, fact_value):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET facts = COALESCE(facts, '{}'::jsonb) || %s WHERE id = %s",
+        (json.dumps({fact_key: fact_value}), user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+
 def ask_next_question(user_id):
     """Advance the pending transaction to the next data‑collection step."""
     p = pending_transaction.get(user_id)
@@ -157,6 +184,7 @@ def ask_for_location(user_id):
     row = cur.fetchone()
     conn.close()
 
+
     # If we have a location updated within the last 7 days, reuse it
     if row and row[0] and row[1]:
         last_update = row[1]
@@ -174,6 +202,33 @@ def ask_for_location(user_id):
         "message": "Quickly, which city are you in right now? (e.g., Lagos, Ibadan, Abuja)",
         "tone": "neutral"
     })
+
+
+def save_conversation(user_id, role, content):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO conversation_history (user_id, role, content) VALUES (%s, %s, %s)",
+            (user_id, role, content)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass   # never let this break the main flow
+
+def get_recent_conversation(user_id, n=6):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT role, content FROM conversation_history WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+        (user_id, n)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    # Reverse to chronological order
+    rows.reverse()
+    return [{"role": r[0], "content": r[1]} for r in rows]
 
 
 def finalise_transaction(user_id):
@@ -229,6 +284,7 @@ def finalise_transaction(user_id):
         )
         conn.commit()
         conn.close()
+        store_user_fact(user_id, 'city', location)
 
     return jsonify({"message": response_text, "tone": "neutral", "event_id": event["event_id"]})
 
@@ -384,6 +440,8 @@ def handle_command():
     user_id = get_jwt_identity()
     data = request.get_json()
     text = data.get('text', '').strip()
+    save_conversation(user_id, 'user', text)
+
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
@@ -396,12 +454,14 @@ def handle_command():
             if success:
                 append_event(user_id, user_id, 'TransferExecuted', {**pending['payload'], "reference": ref})
                 del pending_transfers[user_id]
+                save_conversation(user_id, 'user', text)
                 return jsonify({
                     "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
                     "tone": "income"})
             else:
                 append_event(user_id, user_id, 'TransferFailed', {**pending['payload'], "error": ref})
                 del pending_transfers[user_id]
+                save_conversation(user_id, 'user', text)
                 return jsonify({"error": f"Transfer failed: {ref}"}), 500
 
     # --- P2P confirmation (unchanged) ---
@@ -427,6 +487,7 @@ def handle_command():
                     "rate": trade['rate'],
                     "order_id": result.get('result', {}).get('orderId')
                 })
+                save_conversation(user_id, 'user', text)
                 return jsonify({
                     "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
                     "tone": "income"})
@@ -439,6 +500,7 @@ def handle_command():
                     "rate": trade['rate'],
                     "order_id": result.get('result', {}).get('orderId')
                 })
+                save_conversation(user_id, 'user', text)
                 return jsonify({
                     "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
                     "tone": "income"})
@@ -551,6 +613,7 @@ def handle_command():
             "description": text
         }
         event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+        save_conversation(user_id, 'user', text)
         return jsonify({
             "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
             "tone": "neutral",
@@ -609,6 +672,7 @@ def handle_command():
             "description": text
         }
         event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+        save_conversation(user_id, 'user', text)
         return jsonify({
             "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
             "tone": "neutral",
@@ -645,6 +709,7 @@ def handle_command():
             order = connector.place_order(symbol, action, amount)
             payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
             append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
+            save_conversation(user_id, 'user', text)
             return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
                             "tone": "income"})
         except Exception as e:
@@ -686,6 +751,7 @@ def handle_command():
             "description": text
         }
         event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
+        save_conversation(user_id, 'user', text)
         return jsonify({
             "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
             "tone": "neutral",
@@ -718,6 +784,7 @@ def handle_command():
         if not wallet_accounts:
             return jsonify({"error": "No connected crypto wallet."}), 400
         wallet_account = wallet_accounts[0]
+        save_conversation(user_id, 'user', text)
         return jsonify({
             "action": "monica_sell",
             "message": f"Send {amount} {currency} to Monica's deposit address. Confirm in your wallet.",
@@ -808,6 +875,7 @@ def handle_command():
         event = append_event(user_id, user_id, 'IncomeReceived', payload)
         name = get_user_name(user_id)
         response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
+        save_conversation(user_id, 'user', text)
         return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
     # 10. Bank transfer
@@ -834,6 +902,7 @@ def handle_command():
         src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
         dst_label = f"{bank_name} {dest_account}"
         msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
+        save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
     # ---------- SMART FALLBACK: detect number → start conversation ----------
@@ -873,6 +942,7 @@ def handle_command():
                 return ask_next_question(user_id)
             else:
                 # No clear type – ask the basic question
+                save_conversation(user_id, 'user', text)
                 return jsonify({
                     "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
                     "tone": "neutral"

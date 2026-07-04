@@ -199,6 +199,27 @@ def get_credit_score(user_id):
     return {"score": 0, "logo": "butterfly"}
 
 
+def get_user_facts(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT facts FROM users WHERE id=%s", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]   # a dict
+    return {}
+
+def store_user_fact(user_id, fact_key, fact_value):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET facts = COALESCE(facts, '{}'::jsonb) || %s WHERE id = %s",
+        (json.dumps({fact_key: fact_value}), user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def calculate_net_worth(user_id):
     accounts = get_user_connected_accounts(user_id)
     assets = []

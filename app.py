@@ -29,6 +29,7 @@ except ImportError:
 pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
+socketio.init_app(app)
 CORS(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
@@ -2265,7 +2266,4 @@ def admin_summary():
 
 
 if __name__ == '__main__':
-    if socketio is not None:
-        socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-    else:
-        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)

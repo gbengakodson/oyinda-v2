@@ -27,7 +27,12 @@ except ImportError:
 
 
 SYSTEM_PROMPT = (
-    "You are Oyinda, a warm, empathetic AI Chief Financial Officer for everyday Nigerians. "
+    "You are Oyinda, the user’s Chief Financial Officer. "
+    "Every financial action — logging expenses, checking balances, sending money, "
+    "swapping crypto, paying taxes — is done right here by you. "
+    "You already have the user’s bank accounts, crypto wallets, and investment apps connected. "
+    "Never suggest the user use another app, write things down manually, or visit a bank. "
+    "You can do everything they need, instantly. "
     "Use short sentences, mix in Pidgin where appropriate, and never sound like a textbook. "
     "Avoid phrases like 'As an AI, I cannot…' or 'It is important to note…'. "
     "Match the user's energy. Be encouraging, practical, and occasionally playful."
@@ -291,6 +296,9 @@ def finalise_transaction(user_id):
     payload = {k: v for k, v in payload.items() if v is not None}
 
     event = append_event(user_id, user_id, event_type, payload)
+    # After a successful log, insert a clear system note into conversation history
+    log_msg = f"Oyinda just recorded this transaction: {description} – ₦{amount:,.2f} ({event_type})"
+    save_conversation(user_id, 'system', log_msg)
     name = get_user_name(user_id)
     response_text = f"Logged: {description} – ₦{amount:,.2f}"
 
@@ -308,6 +316,8 @@ def finalise_transaction(user_id):
         store_user_fact(user_id, 'city', location)
 
     return jsonify({"message": response_text, "tone": "neutral", "event_id": event["event_id"]})
+
+
 
 def get_user_name(user_id):
     conn = get_conn()
@@ -554,6 +564,27 @@ def handle_command():
                 })
             p["state"] = "collecting_category"
             return ask_next_question(user_id)
+
+        elif state == "collecting_loan_direction":
+            reply_lower = reply.lower()
+            if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
+                # Liability – the user owes money
+                p["data"]["type"] = "loan"
+                p["data"]["category"] = "loan"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
+                # Asset – someone else owes the user
+                p["data"]["type"] = "asset"
+                p["data"]["category"] = "loan_given"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            else:
+                return jsonify({
+                    "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
+                    "tone": "neutral"
+                })
+
 
         elif state == "collecting_category":
             reply_lower = reply.lower()
@@ -954,6 +985,15 @@ def handle_command():
                 pending_transaction[user_id]["data"]["type"] = "income"
                 pending_transaction[user_id]["state"] = "collecting_category"
                 return ask_next_question(user_id)
+            elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
+                # We need to clarify direction: borrowed FROM someone (liability) or lent TO someone (asset)
+                pending_transaction[user_id]["state"] = "collecting_loan_direction"
+                pending_transaction[user_id]["data"]["type"] = "loan"
+                return jsonify({
+                    "message": "Did you borrow this money from someone (you will pay it back), or did you lend it to someone (they will pay you)?",
+                    "tone": "neutral"
+                })
+
             elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
                 pending_transaction[user_id]["data"]["type"] = "investment"
                 pending_transaction[user_id]["data"]["category"] = "investment"
@@ -1418,6 +1458,28 @@ def _call_llm(provider, system_msg):
     except Exception as e:
         print(f"CALL_LLM {provider} exception: {str(e)}")
         return None
+
+
+@app.route('/reminder', methods=['POST'])
+@jwt_required()
+def create_reminder():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    message = data.get('message')
+    remind_at = data.get('remind_at')   # ISO datetime string, e.g. "2026-07-06T08:00:00"
+
+    if not message or not remind_at:
+        return jsonify({"error": "message and remind_at required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO reminders (user_id, message, remind_at) VALUES (%s, %s, %s)",
+        (user_id, message, remind_at)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Reminder set successfully."})
 
 
 

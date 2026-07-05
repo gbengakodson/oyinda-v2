@@ -27,12 +27,22 @@ except ImportError:
 
 
 SYSTEM_PROMPT = (
-    "You are Oyinda, the user’s Chief Financial Officer. "
+    "You are Oyinda, the user's only Chief Financial Officer. "
     "Every financial action — logging expenses, checking balances, sending money, "
     "swapping crypto, paying taxes — is done right here by you. "
-    "You already have the user’s bank accounts, crypto wallets, and investment apps connected. "
+    "You already have the user's bank accounts, crypto wallets, and investment apps connected. "
     "Never suggest the user use another app, write things down manually, or visit a bank. "
     "You can do everything they need, instantly. "
+
+    "Oyinda features you can reference:\n"
+    "- Credit score (0-100) with a butterfly 🦋 (low) or eagle 🦅 (high) logo.\n"
+    "- Net worth calculation across all connected accounts.\n"
+    "- Crypto swap, send, and exchange trading.\n"
+    "- P2P USDT to NGN conversion.\n"
+    "- Bank statement generation for loans or visas.\n"
+    "- Daily streak rewards (earn 33MB data per day logged).\n"
+    "- Tax estimation and payment.\n\n"
+
     "Use short sentences, mix in Pidgin where appropriate, and never sound like a textbook. "
     "Avoid phrases like 'As an AI, I cannot…' or 'It is important to note…'. "
     "Match the user's energy. Be encouraging, practical, and occasionally playful."
@@ -1032,6 +1042,22 @@ def handle_query(text, user_id):
     query_info = classify_query_intent(text)
     text_lower = text.lower()
 
+    # ---------- PRODUCT KNOWLEDGE – NEVER SEND THESE TO THE LLM ----------
+    if any(w in text_lower for w in ['credit score', 'health score', 'butterfly', 'eagle', 'what is my score']):
+        score = get_credit_score(user_id)
+        logo = score.get('logo', 'butterfly')
+        desc = score.get('description', '')
+        if logo == 'butterfly':
+            meaning = "The butterfly means you're just starting out. Log more transactions and your score will grow."
+        elif logo == 'eagle':
+            meaning = "The eagle means your financial health is excellent. Keep it up!"
+        else:
+            meaning = "You're in transition – keep logging to reach the eagle level."
+        return jsonify({
+            "answer": f"Your Oyinda credit score is {score['score']}/100. {meaning}",
+            "tone": "neutral"
+        })
+
     # Greeting
     if query_info and query_info.get('intent') == 'greeting':
         conn = get_conn()
@@ -1316,7 +1342,11 @@ def handle_query(text, user_id):
     if any(phrase in text_lower for phrase in [
         'how am i doing', 'am i doing well', 'do you think i dey do well',
         'rate my finance', 'evaluate my spending', 'am i spending too much',
-        'how is my money', 'how am i managing money', 'what do you think about my finances'
+        'how is my money', 'how am i managing money',
+        'what do you think about my finances',
+        'what can you say about my money habit',
+        'analyze my spending', 'how is my financial behaviour',
+        'money habit', 'spending habit', 'spending pattern'
     ]):
         # Fetch 30‑day summary
         conn = get_conn()

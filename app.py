@@ -1272,6 +1272,68 @@ def handle_query(text, user_id):
 
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
+    # ---------- PERSONALISED FINANCIAL REVIEW ----------
+    if any(phrase in text_lower for phrase in [
+        'how am i doing', 'am i doing well', 'do you think i dey do well',
+        'rate my finance', 'evaluate my spending', 'am i spending too much',
+        'how is my money', 'how am i managing money', 'what do you think about my finances'
+    ]):
+        # Fetch 30‑day summary
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END), 0) as total_income,
+                COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) as total_expense,
+                COUNT(*) as total_txns
+            FROM transactions_view
+            WHERE user_id=%s AND date >= NOW() - INTERVAL '30 days'
+        """, (user_id,))
+        row = cur.fetchone()
+        total_income = row[0] if row else 0
+        total_expense = row[1] if row else 0
+        total_txns = row[2] if row else 0
+
+        # Recent 5 transactions
+        cur.execute("""
+            SELECT date, type, amount, description FROM transactions_view
+            WHERE user_id=%s ORDER BY date DESC LIMIT 5
+        """, (user_id,))
+        recent = cur.fetchall()
+        conn.close()
+
+        recent_str = "No transactions yet."
+        if recent:
+            lines = []
+            for r in recent:
+                date_part = r[0].strftime("%Y-%m-%d") if hasattr(r[0], 'strftime') else str(r[0])[:10]
+                lines.append(f"{date_part} - {r[1]}: ₦{r[2]:,.2f} ({r[3]})")
+            recent_str = "\n".join(lines)
+
+        # Build a personalised prompt
+        stats_prompt = (
+            SYSTEM_PROMPT + "\n\n"
+            f"The user asked: \"{text}\"\n"
+            f"Here is their 30‑day financial summary:\n"
+            f"Total income: ₦{total_income:,.2f}\n"
+            f"Total expenses: ₦{total_expense:,.2f}\n"
+            f"Total transactions: {total_txns}\n\n"
+            f"Recent activity:\n{recent_str}\n\n"
+            "Give a short, warm, Pidgin‑friendly reply. "
+            "Be specific – mention the numbers, compare income vs expenses, and give practical advice. "
+            "If there are no transactions yet, encourage them to start logging."
+        )
+
+        # Use the same LLM pipeline
+        reply = _call_llm("groq", stats_prompt)
+        if not reply:
+            reply = _call_llm("openai", stats_prompt)
+        if reply:
+            save_conversation(user_id, 'cfo', reply)
+            return jsonify({"answer": reply, "tone": "neutral"})
+
+        # If LLM fails, fall through to the generic conversational fallback
+
     # If no specific query matched, try conversational LLM
     reply = conversational_reply(user_id, text)
     if reply:

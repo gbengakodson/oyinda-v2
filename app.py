@@ -2539,6 +2539,14 @@ def debug_groq():
         })
 
 
+@app.route('/debug/llm', methods=['GET'])
+def debug_llm():
+    text = request.args.get('text', 'hello')
+    user_id = request.args.get('user_id', 'test')
+    reply = conversational_reply(user_id, text)
+    return jsonify({"input": text, "reply": reply, "has_reply": reply is not None})
+
+
 # --------------- FRONTEND ---------------
 @app.route('/')
 def landing():

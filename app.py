@@ -1306,10 +1306,13 @@ def conversational_reply(user_id, text):
         system_msg += "Respond as Oyinda. Keep it short, warm, and helpful. If the user seems confused about finances, gently guide them to log an expense or income."
 
         # Try Groq first, then OpenAI fallback
+        print("CONVERSATIONAL_REPLY system_msg (first 200 chars):", system_msg[:200])
         reply = _call_llm("groq", system_msg)
+        print("CONVERSATIONAL_REPLY groq reply:", reply)
         if reply:
             return reply
         reply = _call_llm("openai", system_msg)
+        print("CONVERSATIONAL_REPLY openai reply:", reply)
         return reply
     except Exception:
         return None

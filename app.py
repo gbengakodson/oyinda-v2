@@ -1346,8 +1346,10 @@ def _call_llm(provider, system_msg):
                 timeout=15
             )
         data = resp.json()
+        print(f"CALL_LLM {provider} status: {resp.status_code}, body: {str(data)[:300]}")
         return data['choices'][0]['message']['content'].strip() if 'choices' in data else None
-    except Exception:
+    except Exception as e:
+        print(f"CALL_LLM {provider} error: {str(e)}")
         return None
 
 

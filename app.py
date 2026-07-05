@@ -1326,7 +1326,7 @@ def _call_llm(provider, system_msg):
                 json={
                     "model": "qwen-3.6-27b",
                     "messages": [{"role": "system", "content": system_msg}],
-                    "temperature": 0.7,
+                    "temperature": 0.8,
                     "top_p": 0.9,
                     "max_tokens": 200
                 },
@@ -1337,9 +1337,9 @@ def _call_llm(provider, system_msg):
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"},
                 json={
-                    "model": "gpt-5.4-mini-2026-03-17",
+                    "model": "gpt-4o-mini",   # correct model name
                     "messages": [{"role": "system", "content": system_msg}],
-                    "temperature": 0.7,
+                    "temperature": 0.8,
                     "top_p": 0.9,
                     "max_tokens": 200
                 },
@@ -1347,9 +1347,13 @@ def _call_llm(provider, system_msg):
             )
         data = resp.json()
         print(f"CALL_LLM {provider} status: {resp.status_code}, body: {str(data)[:300]}")
-        return data['choices'][0]['message']['content'].strip() if 'choices' in data else None
+        if 'choices' in data:
+            return data['choices'][0]['message']['content'].strip()
+        else:
+            print(f"CALL_LLM {provider} error: {data}")
+            return None
     except Exception as e:
-        print(f"CALL_LLM {provider} error: {str(e)}")
+        print(f"CALL_LLM {provider} exception: {str(e)}")
         return None
 
 
@@ -2547,6 +2551,52 @@ def debug_llm():
     user_id = request.args.get('user_id', 'test')
     reply = conversational_reply(user_id, text)
     return jsonify({"input": text, "reply": reply, "has_reply": reply is not None})
+
+@app.route('/debug/openai', methods=['GET'])
+def debug_openai():
+    import requests, os
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"},
+            json={
+                "model": "gpt-5.4-mini-2026-03-17",
+                "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+                "max_tokens": 20
+            },
+            timeout=10
+        )
+        data = resp.json()
+        return jsonify({
+            "status": resp.status_code,
+            "response": data,
+            "key_first_5": os.environ.get('OPENAI_API_KEY', '')[:5]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/debug/groq_echo', methods=['GET'])
+def debug_groq_echo():
+    import requests, os
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ.get('GROQ_API_KEY')}"},
+            json={
+                "model": "qwen-3.6-27b",
+                "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+                "max_tokens": 20
+            },
+            timeout=10
+        )
+        data = resp.json()
+        return jsonify({
+            "status": resp.status_code,
+            "response": data,
+            "key_first_5": os.environ.get('GROQ_API_KEY', '')[:5]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 # --------------- FRONTEND ---------------

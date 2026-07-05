@@ -281,11 +281,12 @@ def finalise_transaction(user_id):
         "date": datetime.utcnow().strftime("%Y-%m-%d"),
         "description": description,
         "quantity": data.get("quantity"),
+        "quantity_description": data.get("quantity_description"),
         "unit": data.get("unit"),
         "location": data.get("location"),
         "housing_type": data.get("housing_type"),
         "transport_type": data.get("transport_type"),
-        "quantity_description": data.get("quantity_description")
+
     }
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -1285,12 +1286,33 @@ def handle_query(text, user_id):
 
 
 def conversational_reply(user_id, text):
-    # Try Groq first
-    reply = _call_llm("groq", system_msg)
-    if reply:
+    """Use the LLM to generate a friendly, context-aware response."""
+    try:
+        # Get recent conversation history
+        history = get_recent_conversation(user_id, 6)
+        # Get user facts
+        from core import get_user_facts
+        facts = get_user_facts(user_id)
+
+        # Build system message
+        system_msg = SYSTEM_PROMPT + "\n\n"
+        if facts:
+            system_msg += f"User facts: {json.dumps(facts)}. Use these to personalise your reply.\n"
+        system_msg += "\nRecent conversation:\n"
+        for msg in history:
+            role = "User" if msg['role'] == 'user' else "Oyinda"
+            system_msg += f"{role}: {msg['content']}\n"
+        system_msg += f"\nThe user just said: \"{text}\"\n"
+        system_msg += "Respond as Oyinda. Keep it short, warm, and helpful. If the user seems confused about finances, gently guide them to log an expense or income."
+
+        # Try Groq first, then OpenAI fallback
+        reply = _call_llm("groq", system_msg)
+        if reply:
+            return reply
+        reply = _call_llm("openai", system_msg)
         return reply
-    # Fallback to OpenAI
-    return _call_llm("openai", system_msg)
+    except Exception:
+        return None
 
 def _call_llm(provider, system_msg):
     try:
@@ -1298,7 +1320,13 @@ def _call_llm(provider, system_msg):
             resp = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ.get('GROQ_API_KEY')}"},
-                json={"model": "qwen-3.6-27b", "messages": [{"role": "system", "content": system_msg}], "temperature": 0.7, "top_p": 0.9, "max_tokens": 200},
+                json={
+                    "model": "qwen-3.6-27b",
+                    "messages": [{"role": "system", "content": system_msg}],
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 200
+                },
                 timeout=15
             )
         else:  # openai
@@ -1314,6 +1342,7 @@ def _call_llm(provider, system_msg):
                 },
                 timeout=15
             )
+        data = resp.json()
         return data['choices'][0]['message']['content'].strip() if 'choices' in data else None
     except Exception:
         return None

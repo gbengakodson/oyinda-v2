@@ -172,7 +172,7 @@ def ask_next_question(user_id):
             return ask_for_location(user_id)
         else:
             return jsonify({
-                "message": "I didn't catch the quantity. Please tell me like '2 mudu' or '1 paint'.",
+                "message": "I didn't catch the quantity. Please tell me like '2 mudu', '1 paint' or '3 kongo'.",
                 "tone": "neutral"
             })
 
@@ -426,7 +426,7 @@ def register():
     if not user_id:
         return jsonify({"error": "Registration failed. Email may already be in use."}), 400
     token = create_access_token(identity=user_id)
-    return jsonify({"message": f"Welcome {name}! I'm your CFO. Let's build your financial future.", "user": {"id": user_id, "name": name}, "token": token})
+    return jsonify({"message": f"Welcome {name}! I'm your CFO. Let's build your financial future. How much have you made or spent today?.", "user": {"id": user_id, "name": name}, "token": token})
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -966,7 +966,7 @@ def handle_command():
 
     # If LLM fails, give your new static helpful prompt
     return jsonify({
-        "message": "I understand you. And i have taken note. You could also tell me everything about your finances, like how much you make today, what you spent money on or what loan or asset you want to track. I will help you track everything. get you a credit score for loan application, a tax receipt for your business or a broader Transaction statement for travel purposes or any other official use",
+        "message": "I understand you. And i have taken note. You could also tell me everything about your finances, like how much you make today, what you spent money on or what loan or asset you want to track. I will help you track everything. get you a credit score for loan application, a tax receipt for your business or a broader Transaction statement for travel purposes or any other official use. So tell me how much have you spent today?",
         "tone": "neutral"
     })
 
@@ -1258,9 +1258,17 @@ def handle_query(text, user_id):
 
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
 
+    # If no specific query matched, try conversational LLM
+    reply = conversational_reply(user_id, text)
+    if reply:
+        save_conversation(user_id, 'cfo', reply)
+        return jsonify({"answer": reply, "tone": "neutral"})
+
+    # Static fallback if LLM fails
     return jsonify({
-                       "answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'",
-                       "tone": "neutral"})
+        "answer": "I understand you. I have taken note. I noticed what you are asking me has a broader scope. If you want, I can help you Swap any amount of crypto in your web3 wallet or transfer any amount to another wallet or help you buy or sell any amount of crypto in any exchange you have under 3 seconds. I can check your account balances across all your connected wallets or bank accounts. I can check your networth for you so you see your financial standing easily. If you connect your local banks, your crypto wallets or exchanges or your savings and investment apps, i could do anything you would want to do in those places right from here. Just tell me and i will do it under 1 second. How much have you spent today? ",
+        "tone": "neutral"
+    })
 
 
 

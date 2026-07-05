@@ -744,7 +744,9 @@ def handle_command():
         })
 
     # 5. Exchange trade
-    trade_match = re.match(r'(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from)?\s*(\w+)', text, re.IGNORECASE)
+    trade_match = re.match(
+        r'(?:i\s+(?:wan|want|want\s+to)\s+)?(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from|for)?\s*(\w+)',
+        text, re.IGNORECASE)
     if trade_match:
         action = trade_match.group(1).lower()
         amount = float(trade_match.group(2))
@@ -1113,7 +1115,12 @@ def handle_query(text, user_id):
             cat_text = f" on {category}" if category else ""
             return jsonify({"answer": f"Total {intent}{cat_text} for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
-    if 'liability' in text_lower or 'debt' in text_lower:
+    # Only respond to "my liability / my debt" queries, not definitions
+    if any(phrase in text_lower for phrase in [
+        'my liability', 'my debt', 'how much do i owe', 'how much liability',
+        'total liability', 'my total liability', 'what is my liability',
+        'how much is my liability', 'how much debt am i owing'
+    ]) and not any(word in text_lower for word in ['define', 'what is a', 'meaning of', 'explain']):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT SUM(amount) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'",
@@ -1122,8 +1129,12 @@ def handle_query(text, user_id):
         conn.close()
         return jsonify({"answer": f"Your total liability (loans taken) is ₦{total:,.2f}.", "tone": "neutral"})
 
-    if 'invest' in text_lower or 'investment' in text_lower:
-        # We need a category 'investment' – you can add it when logging.
+    # Only respond to "my investment" queries, not definitions or advice
+    if any(phrase in text_lower for phrase in [
+        'my investment', 'how much have i invested', 'total investment',
+        'what is my investment', 'how much investment', 'my total investment',
+        'investment amount', 'investment so far'
+    ]) and not any(word in text_lower for word in ['how to', 'how do i', 'should i', 'define', 'meaning', 'explain']):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(

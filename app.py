@@ -1305,10 +1305,15 @@ def _call_llm(provider, system_msg):
             resp = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"},
-                json={"model": "gpt-3.5-turbo", "messages": [{"role": "system", "content": system_msg}], "temperature": 0.7, "top_p": 0.9, "max_tokens": 200},
+                json={
+                    "model": "gpt-5.4-mini-2026-03-17",
+                    "messages": [{"role": "system", "content": system_msg}],
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 200
+                },
                 timeout=15
             )
-        data = resp.json()
         return data['choices'][0]['message']['content'].strip() if 'choices' in data else None
     except Exception:
         return None

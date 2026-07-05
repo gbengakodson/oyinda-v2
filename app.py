@@ -26,6 +26,14 @@ except ImportError:
 
 
 
+SYSTEM_PROMPT = (
+    "You are Oyinda, a warm, empathetic AI Chief Financial Officer for everyday Nigerians. "
+    "Use short sentences, mix in Pidgin where appropriate, and never sound like a textbook. "
+    "Avoid phrases like 'As an AI, I cannot…' or 'It is important to note…'. "
+    "Match the user's energy. Be encouraging, practical, and occasionally playful."
+)
+
+
 pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
@@ -950,17 +958,17 @@ def handle_command():
         except ValueError:
             pass
 
-    # If no number, try the AI parser
-    try:
-        parsed = parse_intent_groq(text)
-        if not parsed:
-            return jsonify({
-                "message": "I didn't quite understand. Could you tell me the amount? For example, 'I spent 500 on food'.",
-                "tone": "neutral"
-            })
-        # Continue with normal AI processing…
-    except Exception as e:
-        return jsonify({"error": f"Server error: {str(e)}"}), 500
+    # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
+    reply = conversational_reply(user_id, text)
+    if reply:
+        save_conversation(user_id, 'cfo', reply)
+        return jsonify({"message": reply, "tone": "neutral"})
+
+    # If LLM fails, give your new static helpful prompt
+    return jsonify({
+        "message": "I understand you. And i have taken note. You could also tell me everything about your finances, like how much you make today, what you spent money on or what loan or asset you want to track. I will help you track everything. get you a credit score for loan application, a tax receipt for your business or a broader Transaction statement for travel purposes or any other official use",
+        "tone": "neutral"
+    })
 
 
 
@@ -1253,6 +1261,52 @@ def handle_query(text, user_id):
     return jsonify({
                        "answer": "I can help with budgets, spending, income, credit score, net worth, and accounts. Try asking 'how much did I spend on food this month?'",
                        "tone": "neutral"})
+
+
+
+def conversational_reply(user_id, text):
+    """Use the LLM to generate a friendly, context-aware response."""
+    try:
+        # Get recent conversation history
+        history = get_recent_conversation(user_id, 6)
+        # Get user facts
+        from core import get_user_facts
+        facts = get_user_facts(user_id)
+
+        # Build system message
+        system_msg = SYSTEM_PROMPT + "\n\n"
+        if facts:
+            system_msg += f"User facts: {json.dumps(facts)}. Use these to personalise your reply.\n"
+        system_msg += "\nRecent conversation:\n"
+        for msg in history:
+            role = "User" if msg['role'] == 'user' else "Oyinda"
+            system_msg += f"{role}: {msg['content']}\n"
+        system_msg += f"\nThe user just said: \"{text}\"\n"
+        system_msg += "Respond as Oyinda. Keep it short, warm, and helpful. If the user seems confused about finances, gently guide them to log an expense or income."
+
+        # Call Groq
+        import requests
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ.get('GROQ_API_KEY')}"},
+            json={
+                "model": "qwen-3.6-27b",
+                "messages": [{"role": "system", "content": system_msg}],
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 200
+            },
+            timeout=15
+        )
+        data = resp.json()
+        if 'choices' in data and data['choices']:
+            return data['choices'][0]['message']['content'].strip()
+        else:
+            return None
+    except Exception:
+        return None
+
+
 
 # --------------- STATEMENT (PDF/JSON) ---------------
 

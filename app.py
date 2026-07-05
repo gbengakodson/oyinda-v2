@@ -160,19 +160,30 @@ def ask_next_question(user_id):
             p["state"] = "collecting_location"
             return ask_for_location(user_id)
 
-    # Step 3: Collect quantity/unit (food example)
-    if state == "collecting_quantity":
-        # User’s reply should contain quantity and possibly unit
-        qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?', data.get("last_reply", ""))
-        if qty_match:
-            data["quantity"] = float(qty_match.group(1))
-            data["unit"] = qty_match.group(2) or "unknown"
-            p["data"] = data
+    elif state == "collecting_quantity":
+        # Try to extract multiple items: "1 loaf of bread, 5 oranges, 1 bottle of coke"
+        reply_lower = reply.lower()
+        items = re.findall(
+            r'(\d+)\s*(?:loaf|loaves|pieces?|bags?|bottles?|cups?|heaps?|bundles?|baskets?|packets?|sachets?|tins?|cans?|cartons?|rolls?|bars?|sticks?|units?|kg|g|litres?|liters?|ml|mudu|derica|paint|kongo|olodo|milk\s?cup|rubber|basin|bowl|plate|wrap|parcel|scoop)?\s*(?:of\s+)?(\w+(?:\s+\w+)?)',
+            reply_lower)
+        if items:
+            # Build a clean summary: "1 loaf bread, 5 oranges, 1 bottle coke"
+            parts = []
+            for qty, unit, name in items:
+                unit = unit if unit else ''
+                part = f"{qty} {unit} {name.strip()}".strip()
+                parts.append(part)
+            description = ", ".join(parts)
+
+            p["data"]["quantity_description"] = description
+            p["data"]["quantity"] = len(items)  # number of distinct items
+            p["data"]["unit"] = "items"
+            p["data"] = p["data"]
             p["state"] = "collecting_location"
             return ask_for_location(user_id)
         else:
             return jsonify({
-                "message": "I didn't catch the quantity. Please tell me like '2 mudu', '1 paint' or '3 kongo'.",
+                "message": "I didn't catch the quantity. You can say something like '2 mudu', '1 paint', or '1 loaf of bread, 5 oranges'.",
                 "tone": "neutral"
             })
 
@@ -274,6 +285,7 @@ def finalise_transaction(user_id):
         "location": data.get("location"),
         "housing_type": data.get("housing_type"),
         "transport_type": data.get("transport_type"),
+        "quantity_description": data.get("quantity_description")
     }
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -1273,44 +1285,31 @@ def handle_query(text, user_id):
 
 
 def conversational_reply(user_id, text):
-    """Use the LLM to generate a friendly, context-aware response."""
+    # Try Groq first
+    reply = _call_llm("groq", system_msg)
+    if reply:
+        return reply
+    # Fallback to OpenAI
+    return _call_llm("openai", system_msg)
+
+def _call_llm(provider, system_msg):
     try:
-        # Get recent conversation history
-        history = get_recent_conversation(user_id, 6)
-        # Get user facts
-        from core import get_user_facts
-        facts = get_user_facts(user_id)
-
-        # Build system message
-        system_msg = SYSTEM_PROMPT + "\n\n"
-        if facts:
-            system_msg += f"User facts: {json.dumps(facts)}. Use these to personalise your reply.\n"
-        system_msg += "\nRecent conversation:\n"
-        for msg in history:
-            role = "User" if msg['role'] == 'user' else "Oyinda"
-            system_msg += f"{role}: {msg['content']}\n"
-        system_msg += f"\nThe user just said: \"{text}\"\n"
-        system_msg += "Respond as Oyinda. Keep it short, warm, and helpful. If the user seems confused about finances, gently guide them to log an expense or income."
-
-        # Call Groq
-        import requests
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {os.environ.get('GROQ_API_KEY')}"},
-            json={
-                "model": "qwen-3.6-27b",
-                "messages": [{"role": "system", "content": system_msg}],
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "max_tokens": 200
-            },
-            timeout=15
-        )
+        if provider == "groq":
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {os.environ.get('GROQ_API_KEY')}"},
+                json={"model": "qwen-3.6-27b", "messages": [{"role": "system", "content": system_msg}], "temperature": 0.7, "top_p": 0.9, "max_tokens": 200},
+                timeout=15
+            )
+        else:  # openai
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"},
+                json={"model": "gpt-3.5-turbo", "messages": [{"role": "system", "content": system_msg}], "temperature": 0.7, "top_p": 0.9, "max_tokens": 200},
+                timeout=15
+            )
         data = resp.json()
-        if 'choices' in data and data['choices']:
-            return data['choices'][0]['message']['content'].strip()
-        else:
-            return None
+        return data['choices'][0]['message']['content'].strip() if 'choices' in data else None
     except Exception:
         return None
 

@@ -207,7 +207,7 @@ def ask_for_location(user_id):
     # If we have a location updated within the last 7 days, reuse it
     if row and row[0] and row[1]:
         last_update = row[1]
-        if datetime.utcnow() - last_update < timedelta(days=7):
+        if datetime.utcnow() - last_update.replace(tzinfo=None) < timedelta(days=7):
             # Reuse recent location
             p = pending_transaction[user_id]
             p["data"]["location"] = row[0]  # city name stored in address
@@ -926,12 +926,14 @@ def handle_command():
         save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
-    # ---------- SMART FALLBACK: detect number → start conversation ----------
-    amount_match = re.search(r'(\d[\d,]*\.?\d*)', text)
+    # ---------- SMART FALLBACK: detect number (supports "1k", "2.5K", etc.) → start conversation ----------
+    amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(k|K)?', text)
     if amount_match:
         amount_str = amount_match.group(1).replace(',', '')
         try:
             amount = float(amount_str)
+            if amount_match.group(2):  # 'k' or 'K' present → multiply by 1000
+                amount *= 1000
             pending_transaction[user_id] = {
                 "state": "collecting_type",
                 "data": {
@@ -963,7 +965,6 @@ def handle_command():
                 return ask_next_question(user_id)
             else:
                 # No clear type – ask the basic question
-                save_conversation(user_id, 'user', text)
                 return jsonify({
                     "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
                     "tone": "neutral"

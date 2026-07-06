@@ -650,6 +650,32 @@ def handle_command():
             p["data"]["location"] = reply.strip()
             return finalise_transaction(user_id)
 
+
+        elif state == "confirming_bulk":
+            reply_lower = reply.lower()
+            if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
+                # Log each amount as a separate expense
+                amounts = p["data"]["amounts"]
+                for amt in amounts:
+                    append_event(user_id, user_id, 'ExpenseLogged', {
+                        "amount": amt,
+                        "currency": "NGN",
+                        "category": "other",
+                        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                        "description": p["data"].get("description", text)[:100]
+                    })
+                # Remove the bulk transaction
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+                return jsonify({
+                    "message": f"Logged {len(amounts)} expenses totalling ₦{p['data']['total']:,.2f}.",
+                    "tone": "neutral"
+                })
+            else:
+                # User doesn't want bulk logging – remove and let fallback handle it
+                pending_transaction.pop(user_id, None)
+                # Fall through to the normal smart fallback
+
         # (Other states like collecting_transport_type, housing_type can be added later)
 
         # If we didn't match any state, just finalise to avoid hanging
@@ -708,6 +734,8 @@ def handle_command():
     # 2b. Link bank command
     if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
         return jsonify({"open_mono": True, "message": "Opening bank connection…"})
+
+
 
     # 3. Balance / budget / net worth / credit score / debt keywords
     if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'budget', 'net worth', 'credit score',
@@ -969,6 +997,38 @@ def handle_command():
         save_conversation(user_id, 'user', text)
         return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
 
+    # ---------- MULTI-EXPENSE DETECTION ----------
+    # Detect if the user listed multiple amounts (e.g., "data 2000, chinchin 200, milk 1000")
+    # This runs BEFORE the single-expense patterns, so it doesn't get hijacked.
+    amounts = re.findall(r'(\d[\d,]*\.?\d*)', text)
+    if len(amounts) >= 2:
+        # Convert all strings to floats
+        parsed_amounts = []
+        for a in amounts:
+            try:
+                parsed_amounts.append(float(a.replace(',', '')))
+            except ValueError:
+                continue
+        if len(parsed_amounts) >= 2:
+            total = sum(parsed_amounts)
+            # Ask user to confirm the bulk log
+            pending_transaction[user_id] = {
+                "state": "confirming_bulk",
+                "data": {
+                    "amounts": parsed_amounts,
+                    "total": total,
+                    "description": text,
+                    "currency": "NGN",
+                    "type": "expense",           # assume expense; user can correct later
+                    "category": "other"          # generic category
+                },
+                "category": None
+            }
+            return jsonify({
+                "message": f"I see you mentioned {', '.join(f'₦{a:,.2f}' for a in parsed_amounts)}. That's ₦{total:,.2f} in total. Did you spend all of these? Reply 'yes' to log them all, or tell me what they are one by one.",
+                "tone": "neutral"
+            })
+
     # 10. Bank transfer
     transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text, re.IGNORECASE)
     if transfer_match:
@@ -1197,6 +1257,20 @@ def handle_query(text, user_id):
     if 'credit score' in text_lower or 'health score' in text_lower:
         score = get_credit_score(user_id)
         return jsonify({"answer": f"Your financial health score is {score['score']}/100. You're a {score['logo']}.", "tone": "neutral"})
+
+
+    if 'breakdown' in text_lower or 'pillar' in text_lower or 'why is my score' in text_lower or 'what affects' in text_lower:
+        conn = get_conn()
+        breakdown = update_credit_score(conn, user_id)  # re‑calculate to get fresh breakdown
+        conn.close()
+        pillars = breakdown["pillars"]
+        msg = "Your credit score is made up of five parts:\n\n"
+        for key, data in pillars.items():
+            name = key.replace('_', ' ').title()
+            msg += f"• {name} ({data['weight']}): {data['score']}% – {data['note']}\n"
+        msg += f"\nYour total score is {breakdown['fico']}/850."
+        return jsonify({"answer": msg, "tone": "neutral"})
+
 
     # Net worth (true asset‑liability calculation)
     if 'net worth' in text_lower or 'networth' in text_lower:
@@ -1476,13 +1550,25 @@ def conversational_reply(user_id, text):
         # Get recent conversation history
         history = get_recent_conversation(user_id, 6)
         # Get user facts
-        from core import get_user_facts
+        from core import get_user_facts, get_credit_score
         facts = get_user_facts(user_id)
+        score_data = get_credit_score(user_id)
 
         # Build system message
         system_msg = SYSTEM_PROMPT + "\n\n"
         if facts:
             system_msg += f"User facts: {json.dumps(facts)}. Use these to personalise your reply.\n"
+
+        # Inject the real credit score and pillar breakdown
+        if score_data:
+            system_msg += f"\nThe user's real Oyinda credit score is {score_data['score']}/850 ({score_data['logo']}). "
+            breakdown = facts.get('credit_breakdown', {})
+            if breakdown:
+                system_msg += "Here is the pillar breakdown:\n"
+                for key, data in breakdown.items():
+                    system_msg += f"- {key.replace('_',' ').title()} ({data['weight']}): {data['score']}% – {data['note']}\n"
+            system_msg += "\n"
+
         system_msg += "\nRecent conversation:\n"
         for msg in history:
             role = "User" if msg['role'] == 'user' else "Oyinda"

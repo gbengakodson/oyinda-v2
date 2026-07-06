@@ -52,7 +52,7 @@ SYSTEM_PROMPT = (
     "Match the user's energy. Be encouraging, practical, and playful when appropriate."
 )
 
-
+onboarding_state = {}
 pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
@@ -1542,6 +1542,157 @@ def handle_query(text, user_id):
         "tone": "neutral"
     })
 
+
+
+# Temporary store for onboarding state (token -> state dict)
+
+
+@app.route('/onboard', methods=['POST'])
+def onboard():
+    data = request.get_json()
+    token = data.get('token', '')
+    text = data.get('text', '').strip()
+
+    # Start new session if no token
+    if not token:
+        token = str(uuid.uuid4())
+        onboarding_state[token] = {
+            "step": "ask_new_or_returning",
+            "data": {}
+        }
+        return jsonify({
+            "token": token,
+            "message": "Hello! I'm Oyinda, your personal CFO. Are you new here, or do you already have an account? (Type 'new' or 'login')",
+            "tone": "neutral"
+        })
+
+    state = onboarding_state.get(token)
+    if not state:
+        return jsonify({
+            "token": str(uuid.uuid4()),
+            "message": "Session expired. Let's start over. Are you new here, or do you already have an account?",
+            "tone": "neutral"
+        })
+
+    step = state["step"]
+    user_data = state["data"]
+
+    # ---- LOGIN BRANCH ----
+    if step == "ask_new_or_returning":
+        if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
+            state["step"] = "login_email"
+            return jsonify({"message": "Welcome back! What's your email address?", "tone": "neutral"})
+        elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
+            state["step"] = "ask_name"
+            return jsonify({"message": "Great! Let's get you started. What's your full name?", "tone": "neutral"})
+        else:
+            return jsonify({"message": "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?", "tone": "neutral"})
+
+    # Login steps
+    if step == "login_email":
+        if '@' not in text or '.' not in text:
+            return jsonify({"message": "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
+        user_data["email"] = text.strip()
+        state["step"] = "login_password"
+        return jsonify({"message": "Enter your password:", "tone": "neutral"})
+
+    if step == "login_password":
+        user_data["password"] = text
+        # Authenticate
+        from core import authenticate_user
+        user = authenticate_user(user_data["email"], user_data["password"])
+        if not user:
+            onboarding_state.pop(token, None)
+            return jsonify({"message": "Invalid email or password. Please try again later.", "tone": "warning"})
+        access_token = create_access_token(identity=str(user["id"]))
+        onboarding_state.pop(token, None)
+        return jsonify({
+            "jwt": access_token,
+            "user": {"id": user["id"], "name": user["name"]},
+            "message": f"Welcome back, {user['name']}!",
+            "tone": "income",
+            "redirect": "/dashboard"
+        })
+
+    # ---- REGISTRATION BRANCH (unchanged) ----
+    if step == "ask_name":
+        user_data["name"] = text.strip()
+        state["step"] = "ask_email"
+        return jsonify({"message": f"Nice to meet you, {user_data['name']}! What's your email address?", "tone": "neutral"})
+
+    elif step == "ask_email":
+        if '@' not in text or '.' not in text:
+            return jsonify({"message": "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
+        user_data["email"] = text.strip()
+        state["step"] = "ask_password"
+        return jsonify({"message": "Create a password (minimum 6 characters):", "tone": "neutral"})
+
+    elif step == "ask_password":
+        if len(text) < 6:
+            return jsonify({"message": "Password must be at least 6 characters. Try again:", "tone": "neutral"})
+        user_data["password"] = text
+        state["step"] = "ask_type"
+        return jsonify({"message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
+
+    elif step == "ask_type":
+        user_type = text.strip().lower()
+        if user_type not in ['individual', 'business', 'company']:
+            return jsonify({"message": "Please choose one: individual, business, or company.", "tone": "neutral"})
+        user_data["account_type"] = user_type
+        if user_type in ['business', 'company']:
+            state["step"] = "ask_business_name"
+            return jsonify({"message": "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
+        else:
+            return confirm_registration(token)
+
+    elif step == "ask_business_name":
+        if text.strip().lower() != 'skip':
+            user_data["business_name"] = text.strip()
+        state["step"] = "ask_business_address"
+        return jsonify({"message": "Business address? (or type 'skip')", "tone": "neutral"})
+
+    elif step == "ask_business_address":
+        if text.strip().lower() != 'skip':
+            user_data["business_address"] = text.strip()
+        state["step"] = "confirm"
+        return confirm_registration(token)
+
+    elif step == "confirm":
+        return confirm_registration(token)
+
+    return jsonify({"message": "Something went wrong. Let's start over. What's your full name?", "tone": "neutral"})
+
+
+def confirm_registration(token):
+    state = onboarding_state.pop(token, None)
+    if not state:
+        return jsonify({"message": "Session expired. Please start again."})
+    user_data = state["data"]
+
+    from core import create_user
+    user_id = create_user(
+        name=user_data["name"],
+        email=user_data["email"],
+        password=user_data["password"],
+        account_type=user_data.get("account_type", "personal"),
+        address=user_data.get("business_address", "")
+    )
+    if not user_id:
+        return jsonify({"message": "Registration failed. That email might already be registered. Please try a different email."})
+
+    if user_data.get("account_type") in ['business', 'company']:
+        store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
+        store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
+
+    access_token = create_access_token(identity=str(user_id))
+    return jsonify({
+        "token": token,
+        "jwt": access_token,
+        "user": {"id": user_id, "name": user_data["name"]},
+        "message": f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
+        "tone": "income",
+        "redirect": "/dashboard"
+    })
 
 
 def conversational_reply(user_id, text):

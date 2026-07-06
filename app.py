@@ -1553,131 +1553,186 @@ def onboard():
     token = data.get('token', '')
     text = data.get('text', '').strip()
 
-    # Start new session
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Start new session if no token
     if not token:
         token = str(uuid.uuid4())
-        onboarding_state[token] = {
-            "step": "ask_new_or_returning",
-            "data": {}
-        }
-        reply = onboarding_message(token, "ask_new_or_returning", {}, text)
+        cur.execute(
+            "INSERT INTO onboarding_sessions (token, step, data) VALUES (%s, %s, %s)",
+            (token, 'ask_new_or_returning', json.dumps({}))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        reply = onboarding_message(token, 'ask_new_or_returning', {}, text)
         return jsonify({
             "token": token,
             "message": reply or "Hello! I'm Oyinda, your personal CFO. Are you new here, or do you already have an account? (Type 'new' or 'login')",
             "tone": "neutral"
         })
 
-    state = onboarding_state.get(token)
-    if not state:
-        # Expired – restart
+    # Load existing session
+    cur.execute("SELECT step, data FROM onboarding_sessions WHERE token = %s", (token,))
+    row = cur.fetchone()
+    if not row:
+        # Session expired or invalid – create fresh one
         new_token = str(uuid.uuid4())
-        onboarding_state[new_token] = {"step": "ask_new_or_returning", "data": {}}
-        reply = onboarding_message(new_token, "ask_new_or_returning", {}, text)
+        cur.execute(
+            "INSERT INTO onboarding_sessions (token, step, data) VALUES (%s, %s, %s)",
+            (new_token, 'ask_new_or_returning', json.dumps({}))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        reply = onboarding_message(new_token, 'ask_new_or_returning', {}, text)
         return jsonify({
             "token": new_token,
             "message": reply or "Session expired. Let's start over. Are you new here, or do you already have an account? (Type 'new' or 'login')",
             "tone": "neutral"
         })
 
-    step = state["step"]
-    user_data = state["data"]
+    step = row[0]
+    user_data = row[1] if isinstance(row[1], dict) else json.loads(row[1])
 
     # ---- LOGIN BRANCH ----
-    if step == "ask_new_or_returning":
+    if step == 'ask_new_or_returning':
         if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
-            state["step"] = "login_email"
-            reply = onboarding_message(token, "login_email", user_data, text)
-            return jsonify({"message": reply or "Welcome back! What's your email address?", "tone": "neutral"})
+            step = 'login_email'
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
-            state["step"] = "ask_name"
-            reply = onboarding_message(token, "ask_name", user_data, text)
-            return jsonify({"message": reply or "Great! Let's get you started. What's your full name?", "tone": "neutral"})
+            step = 'ask_name'
         else:
-            reply = onboarding_message(token, "ask_new_or_returning", user_data, text)
+            reply = onboarding_message(token, step, user_data, text)
+            cur.close()
+            conn.close()
             return jsonify({"message": reply or "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?", "tone": "neutral"})
 
-    if step == "login_email":
-        if '@' not in text or '.' not in text:
-            reply = onboarding_message(token, "login_email", user_data, text)
+    # ---- LOGIN STEPS ----
+    if step == 'login_email':
+        if '@' in text and '.' in text:
+            user_data['email'] = text.strip()
+            step = 'login_password'
+        else:
+            reply = onboarding_message(token, step, user_data, text)
+            cur.close()
+            conn.close()
             return jsonify({"message": reply or "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
-        user_data["email"] = text.strip()
-        state["step"] = "login_password"
-        reply = onboarding_message(token, "login_password", user_data, text)
-        return jsonify({"message": reply or "Enter your password:", "tone": "neutral"})
 
-    if step == "login_password":
-        user_data["password"] = text
+    elif step == 'login_password':
+        user_data['password'] = text
+        cur.close()
+        conn.close()
         from core import authenticate_user
-        user = authenticate_user(user_data["email"], user_data["password"])
+        user = authenticate_user(user_data['email'], user_data['password'])
         if not user:
-            onboarding_state.pop(token, None)
+            # Clear session on failure
+            cur = conn.cursor()
+            cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+            conn.commit()
+            cur.close()
+            conn.close()
             return jsonify({"message": "Invalid email or password. Please try again later.", "tone": "warning"})
-        access_token = create_access_token(identity=str(user["id"]))
-        onboarding_state.pop(token, None)
-        reply = onboarding_message(token, "done", user_data, text)
+        # Login success
+        access_token = create_access_token(identity=str(user['id']))
+        cur = conn.cursor()
+        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        reply = onboarding_message(token, 'done', user_data, text)
         return jsonify({
             "jwt": access_token,
-            "user": {"id": user["id"], "name": user["name"]},
+            "user": {"id": user['id'], "name": user['name']},
             "message": reply or f"Welcome back, {user['name']}!",
             "tone": "income",
             "redirect": "/dashboard"
         })
 
     # ---- REGISTRATION BRANCH ----
-    if step == "ask_name":
-        user_data["name"] = text.strip()
-        state["step"] = "ask_email"
-        reply = onboarding_message(token, "ask_email", user_data, text)
-        return jsonify({"message": reply or f"Nice to meet you, {user_data['name']}! What's your email address?", "tone": "neutral"})
+    if step == 'ask_name':
+        user_data['name'] = text.strip()
+        step = 'ask_email'
 
-    elif step == "ask_email":
-        if '@' not in text or '.' not in text:
-            reply = onboarding_message(token, "ask_email", user_data, text)
-            return jsonify({"message": reply or "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
-        user_data["email"] = text.strip()
-        state["step"] = "ask_password"
-        reply = onboarding_message(token, "ask_password", user_data, text)
-        return jsonify({"message": reply or "Create a password (minimum 6 characters):", "tone": "neutral"})
-
-    elif step == "ask_password":
-        if len(text) < 6:
-            reply = onboarding_message(token, "ask_password", user_data, text)
-            return jsonify({"message": reply or "Password must be at least 6 characters. Try again:", "tone": "neutral"})
-        user_data["password"] = text
-        state["step"] = "ask_type"
-        reply = onboarding_message(token, "ask_type", user_data, text)
-        return jsonify({"message": reply or "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
-
-    elif step == "ask_type":
-        user_type = text.strip().lower()
-        if user_type not in ['individual', 'business', 'company']:
-            reply = onboarding_message(token, "ask_type", user_data, text)
-            return jsonify({"message": reply or "Please choose one: individual, business, or company.", "tone": "neutral"})
-        user_data["account_type"] = user_type
-        if user_type in ['business', 'company']:
-            state["step"] = "ask_business_name"
-            reply = onboarding_message(token, "ask_business_name", user_data, text)
-            return jsonify({"message": reply or "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
+    elif step == 'ask_email':
+        if '@' in text and '.' in text:
+            user_data['email'] = text.strip()
+            step = 'ask_password'
         else:
-            return confirm_registration(token)
+            reply = onboarding_message(token, step, user_data, text)
+            cur.close()
+            conn.close()
+            return jsonify({"message": reply or "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
 
-    elif step == "ask_business_name":
+    elif step == 'ask_password':
+        if len(text) >= 6:
+            user_data['password'] = text
+            step = 'ask_type'
+        else:
+            reply = onboarding_message(token, step, user_data, text)
+            cur.close()
+            conn.close()
+            return jsonify({"message": reply or "Password must be at least 6 characters. Try again:", "tone": "neutral"})
+
+    elif step == 'ask_type':
+        user_type = text.strip().lower()
+        if user_type in ['individual', 'business', 'company']:
+            user_data['account_type'] = user_type
+            if user_type in ['business', 'company']:
+                step = 'ask_business_name'
+            else:
+                # Finalize registration
+                cur.close()
+                conn.close()
+                return finalize_registration(token, user_data)
+        else:
+            reply = onboarding_message(token, step, user_data, text)
+            cur.close()
+            conn.close()
+            return jsonify({"message": reply or "Please choose one: individual, business, or company.", "tone": "neutral"})
+
+    elif step == 'ask_business_name':
         if text.strip().lower() != 'skip':
-            user_data["business_name"] = text.strip()
-        state["step"] = "ask_business_address"
-        reply = onboarding_message(token, "ask_business_address", user_data, text)
-        return jsonify({"message": reply or "Business address? (or type 'skip')", "tone": "neutral"})
+            user_data['business_name'] = text.strip()
+        step = 'ask_business_address'
 
-    elif step == "ask_business_address":
+    elif step == 'ask_business_address':
         if text.strip().lower() != 'skip':
-            user_data["business_address"] = text.strip()
-        state["step"] = "confirm"
-        return confirm_registration(token)
+            user_data['business_address'] = text.strip()
+        # Finalize registration
+        cur.close()
+        conn.close()
+        return finalize_registration(token, user_data)
 
-    elif step == "confirm":
-        return confirm_registration(token)
+    else:
+        # Unknown step – reset
+        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Something went wrong. Let's start over. What's your full name?", "tone": "neutral"})
 
-    return jsonify({"message": "Something went wrong. Let's start over. What's your full name?", "tone": "neutral"})
+    # Save the updated state
+    cur.execute(
+        "UPDATE onboarding_sessions SET step = %s, data = %s WHERE token = %s",
+        (step, json.dumps(user_data), token)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Generate next message
+    reply = onboarding_message(token, step, user_data, text)
+    default_messages = {
+        'ask_new_or_returning': "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?",
+        'ask_name': "Great! Let's get you started. What's your full name?",
+        'ask_email': f"Nice to meet you, {user_data['name']}! What's your email address?",
+        'ask_password': "Create a password (minimum 6 characters):",
+        'ask_type': "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
+        'ask_business_name': "What is the name of your business? (or type 'skip' to skip)",
+        'ask_business_address': "Business address? (or type 'skip')",
+    }
+    return jsonify({"message": reply or default_messages.get(step, "Let's continue."), "tone": "neutral"})
 
 
 def confirm_registration(token):
@@ -3148,6 +3203,50 @@ def admin_summary():
         "active_users": active_users,
         "total_commands": total_commands,
         "recent_feedback": feedback
+    })
+
+
+
+def finalize_registration(token, user_data):
+    from core import create_user
+    user_id = create_user(
+        name=user_data.get('name', ''),
+        email=user_data.get('email', ''),
+        password=user_data.get('password', ''),
+        account_type=user_data.get('account_type', 'personal'),
+        address=user_data.get('business_address', '')
+    )
+    if not user_id:
+        # Email already exists – go back to email step
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE onboarding_sessions SET step = 'ask_email' WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "That email is already registered. Please enter a different email address:", "tone": "neutral"})
+
+    # Clean up session
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    if user_data.get('account_type') in ['business', 'company']:
+        store_user_fact(user_id, 'business_name', user_data.get('business_name', ''))
+        store_user_fact(user_id, 'business_address', user_data.get('business_address', ''))
+
+    access_token = create_access_token(identity=str(user_id))
+    reply = onboarding_message(token, 'confirm', user_data, None)
+    return jsonify({
+        "token": token,
+        "jwt": access_token,
+        "user": {"id": user_id, "name": user_data['name']},
+        "message": reply or f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
+        "tone": "income",
+        "redirect": "/dashboard"
     })
 
 

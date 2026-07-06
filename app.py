@@ -1560,7 +1560,7 @@ def onboard():
             "step": "ask_new_or_returning",
             "data": {}
         }
-        reply = onboarding_reply(token, text, "ask_new_or_returning", {})
+        reply = onboarding_message(token, "ask_new_or_returning", {}, text)
         return jsonify({
             "token": token,
             "message": reply or "Hello! I'm Oyinda, your personal CFO. Are you new here, or do you already have an account? (Type 'new' or 'login')",
@@ -1572,10 +1572,10 @@ def onboard():
         # Expired – restart
         new_token = str(uuid.uuid4())
         onboarding_state[new_token] = {"step": "ask_new_or_returning", "data": {}}
-        reply = onboarding_reply(new_token, text, "ask_new_or_returning", {})
+        reply = onboarding_message(new_token, "ask_new_or_returning", {}, text)
         return jsonify({
             "token": new_token,
-            "message": reply or "Session expired. Let's start over. Are you new here, or do you already have an account?",
+            "message": reply or "Session expired. Let's start over. Are you new here, or do you already have an account? (Type 'new' or 'login')",
             "tone": "neutral"
         })
 
@@ -1586,23 +1586,23 @@ def onboard():
     if step == "ask_new_or_returning":
         if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
             state["step"] = "login_email"
-            reply = onboarding_reply(token, text, "login_email", user_data)
+            reply = onboarding_message(token, "login_email", user_data, text)
             return jsonify({"message": reply or "Welcome back! What's your email address?", "tone": "neutral"})
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
             state["step"] = "ask_name"
-            reply = onboarding_reply(token, text, "ask_name", user_data)
+            reply = onboarding_message(token, "ask_name", user_data, text)
             return jsonify({"message": reply or "Great! Let's get you started. What's your full name?", "tone": "neutral"})
         else:
-            reply = onboarding_reply(token, text, "ask_new_or_returning", user_data)
+            reply = onboarding_message(token, "ask_new_or_returning", user_data, text)
             return jsonify({"message": reply or "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?", "tone": "neutral"})
 
     if step == "login_email":
         if '@' not in text or '.' not in text:
-            reply = onboarding_reply(token, text, "login_email", user_data)
+            reply = onboarding_message(token, "login_email", user_data, text)
             return jsonify({"message": reply or "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
         user_data["email"] = text.strip()
         state["step"] = "login_password"
-        reply = onboarding_reply(token, text, "login_password", user_data)
+        reply = onboarding_message(token, "login_password", user_data, text)
         return jsonify({"message": reply or "Enter your password:", "tone": "neutral"})
 
     if step == "login_password":
@@ -1614,7 +1614,7 @@ def onboard():
             return jsonify({"message": "Invalid email or password. Please try again later.", "tone": "warning"})
         access_token = create_access_token(identity=str(user["id"]))
         onboarding_state.pop(token, None)
-        reply = onboarding_reply(token, text, "login_done", user_data)
+        reply = onboarding_message(token, "done", user_data, text)
         return jsonify({
             "jwt": access_token,
             "user": {"id": user["id"], "name": user["name"]},
@@ -1623,40 +1623,40 @@ def onboard():
             "redirect": "/dashboard"
         })
 
-    # ---- REGISTRATION BRANCH (unchanged except for replies) ----
+    # ---- REGISTRATION BRANCH ----
     if step == "ask_name":
         user_data["name"] = text.strip()
         state["step"] = "ask_email"
-        reply = onboarding_reply(token, text, "ask_email", user_data)
+        reply = onboarding_message(token, "ask_email", user_data, text)
         return jsonify({"message": reply or f"Nice to meet you, {user_data['name']}! What's your email address?", "tone": "neutral"})
 
     elif step == "ask_email":
         if '@' not in text or '.' not in text:
-            reply = onboarding_reply(token, text, "ask_email", user_data)
+            reply = onboarding_message(token, "ask_email", user_data, text)
             return jsonify({"message": reply or "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
         user_data["email"] = text.strip()
         state["step"] = "ask_password"
-        reply = onboarding_reply(token, text, "ask_password", user_data)
+        reply = onboarding_message(token, "ask_password", user_data, text)
         return jsonify({"message": reply or "Create a password (minimum 6 characters):", "tone": "neutral"})
 
     elif step == "ask_password":
         if len(text) < 6:
-            reply = onboarding_reply(token, text, "ask_password", user_data)
+            reply = onboarding_message(token, "ask_password", user_data, text)
             return jsonify({"message": reply or "Password must be at least 6 characters. Try again:", "tone": "neutral"})
         user_data["password"] = text
         state["step"] = "ask_type"
-        reply = onboarding_reply(token, text, "ask_type", user_data)
+        reply = onboarding_message(token, "ask_type", user_data, text)
         return jsonify({"message": reply or "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
 
     elif step == "ask_type":
         user_type = text.strip().lower()
         if user_type not in ['individual', 'business', 'company']:
-            reply = onboarding_reply(token, text, "ask_type", user_data)
+            reply = onboarding_message(token, "ask_type", user_data, text)
             return jsonify({"message": reply or "Please choose one: individual, business, or company.", "tone": "neutral"})
         user_data["account_type"] = user_type
         if user_type in ['business', 'company']:
             state["step"] = "ask_business_name"
-            reply = onboarding_reply(token, text, "ask_business_name", user_data)
+            reply = onboarding_message(token, "ask_business_name", user_data, text)
             return jsonify({"message": reply or "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
         else:
             return confirm_registration(token)
@@ -1665,7 +1665,7 @@ def onboard():
         if text.strip().lower() != 'skip':
             user_data["business_name"] = text.strip()
         state["step"] = "ask_business_address"
-        reply = onboarding_reply(token, text, "ask_business_address", user_data)
+        reply = onboarding_message(token, "ask_business_address", user_data, text)
         return jsonify({"message": reply or "Business address? (or type 'skip')", "tone": "neutral"})
 
     elif step == "ask_business_address":
@@ -1711,11 +1711,12 @@ def confirm_registration(token):
         store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
 
     access_token = create_access_token(identity=str(user_id))
+    reply = onboarding_message(token, "confirm", user_data, None)
     return jsonify({
         "token": token,
         "jwt": access_token,
         "user": {"id": user_id, "name": user_data["name"]},
-        "message": f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
+        "message": reply or f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
         "tone": "income",
         "redirect": "/dashboard"
     })
@@ -1767,22 +1768,35 @@ def conversational_reply(user_id, text):
 
 
 
-def onboarding_reply(token, user_text, step, user_data):
-    """Use the LLM to generate a warm onboarding message based on the current step."""
+def onboarding_message(token, step, user_data, user_text=None):
+    """
+    Use the LLM to generate a warm onboarding message,
+    but NEVER change the state. The state machine controls the flow.
+    """
     system_msg = SYSTEM_PROMPT + "\n\n"
-    system_msg += f"You are currently onboarding a new user. The current step is: {step}.\n"
-    system_msg += f"Data collected so far: {json.dumps(user_data)}.\n"
+    system_msg += f"You are onboarding a new user. The current step is: {step}.\n"
+    system_msg += f"Data already collected: {json.dumps(user_data)}.\n"
     system_msg += (
-        "Your task is to respond to the user's last message naturally and warmly, "
-        "and then ask the next question needed for the step described above.\n"
-        "Keep it short, encouraging, and never reveal internal step names.\n"
-        "If the user provides the needed information, acknowledge it and move on.\n"
-        "Do NOT invent any information. Only use what the user tells you."
+        "Your ONLY job is to rephrase the required question in a warm, friendly, Pidgin‑friendly way.\n"
+        "Do NOT answer for the user. Do NOT skip steps. Do NOT ask a different question.\n"
+        "The required questions for each step are:\n"
+        "- ask_new_or_returning: 'Are you new here, or do you already have an account? (Type new or login)'\n"
+        "- ask_name: 'What's your full name?'\n"
+        "- ask_email: 'What's your email address?'\n"
+        "- ask_password: 'Create a password (minimum 6 characters)'\n"
+        "- ask_type: 'Are you an individual, small business owner, or a company?'\n"
+        "- ask_business_name: 'What is the name of your business? (or type skip)'\n"
+        "- ask_business_address: 'Business address? (or type skip)'\n"
+        "- login_email: 'Welcome back! What's your email address?'\n"
+        "- login_password: 'Enter your password'\n"
+        "- confirm: 'All set! You're now registered.'\n"
+        "- done: 'Welcome back!' (for login)\n"
+        "Now, using the exact required question above, generate a one‑sentence warm reply that asks ONLY that question.\n"
+        "Do NOT mention other features, do NOT ask multiple questions, do NOT add unrelated info."
     )
 
-    # Add the recent user message
-    system_msg += f"\n\nThe user just said: \"{user_text}\"\n"
-    system_msg += "Respond as Oyinda:"
+    if user_text:
+        system_msg += f"\n\nThe user just said: \"{user_text}\"\n"
 
     reply = _call_llm("groq", system_msg)
     if not reply:

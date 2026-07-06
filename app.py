@@ -1132,34 +1132,28 @@ def handle_query(text, user_id):
     text_lower = text.lower()
 
     # ---------- PRODUCT KNOWLEDGE – NEVER SEND THESE TO THE LLM ----------
-    if any(w in text_lower for w in ['credit score', 'health score', 'butterfly', 'eagle', 'what is my score']):
-        conn = get_conn()
-        breakdown = update_credit_score(conn, user_id)  # returns the detailed dict
-        conn.close()
-        fico = breakdown["fico"]
-        logo = breakdown["logo"]
-        pillars = breakdown["pillars"]
+    if any(w in text_lower for w in [
+        'credit score', 'health score', 'butterfly', 'eagle', 'what is my score',
+        'financial health', 'how am i doing financially', 'my financial health',
+        'how healthy are my finances', 'financial wellbeing', 'my finances'
+    ]):
+        score_data = get_credit_score(user_id)
+        score = score_data["score"]
+        logo = score_data["logo"]
 
-        # Build a human‑friendly reply
-        msg = f"Your credit score is **{fico}/850** (🦋 butterfly → 🦅 eagle).\n\n"
-        msg += "Here's what affects your score:\n"
-        for key, data in pillars.items():
-            name = key.replace('_', ' ').title()
-            msg += f"• {name} ({data['weight']}): {data['score']}% – {data['note']}\n"
-
-        if fico < 580:
-            msg += "\nYour score is in the butterfly range. Log more transactions and pay back loans to improve it."
-        elif fico < 740:
-            msg += "\nYou're in transition. Keep building your credit history."
+        # Simple explanation of the scale
+        if score < 580:
+            status = "just starting out. Log more transactions and pay back loans to improve."
+        elif score < 740:
+            status = "doing well. Regular saving and paying debts on time will boost it further."
         else:
-            msg += "\nYou're an eagle! Excellent financial health."
+            status = "excellent. You're a financial eagle!"
 
-        # Also store this breakdown for the LLM
-        facts = {"credit_score": fico, "credit_breakdown": pillars}
-        store_user_fact(user_id, "credit_score", fico)
-        store_user_fact(user_id, "credit_breakdown", pillars)
-
-        return jsonify({"answer": msg, "tone": "neutral"})
+        return jsonify({
+            "answer": f"Your Oyinda credit score is {score}/850 ({logo}). That means you're {status}\n"
+                      f"Score range: 300‑579 (Butterfly 🦋), 580‑739 (Transition), 740‑850 (Eagle 🦅).",
+            "tone": "neutral"
+        })
 
     # Greeting
     if query_info and query_info.get('intent') == 'greeting':

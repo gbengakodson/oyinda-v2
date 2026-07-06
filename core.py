@@ -168,25 +168,104 @@ def update_behavior_log(conn, user_id, date_str):
     conn.commit()
     cur.close()
 
+
+
 def update_credit_score(conn, user_id):
     cur = conn.cursor()
-    three_months_ago = (datetime.utcnow() - timedelta(days=90)).date()
-    cur.execute("SELECT total_income, total_expense FROM behavior_log WHERE user_id=%s AND date >= %s", (user_id, three_months_ago))
-    rows = cur.fetchall()
-    if not rows:
-        score = 20
+    today = datetime.utcnow().date()
+
+    # ---------- 1. Payment History (35%) ----------
+    # For now we treat all loans as “not yet repaid” — no late marks.
+    # If LoanRepaid events exist, the user gets full points.
+    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='LoanRepaid'", (user_id,))
+    repaid_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='ExpenseLogged' AND payload->>'category' = 'loan'", (user_id,))
+    loan_count = cur.fetchone()[0]
+    if loan_count == 0:
+        payment_score = 100   # no loans, full points
     else:
-        incomes = [r[0] for r in rows if r[0] > 0]
-        expenses = [r[1] for r in rows]
-        regularity = min(1, len(incomes) / 3)
-        total_income = sum(incomes)
-        total_expense = sum(expenses)
-        savings_rate = (total_income - total_expense) / total_income if total_income > 0 else 0
-        score = max(0, min(100, int(savings_rate * 60 + regularity * 40)))
-    logo = 'butterfly' if score < 40 else ('eagle' if score >= 70 else 'transition')
-    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, logo = EXCLUDED.logo, updated_at = now()", (user_id, score, logo))
+        payment_score = 100 if repaid_count >= loan_count else max(30, 100 - (loan_count - repaid_count) * 15)
+
+    # ---------- 2. Credit Utilisation (30%) ----------
+    cur.execute("SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND type='income' AND date >= %s", (user_id, today - timedelta(days=365)))
+    annual_income = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'", (user_id,))
+    total_loans = cur.fetchone()[0]
+    util_ratio = (total_loans / annual_income) if annual_income > 0 else 1.0
+    if util_ratio <= 0.30:
+        util_score = 100
+    elif util_ratio >= 1.0:
+        util_score = 0
+    else:
+        util_score = int(100 - (util_ratio - 0.30) * 150)
+
+    # ---------- 3. Length of Credit History (15%) ----------
+    cur.execute("SELECT MIN(created_at) FROM events WHERE user_id=%s", (user_id,))
+    first_event = cur.fetchone()[0]
+    if first_event:
+        months = max(1, (today - first_event.date()).days // 30)
+    else:
+        months = 0
+    if months > 24:
+        length_score = 100
+    elif months > 12:
+        length_score = 80
+    elif months > 6:
+        length_score = 60
+    elif months > 3:
+        length_score = 40
+    else:
+        length_score = 20
+
+    # ---------- 4. Credit Mix (10%) ----------
+    cur.execute("SELECT COUNT(DISTINCT CASE WHEN event_type IN ('ExpenseLogged','IncomeReceived','LoanRepaid','InvestmentMade','GoalSet') THEN event_type ELSE NULL END) FROM events WHERE user_id=%s", (user_id,))
+    distinct_types = cur.fetchone()[0]
+    mix_score = min(100, distinct_types * 25)
+
+    # ---------- 5. New Credit (10%) ----------
+    six_months_ago = today - timedelta(days=180)
+    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='ExpenseLogged' AND payload->>'category' = 'loan' AND created_at >= %s", (user_id, six_months_ago))
+    new_loans = cur.fetchone()[0]
+    if new_loans == 0:
+        new_credit_score = 100
+    elif new_loans <= 2:
+        new_credit_score = 70
+    elif new_loans <= 4:
+        new_credit_score = 40
+    else:
+        new_credit_score = 10
+
+    # ---------- Composite ----------
+    raw = (payment_score * 0.35) + (util_score * 0.30) + (length_score * 0.15) + (mix_score * 0.10) + (new_credit_score * 0.10)
+    fico = int(300 + (raw / 100) * 550)
+
+    # Logo
+    if fico < 580:
+        logo = 'butterfly'
+    elif fico < 740:
+        logo = 'transition'
+    else:
+        logo = 'eagle'
+
+    # Store breakdown
+    breakdown = {
+        "fico": fico,
+        "logo": logo,
+        "pillars": {
+            "payment_history": {"score": payment_score, "weight": "35%", "note": "Based on your loan repayments"},
+            "credit_utilization": {"score": util_score, "weight": "30%", "note": "How much debt vs income"},
+            "credit_age": {"score": length_score, "weight": "15%", "note": "How long you've tracked money with Oyinda"},
+            "credit_mix": {"score": mix_score, "weight": "10%", "note": "Different types of transactions"},
+            "new_credit": {"score": new_credit_score, "weight": "10%", "note": "Recent new loans"}
+        }
+    }
+
+    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score=EXCLUDED.score, logo=EXCLUDED.logo, updated_at=now()", (user_id, fico, logo))
     conn.commit()
     cur.close()
+    return breakdown   # so it can be used by the query handler
+
+
 
 def get_credit_score(user_id):
     conn = get_conn()

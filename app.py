@@ -33,6 +33,7 @@ SYSTEM_PROMPT = (
     "You already have the user's bank accounts, crypto wallets, and investment apps connected. "
     "Never suggest the user use another app, write things down manually, or visit a bank. "
     "If the user asks to buy crypto, tell them to say exactly 'buy [amount] [coin] on [exchange]' and you will execute it immediately. "
+    "If a user asks about their credit score, explain the five pillars (payment history, credit utilization, credit age, credit mix, new credit) and reference their actual numbers from the facts provided."
 
     "Oyinda features you can reference:\n"
     "- Credit score (0-100) with a butterfly 🦋 (low) or eagle 🦅 (high) logo.\n"
@@ -56,7 +57,12 @@ pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
 socketio.init_app(app)
-CORS(app, resources={r"/*": {"origins": ["https://oyinda-web.onrender.com", "http://localhost:5173"]}})
+CORS(app, resources={r"/*": {"origins": [
+    "https://oyinda-web.onrender.com",
+    "http://localhost:5173",
+    "capacitor://localhost",
+    "http://localhost"
+]}})
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'change-me-in-production-please')
 jwt = JWTManager(app)
 temp_links = {}
@@ -866,6 +872,24 @@ def handle_command():
             "tone": "neutral"
         })
 
+
+    # ---------- LOAN REPAYMENT ----------
+    repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
+    if repay_match:
+        amount = float(repay_match.group(1))
+        append_event(user_id, user_id, 'LoanRepaid', {
+            "amount": amount,
+            "currency": "NGN",
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "description": f"Repaid {amount} NGN of loan"
+        })
+        # Refresh credit score
+        conn = get_conn()
+        update_credit_score(conn, user_id)
+        conn.close()
+        name = get_user_name(user_id)
+        return jsonify({"message": f"Noted, {name}. You've repaid {amount} NGN of your loan. Your credit score has been updated.", "tone": "income"})
+
     # 8. Expense logging
     expense_patterns = [
         r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
@@ -1049,19 +1073,33 @@ def handle_query(text, user_id):
 
     # ---------- PRODUCT KNOWLEDGE – NEVER SEND THESE TO THE LLM ----------
     if any(w in text_lower for w in ['credit score', 'health score', 'butterfly', 'eagle', 'what is my score']):
-        score = get_credit_score(user_id)
-        logo = score.get('logo', 'butterfly')
-        desc = score.get('description', '')
-        if logo == 'butterfly':
-            meaning = "The butterfly means you're just starting out. Log more transactions and your score will grow."
-        elif logo == 'eagle':
-            meaning = "The eagle means your financial health is excellent. Keep it up!"
+        conn = get_conn()
+        breakdown = update_credit_score(conn, user_id)  # returns the detailed dict
+        conn.close()
+        fico = breakdown["fico"]
+        logo = breakdown["logo"]
+        pillars = breakdown["pillars"]
+
+        # Build a human‑friendly reply
+        msg = f"Your credit score is **{fico}/850** (🦋 butterfly → 🦅 eagle).\n\n"
+        msg += "Here's what affects your score:\n"
+        for key, data in pillars.items():
+            name = key.replace('_', ' ').title()
+            msg += f"• {name} ({data['weight']}): {data['score']}% – {data['note']}\n"
+
+        if fico < 580:
+            msg += "\nYour score is in the butterfly range. Log more transactions and pay back loans to improve it."
+        elif fico < 740:
+            msg += "\nYou're in transition. Keep building your credit history."
         else:
-            meaning = "You're in transition – keep logging to reach the eagle level."
-        return jsonify({
-            "answer": f"Your Oyinda credit score is {score['score']}/100. {meaning}",
-            "tone": "neutral"
-        })
+            msg += "\nYou're an eagle! Excellent financial health."
+
+        # Also store this breakdown for the LLM
+        facts = {"credit_score": fico, "credit_breakdown": pillars}
+        store_user_fact(user_id, "credit_score", fico)
+        store_user_fact(user_id, "credit_breakdown", pillars)
+
+        return jsonify({"answer": msg, "tone": "neutral"})
 
     # Greeting
     if query_info and query_info.get('intent') == 'greeting':

@@ -568,6 +568,20 @@ def handle_command():
         except Exception as e:
             return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
 
+
+    # ---------- IDENTITY VERIFICATION ----------
+    if any(phrase in text.lower() for phrase in ['verify my identity', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
+        pending_transaction[user_id] = {
+            "state": "ask_id_type",
+            "data": {},
+            "category": None
+        }
+        return jsonify({
+            "message": "I can help you verify your identity with your BVN or NIN. Which one would you like to use? (Type 'BVN' or 'NIN')",
+            "tone": "neutral"
+        })
+
+
     # ---------- CONTINUE PENDING CONVERSATION ----------
     if user_id in pending_transaction:
         p = pending_transaction[user_id]
@@ -740,6 +754,35 @@ def handle_command():
                     "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
                     "tone": "neutral"
                 })
+
+        elif state == "ask_id_type":
+            id_type = reply.strip().lower()
+            if id_type not in ['bvn', 'nin']:
+                return jsonify({"message": "Please type either 'BVN' or 'NIN'.", "tone": "neutral"})
+            p["data"]["id_type"] = id_type
+            p["state"] = "ask_id_number"
+            return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
+
+
+        elif state == "ask_id_number":
+            id_number = reply.strip()
+            if len(id_number) < 10:
+                return jsonify({"message": "That doesn't look like a valid number. Please enter at least 10 digits.", "tone": "neutral"})
+            p["data"]["id_number"] = id_number
+            # Call the verification endpoint internally
+            token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            verify_resp = requests.post(
+                f"https://oyinda-v2.onrender.com/verify/identity",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                json={"type": p["data"]["id_type"], "number": id_number}
+            )
+            result = verify_resp.json()
+            pending_transaction.pop(user_id, None)
+            if result.get("verified"):
+                return jsonify({"message": result["message"], "tone": "income"})
+            else:
+                return jsonify({"message": result.get("error", "Verification failed."), "tone": "warning"})
+
 
         elif state == "collecting_location":
             p["data"]["location"] = reply.strip()
@@ -2825,6 +2868,30 @@ def data_balance():
     bal = cur.fetchone()[0] or 0
     conn.close()
     return jsonify({"data_balance_mb": bal, "equivalent_minutes": bal // 0.5})  # 0.5 MB/min
+
+
+@app.route('/verify/identity', methods=['POST'])
+@jwt_required()
+def verify_identity():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    id_type = data.get('type', '').lower()   # 'bvn' or 'nin'
+    id_number = data.get('number', '').strip()
+    if id_type not in ['bvn', 'nin'] or not id_number:
+        return jsonify({"error": "Missing type (bvn/nin) or number"}), 400
+
+    # ----- Placeholder for real verification API -----
+    # In production, call Mono/OnePipe here.
+    # For now, we simulate a successful verification.
+    verified = len(id_number) >= 10   # simple length check
+    # ------------------------------------------------
+
+    if verified:
+        store_user_fact(user_id, f'{id_type}_verified', True)
+        store_user_fact(user_id, f'{id_type}_number', id_number)
+        return jsonify({"message": f"Your {id_type.upper()} has been verified. Your identity is now upgraded.", "verified": True})
+    else:
+        return jsonify({"error": f"Invalid {id_type.upper()} number. Please check and try again."}), 400
 
 
 # --------------- HEALTH ---------------

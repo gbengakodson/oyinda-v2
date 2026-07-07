@@ -60,6 +60,7 @@ socketio.init_app(app)
 CORS(app, resources={r"/*": {"origins": [
     "https://oyinda-web.onrender.com",
     "http://localhost:5173",
+    "https://www.oyinda-ai.online",          # ← new domain
     "capacitor://localhost",
     "http://localhost"
 ]}})

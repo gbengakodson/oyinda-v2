@@ -157,7 +157,7 @@ def ask_next_question(user_id):
     if state == "collecting_category" and not category:
         p["state"] = "collecting_category"
         return jsonify({
-            "message": "What was this for? For example: food, transport, rent, data, health, education, savings, etc.",
+            "message": "How should I categorise this? (For example., food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, other)",
             "tone": "neutral"
         })
 
@@ -320,7 +320,17 @@ def finalise_transaction(user_id):
     log_msg = f"Oyinda just recorded this transaction: {description} – ₦{amount:,.2f} ({event_type})"
     save_conversation(user_id, 'system', log_msg)
     name = get_user_name(user_id)
-    response_text = f"Logged: {description} – ₦{amount:,.2f}"
+    category_label = category.replace('_', ' ').title() if category else "Other"
+    response_text = f"Done, {name}! I’ve recorded an expense of ₦{amount:,.2f} for {description} under {category_label}."
+
+    # Optionally, include a quick daily total if available
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND type='expense' AND date=%s",
+                (user_id, datetime.utcnow().strftime('%Y-%m-%d')))
+    daily_spend = cur.fetchone()[0]
+    conn.close()
+    response_text += f" You’ve spent ₦{daily_spend:,.2f} today so far."
 
     # Optionally update user location if collected
     location = data.get("location")
@@ -609,15 +619,99 @@ def handle_command():
         elif state == "collecting_category":
             reply_lower = reply.lower()
             cat_map = {
-                'food': ['food', 'rice', 'beans', 'garri', 'yam', 'meat', 'spaghetti'],
-                'transport': ['transport', 'okada', 'uber', 'taxi', 'bus', 'keke', 'fuel'],
-                'housing': ['rent', 'house', 'room', 'accommodation'],
-                'utilities': ['data', 'internet', 'electricity', 'bill'],
-                'health': ['doctor', 'medicine', 'hospital'],
-                'education': ['school', 'book', 'course'],
-                'investment': ['invest', 'investment', 'stocks', 'bamboo'],
-                'savings': ['save', 'savings', 'saved', 'piggyvest'],
-                'loan': ['borrow', 'loan']
+                'food': ['food', 'foods', 'feeding', 'groceries', 'rice', 'beans', 'garri', 'yam', 'meat', 'spaghetti',
+                         'noodle', 'indomie', 'bread', 'egg', 'eggs', 'milk', 'sugar', 'oil', 'tomato', 'tomatoes',
+                         'pepper', 'onion', 'fish', 'chicken', 'beef', 'snack', 'snacks', 'drink', 'drinks', 'water',
+                         'juice', 'soda', 'coke', 'fanta', 'pepsi', 'chinchin', 'cake', 'biscuit', 'biscuits', 'sweets',
+                         'ice cream', 'restaurant', 'eatery', 'bukka', 'mama put', 'chop', 'swallow', 'eba', 'amala',
+                         'fufu', 'pounded yam', 'semo'],
+                'transport': ['transport', 'transportation', 'okada', 'bike', 'motorcycle', 'uber', 'bolt', 'taxi',
+                              'bus', 'buses', 'keke', 'napep', 'tricycle', 'fuel', 'petrol', 'diesel', 'gas', 'parking',
+                              'parking fee', 'toll', 'toll gate', 'fare', 'transport fare'],
+                'housing': ['rent', 'house rent', 'house', 'room', 'accommodation', 'apartment', 'landlord', 'rentage',
+                            'property', 'maintenance', 'repair', 'repairs', 'plumbing', 'electrician', 'painting',
+                            'renovation', 'furniture', 'bed', 'mattress', 'curtain', 'curtains', 'carpet', 'rug'],
+                'utilities': ['data', 'internet', 'net', 'subscription', 'subscriptions', 'airtime', 'recharge',
+                              'top up', 'topup', 'phone bill', 'phone', 'electricity', 'electric', 'power', 'neepa',
+                              'nepa', 'bill', 'bills', 'water', 'waste', 'sewage', 'sanitation', 'utility', 'utilities',
+                              'mifi', 'router', 'wifi', 'broadband', 'cable', 'dstv', 'gotv', 'startimes',
+                              'tv subscription', 'netflix', 'prime video', 'showmax', 'domain', 'domain name',
+                              'hosting', 'website'],
+                'health': ['doctor', 'hospital', 'medicine', 'drug', 'drugs', 'pharmacy', 'chemist', 'health',
+                           'healthcare', 'medical', 'medicals', 'dental', 'dentist', 'eye', 'optician', 'glasses',
+                           'surgery', 'injection', 'vaccine', 'checkup', 'check up', 'lab', 'laboratory', 'test',
+                           'tests', 'scan', 'x-ray', 'xray', 'bandage', 'plaster', 'first aid', 'blood', 'malaria',
+                           'typhoid', 'fever', 'headache', 'pain', 'pills', 'tablets', 'capsules', 'syrup', 'ointment',
+                           'cream', 'inhaler'],
+                'education': ['school', 'school fees', 'fees', 'tuition', 'book', 'books', 'textbook', 'course',
+                              'courses', 'online course', 'udemy', 'coursera', 'training', 'workshop', 'seminar',
+                              'certification', 'exam', 'examination', 'jamb', 'waec', 'neco', 'gce', 'post utme',
+                              'form', 'registration', 'admission', 'pen', 'pencil', 'notebook', 'stationery',
+                              'calculator', 'laptop', 'research', 'project', 'thesis', 'dissertation', 'library',
+                              'printing', 'photocopy', 'typing', 'assignment', 'lesson', 'tutor', 'coaching',
+                              'extra lessons', 'after school'],
+                'investment': ['invest', 'investment', 'investments', 'stocks', 'shares', 'stock', 'bond', 'bonds',
+                               'mutual fund', 'mutual funds', 'etf', 'etfs', 'crypto', 'cryptocurrency', 'bitcoin',
+                               'btc', 'ethereum', 'eth', 'usdt', 'usdc', 'bnb', 'binance', 'bamboo', 'chaka', 'trove',
+                               'rise', 'piggyvest', 'cowrywise', 'wealth', 'wealth.ng', 'asset', 'assets', 'portfolio',
+                               'dividend', 'interest', 'roi', 'return', 'capital', 'equity', 'real estate', 'land',
+                               'property', 'gold', 'silver', 'forex', 'fx', 'trading', 'trade', 'buying shares'],
+                'savings': ['save', 'saving', 'savings', 'saved', 'deposit', 'deposits', 'fixed deposit',
+                            'treasury bill', 'tbills', 'money market', 'vault', 'lock', 'locked', 'savings plan',
+                            'target', 'goal', 'goals', 'emergency fund', 'sinking fund', 'fund', 'contribution',
+                            'contributions', 'ajo', 'esusu', 'collect', 'thrift', 'cooperative', 'coop', 'piggy bank',
+                            'piggyvest', 'cowrywise', 'kolo', 'wooden box', 'safe'],
+                'loan': ['loan', 'loans', 'borrow', 'borrowed', 'lend', 'lent', 'debt', 'debts', 'credit', 'advance',
+                         'owe', 'owing', 'repay', 'repayment', 'repayments', 'repay loan', 'pay back', 'paid back',
+                         'refund', 'microfinance', 'lapo', 'access bank loan', 'gtbank loan', 'uba loan', 'quick check',
+                         'carbon', 'fairmoney', 'palmcredit', 'aella', 'branch', 'okash', 'credit card'],
+                'income': ['income', 'salary', 'wages', 'wage', 'pay', 'payment', 'received', 'earned', 'made',
+                           'profit', 'profit from', 'revenue', 'earnings', 'freelance', 'gig', 'side hustle',
+                           'business', 'business income', 'sales', 'sold', 'client', 'customer', 'paid me',
+                           'transferred to me', 'alert', 'credit alert', 'bonus', 'commission', 'allowance', 'stipend',
+                           'grant', 'dividend', 'interest', 'return on investment', 'rent income', 'rental income',
+                           'pension', 'remittance', 'money from', 'sent me', 'sent money', 'wire transfer',
+                           'direct deposit', 'cash', 'cash income'],
+                'entertainment': ['entertainment', 'fun', 'leisure', 'movie', 'movies', 'cinema', 'film', 'show',
+                                  'concert', 'music', 'spotify', 'apple music', 'youtube', 'youtube premium', 'netflix',
+                                  'amazon prime', 'showmax', 'dstv', 'gotv', 'startimes', 'game', 'games', 'video game',
+                                  'playstation', 'ps4', 'ps5', 'xbox', 'nintendo', 'bet', 'betting', 'sport bet',
+                                  'sportybet', 'bet9ja', 'nairabet', 'lottery', 'gambling', 'pool', 'club', 'party',
+                                  'event', 'festival', 'carnival', 'outing', 'hanging out', 'chilling', 'recreation',
+                                  'subscription', 'subscriptions'],
+                'clothing': ['clothing', 'cloth', 'clothes', 'clothings', 'fashion', 'wear', 'wears', 'dress',
+                             'dresses', 'shirt', 'shirts', 'trouser', 'trousers', 'pant', 'pants', 'jeans', 'jacket',
+                             'coat', 'blazer', 'suit', 'tie', 'shoe', 'shoes', 'sneakers', 'sandal', 'sandals',
+                             'slippers', 'bag', 'bags', 'handbag', 'wallet', 'watch', 'jewelry', 'jewellery',
+                             'necklace', 'bracelet', 'ring', 'earring', 'earrings', 'chain', 'anklet', 'cap', 'hat',
+                             'scarf', 'glasses', 'sunglasses', 'belt', 'underwear', 'boxers', 'bra', 'panties',
+                             'native', 'ankara', 'agbada', 'buba', 'iro', 'gele', 'tailor', 'sewing', 'fabric',
+                             'material', 'lace', 'asoebi', 'guinea', 'brocade', 'satin', 'cotton', 'linen', 'wool',
+                             'silk', 'polish', 'dry cleaning', 'laundry', 'wash'],
+                'personal care': ['personal care', 'self care', 'grooming', 'salon', 'barbing', 'haircut', 'hair',
+                                  'hairstyle', 'braiding', 'weaving', 'weavon', 'wig', 'attachment', 'relaxer',
+                                  'shampoo', 'conditioner', 'cream', 'lotion', 'soap', 'body wash', 'deodorant',
+                                  'perfume', 'cologne', 'makeup', 'make up', 'powder', 'lipstick', 'eyeshadow',
+                                  'mascara', 'foundation', 'blush', 'nail', 'nails', 'manicure', 'pedicure', 'spa',
+                                  'massage', 'waxing', 'shaving', 'razor', 'toothpaste', 'toothbrush', 'mouthwash',
+                                  'floss', 'tissue', 'tissues', 'towel', 'sanitizer', 'sanitiser', 'hand wash'],
+                'gift': ['gift', 'gifts', 'present', 'donation', 'offering', 'tithe', 'seed', 'sowing', 'blessing',
+                         'help', 'support', 'assistance', 'charity', 'alms', 'zakat', 'sadaqah', 'give away',
+                         'give out', 'gave', 'giving', 'sponsor', 'sponsorship'],
+                'tax': ['tax', 'taxes', 'taxation', 'vat', 'withholding tax', 'company tax', 'income tax', 'paye',
+                        'firs', 'lirs', 'government', 'levy', 'duties', 'customs', 'excise', 'rate', 'rates',
+                        'assessment', 'filing', 'clearance', 'receipt', 'tax receipt', 'tin', 'tax identification',
+                        'business premises', 'development levy', 'waste management bill'],
+                'insurance': ['insurance', 'insure', 'insured', 'policy', 'premium', 'life insurance',
+                              'health insurance', 'car insurance', 'motor insurance', 'third party', 'comprehensive',
+                              'travel insurance', 'hmo', 'hygeia', 'avon', 'leadway', 'aig', 'mutual benefit', 'aiico',
+                              'coronation', 'nsurance', 'cover', 'coverage', 'plan', 'benefit', 'claim', 'renewal',
+                              'broker', 'agent', 'underwriter'],
+                'subscription': ['subscription', 'subscribe', 'membership', 'monthly', 'annual', 'yearly', 'plan',
+                                 'package', 'renewal', 'auto renew', 'recurring', 'charge', 'deduction', 'billed'],
+                'other': ['other', 'miscellaneous', 'misc', 'others', 'unknown', 'general', 'various', 'different',
+                          'multiple', 'sundry', 'expenses', 'expense', 'items', 'item', 'stuff', 'things', 'purchase',
+                          'purchases', 'buy', 'bought', 'spend', 'spent', 'paid', 'pay for', 'billed for']
             }
             matched = False
             for cat, words in cat_map.items():
@@ -628,7 +722,7 @@ def handle_command():
                     break
             if not matched:
                 return jsonify({
-                    "message": "I didn't recognise that category. Could you try again? (e.g., food, transport, rent, data)",
+                    "message": f"I didn't recognise that category. Try one of these: food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, or other. What was this expense for?",
                     "tone": "neutral"
                 })
             p["state"] = "collecting_category"   # let ask_next_question advance

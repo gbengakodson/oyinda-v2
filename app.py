@@ -1713,24 +1713,32 @@ def onboard():
     # --- 1. NEW OR RETURNING ---
     if step == 'ask_new_or_returning':
         if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
-            new_step = 'login_email'
+            # Always start login fresh – clear any partial data and ask for email
+            user_data = {}
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_email', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Welcome back! What's your email address?", "tone": "neutral"})
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
-            new_step = 'ask_name'
+            user_data = {}
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'ask_name', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Great! Let's get you started. What's your full name?", "tone": "neutral"})
         else:
             cur.close()
             conn.close()
-            return jsonify({"message": "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?", "tone": "neutral"})
-
-        cur.execute("UPDATE onboarding_sessions SET step = %s WHERE token = %s", (new_step, token))
-        conn.commit()
-        cur.close()
-        conn.close()
-        # Return the appropriate prompt for the new step
-        prompts = {
-            'login_email': "Welcome back! What's your email address?",
-            'ask_name': "Great! Let's get you started. What's your full name?"
-        }
-        return jsonify({"message": prompts[new_step], "tone": "neutral"})
+            return jsonify({
+                               "message": "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?",
+                               "tone": "neutral"})
 
     # --- 2. LOGIN EMAIL ---
     if step == 'login_email':

@@ -1095,7 +1095,15 @@ def handle_command():
     # ---------- MULTI-EXPENSE DETECTION ----------
     # Detect if the user listed multiple amounts (e.g., "data 2000, chinchin 200, milk 1000")
     # This runs BEFORE the single-expense patterns, so it doesn't get hijacked.
-    amounts = re.findall(r'(\d[\d,]*\.?\d*)', text)
+    # Detect amounts with optional currency prefixes (₦, $, €, £, R, etc.) and common 3‑letter codes (NGN, USD, GHS, KES, ZAR, etc.)
+    amounts = re.findall(
+        r'(?:'
+        r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)'
+        r'\s?'
+        r')?'
+        r'(\d[\d,]*\.?\d*)',
+        text
+    )
     if len(amounts) >= 2:
         # Convert all strings to floats
         parsed_amounts = []
@@ -1152,7 +1160,11 @@ def handle_command():
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
     # ---------- SMART FALLBACK: detect number (supports "1k", "2.5K", etc.) → start conversation ----------
-    amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(k|K)?', text)
+    amount_match = re.search(
+        r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)\s?'
+        r'(\d[\d,]*\.?\d*)',
+        text
+    )
     if amount_match:
         amount_str = amount_match.group(1).replace(',', '')
         try:

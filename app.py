@@ -2768,6 +2768,17 @@ def view_shared_report(token):
     return html
 
 
+@app.route('/tax/breakdown', methods=['GET'])
+@jwt_required()
+def tax_breakdown():
+    user_id = get_jwt_identity()
+    try:
+        breakdown = calculate_all_taxes(user_id)
+        return jsonify(breakdown)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 @app.route('/account/<account_id>', methods=['DELETE', 'OPTIONS'])
 @jwt_required(optional=True)   # allow OPTIONS without JWT

@@ -381,6 +381,106 @@ def calculate_net_worth(user_id):
     result += f"**Net Worth: ₦{net_worth:,.2f}**"
     return result
 
+
+def calculate_all_taxes(user_id):
+    """Calculate all applicable Nigerian taxes based on logged income."""
+    conn = get_conn()
+    cur = conn.cursor()
+    today = datetime.utcnow().date()
+    year_start = today.replace(month=1, day=1).strftime('%Y-%m-%d')
+    today_str = today.strftime('%Y-%m-%d')
+
+    # ----- Get total income by category for this year -----
+    cur.execute("""
+        SELECT category, SUM(amount) FROM transactions_view
+        WHERE user_id=%s AND type='income' AND date BETWEEN %s AND %s
+        GROUP BY category
+    """, (user_id, year_start, today_str))
+    rows = cur.fetchall()
+    conn.close()
+
+    income_by_cat = {row[0]: row[1] for row in rows}
+    total_income = sum(income_by_cat.values())
+
+    # Map categories to tax types
+    business_cats = ['income', 'business', 'sales', 'freelance', 'gig', 'side hustle']
+    salary_cats = ['salary', 'wages', 'stipend', 'allowance']
+    investment_cats = ['investment', 'dividend', 'interest', 'capital gains']
+    rental_cats = ['rental income', 'rent income', 'property']
+
+    business_income = sum(income_by_cat.get(cat, 0) for cat in business_cats)
+    salary_income = sum(income_by_cat.get(cat, 0) for cat in salary_cats)
+    investment_income = sum(income_by_cat.get(cat, 0) for cat in investment_cats)
+    rental_income = sum(income_by_cat.get(cat, 0) for cat in rental_cats)
+
+    taxes = []
+
+    # 1. Presumptive Tax (for micro‑businesses)
+    # Nigerian presumptive tax is typically a flat rate based on turnover.
+    # Example: 0.5% of turnover, minimum ₦5,000, maximum ₦50,000.
+    if business_income > 0:
+        presumptive_rate = 0.005  # 0.5%
+        presumptive_tax = max(5000, min(50000, business_income * presumptive_rate))
+        taxes.append({
+            "tax_type": "Presumptive Tax (Business)",
+            "taxable_income": round(business_income, 2),
+            "tax_amount": round(presumptive_tax, 2),
+            "brackets": f"0.5% of ₦{business_income:,.2f} turnover"
+        })
+
+    # 2. Personal Income Tax (PAYE)
+    if salary_income > 0:
+        # Simplified PAYE brackets
+        if salary_income <= 300000:
+            paye = 0
+        elif salary_income <= 600000:
+            paye = (salary_income - 300000) * 0.07
+        elif salary_income <= 12000000:
+            paye = 300000 * 0.07 + (salary_income - 600000) * 0.15
+        elif salary_income <= 30000000:
+            paye = 300000 * 0.07 + 6000000 * 0.15 + (salary_income - 12000000) * 0.25
+        else:
+            paye = 300000 * 0.07 + 6000000 * 0.15 + 18000000 * 0.25 + (salary_income - 30000000) * 0.30
+        taxes.append({
+            "tax_type": "PAYE (Salary)",
+            "taxable_income": round(salary_income, 2),
+            "tax_amount": round(paye, 2),
+            "brackets": "Nigerian PAYE brackets"
+        })
+
+    # 3. Withholding Tax on Investment Income
+    if investment_income > 0:
+        withholding_rate = 0.10
+        wht = investment_income * withholding_rate
+        taxes.append({
+            "tax_type": "Withholding Tax (Investments)",
+            "taxable_income": round(investment_income, 2),
+            "tax_amount": round(wht, 2),
+            "brackets": f"10% of ₦{investment_income:,.2f}"
+        })
+
+    # 4. Withholding Tax on Rental Income
+    if rental_income > 0:
+        rent_wht_rate = 0.10
+        rent_wht = rental_income * rent_wht_rate
+        taxes.append({
+            "tax_type": "Withholding Tax (Rent)",
+            "taxable_income": round(rental_income, 2),
+            "tax_amount": round(rent_wht, 2),
+            "brackets": f"10% of ₦{rental_income:,.2f}"
+        })
+
+    total_tax = sum(t['tax_amount'] for t in taxes)
+
+    return {
+        "taxes": taxes,
+        "total_tax": round(total_tax, 2),
+        "year": today.year,
+        "generated_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    }
+
+
+
 def create_default_connected_account(conn, user_id):
     cur = conn.cursor()
     cur.execute("INSERT INTO connected_accounts (user_id, account_type, provider, label, currency) VALUES (%s, 'bank', 'demo_bank', 'Main NGN Account', 'NGN') ON CONFLICT DO NOTHING", (user_id,))

@@ -474,7 +474,8 @@ def calculate_all_taxes(user_id):
 
     return {
         "taxes": taxes,
-        "total_tax": round(total_tax, 2),
+        "total_tax": total_tax,
+        "total_income": round(total_income, 2),
         "year": today.year,
         "generated_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
     }

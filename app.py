@@ -3204,39 +3204,18 @@ def get_score_description(score):
 @jwt_required()
 def tax_estimate():
     user_id = get_jwt_identity()
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Get total income in last 12 months (or this year)
-    cur.execute("""
-        SELECT SUM(amount) FROM transactions_view
-        WHERE user_id=%s AND type='income'
-          AND date >= DATE_TRUNC('year', NOW())
-    """, (user_id,))
-    yearly_income = cur.fetchone()[0] or 0
-    conn.close()
-
-    # Nigerian presumptive tax (simplified): flat rate based on income bracket
-    # This is a rough approximation; real tax laws are more complex.
-    if yearly_income <= 300000:
-        tax = 0
-    elif yearly_income <= 600000:
-        tax = (yearly_income - 300000) * 0.07
-    elif yearly_income <= 12000000:
-        tax = (yearly_income - 600000) * 0.15 + 300000 * 0.07
-    elif yearly_income <= 30000000:
-        tax = (yearly_income - 12000000) * 0.25 + 18000000 * 0.15 + 300000 * 0.07
-    else:
-        tax = (yearly_income - 30000000) * 0.30 + 6000000 * 0.25 + 18000000 * 0.15 + 300000 * 0.07
-
-    tax = round(tax, 2)
-
-    return jsonify({
-        "yearly_income": round(yearly_income, 2),
-        "estimated_tax": tax,
-        "currency": "NGN",
-        "note": "This is an estimate based on your logged income. Please consult a tax professional."
-    })
+    try:
+        from core import calculate_all_taxes
+        breakdown = calculate_all_taxes(user_id)
+        return jsonify({
+            "yearly_income": breakdown.get("total_income", 0),
+            "estimated_tax": breakdown["total_tax"],
+            "taxes": breakdown["taxes"],
+            "currency": "NGN",
+            "note": "This is an estimate based on your logged income. Please consult a tax professional."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/tax/pay', methods=['POST'])
 @jwt_required()

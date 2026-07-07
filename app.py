@@ -1699,7 +1699,16 @@ def onboard():
     step = row[0]
     user_data = row[1] if isinstance(row[1], dict) else json.loads(row[1])
 
-    # ---------- STEP HANDLERS (each returns immediately) ----------
+    # Allow user to force‑restart the login flow
+    if text.strip().lower() == 'reset':
+        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "message": "Let's start over. Are you new here, or do you already have an account? (Type 'new' or 'login')",
+            "tone": "neutral"
+        })
 
     # --- 1. NEW OR RETURNING ---
     if step == 'ask_new_or_returning':
@@ -1747,15 +1756,23 @@ def onboard():
         from core import authenticate_user
         user = authenticate_user(user_data['email'], user_data['password'])
         if not user:
+            # Keep the session alive – go back to ask_password for a retry
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
             conn.commit()
             cur.close()
             conn.close()
-            return jsonify({"message": "Invalid email or password. Please try again later.", "tone": "warning"})
-        # Login success
+            return jsonify({
+                "message": "Incorrect password. Please try again (or type 'reset' to start over).",
+                "tone": "warning"
+            })
+        # Success – proceed as before
         access_token = create_access_token(identity=str(user['id']))
+        # … rest of success handling unchanged
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))

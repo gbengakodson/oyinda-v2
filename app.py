@@ -2017,6 +2017,9 @@ def conversational_reply(user_id, text):
         reply = _call_llm("groq", system_msg)
         print("CONVERSATIONAL_REPLY groq reply:", reply)
         if not reply:
+            reply = _call_llm("google", system_msg)
+            print("CONVERSATIONAL_REPLY google reply:", reply)
+        if not reply:
             reply = _call_llm("openai", system_msg)
             print("CONVERSATIONAL_REPLY openai reply:", reply)
 
@@ -2077,18 +2080,18 @@ def _call_llm(provider, system_msg):
                 json={
                     "model": "qwen-3.6-27b",
                     "messages": [{"role": "system", "content": system_msg}],
-                    "temperature": 0.8,
+                    "temperature": 0.7,
                     "top_p": 0.9,
                     "max_tokens": 200
                 },
                 timeout=15
             )
-        else:  # openai
+        elif provider == "openai":
             resp = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"},
                 json={
-                    "model": "gpt-4o-mini",   # correct model name
+                    "model": "gpt-4o-mini",
                     "messages": [{"role": "system", "content": system_msg}],
                     "temperature": 0.8,
                     "top_p": 0.9,
@@ -2096,13 +2099,39 @@ def _call_llm(provider, system_msg):
                 },
                 timeout=15
             )
-        data = resp.json()
-        print(f"CALL_LLM {provider} status: {resp.status_code}, body: {str(data)[:300]}")
-        if 'choices' in data:
-            return data['choices'][0]['message']['content'].strip()
+        elif provider == "google":
+            # Gemini via REST API
+            api_key = os.environ.get("GOOGLE_API_KEY")
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+                json={
+                    "contents": [{"parts": [{"text": system_msg}]}],
+                    "generationConfig": {
+                        "temperature": 0.7,
+                        "topP": 0.9,
+                        "maxOutputTokens": 200
+                    }
+                },
+                timeout=15
+            )
+            data = resp.json()
+            # Gemini returns a different structure
+            try:
+                return data['candidates'][0]['content']['parts'][0]['text'].strip()
+            except (KeyError, IndexError):
+                print(f"CALL_LLM google unexpected response: {data}")
+                return None
         else:
-            print(f"CALL_LLM {provider} error: {data}")
             return None
+
+        # For Groq and OpenAI, extract the reply
+        if provider in ("groq", "openai"):
+            data = resp.json()
+            if 'choices' in data:
+                return data['choices'][0]['message']['content'].strip()
+            else:
+                print(f"CALL_LLM {provider} error: {data}")
+                return None
     except Exception as e:
         print(f"CALL_LLM {provider} exception: {str(e)}")
         return None

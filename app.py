@@ -1726,7 +1726,6 @@ def onboard():
     cur.execute("SELECT step, data FROM onboarding_sessions WHERE token = %s", (token,))
     row = cur.fetchone()
     if not row:
-        # Expired or invalid – start fresh
         cur.close()
         conn.close()
         token = str(uuid.uuid4())
@@ -1748,7 +1747,7 @@ def onboard():
     step = row[0]
     user_data = row[1] if isinstance(row[1], dict) else json.loads(row[1])
 
-    # Allow user to force‑restart the login flow
+    # ---------- RESET HANDLER ----------
     if text.strip().lower() == 'reset':
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
@@ -1759,19 +1758,18 @@ def onboard():
             "tone": "neutral"
         })
 
-    # --- 1. NEW OR RETURNING ---
+    # ---- NEW OR RETURNING ----
     if step == 'ask_new_or_returning':
         if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
-            # Always start login fresh – clear any partial data and ask for email
             user_data = {}
             cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_email', data = %s WHERE token = %s",
+                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
             )
             conn.commit()
             cur.close()
             conn.close()
-            return jsonify({"message": "Welcome back! What's your email address?", "tone": "neutral"})
+            return jsonify({"message": "Welcome back! What's your email or username?", "tone": "neutral"})
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
             user_data = {}
             cur.execute(
@@ -1786,16 +1784,13 @@ def onboard():
             cur.close()
             conn.close()
             return jsonify({
-                               "message": "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?",
-                               "tone": "neutral"})
+                "message": "I didn't get that. Are you new here (type 'new') or do you already have an account (type 'login')?",
+                "tone": "neutral"
+            })
 
-    # --- 2. LOGIN EMAIL ---
-    if step == 'login_email':
-        if '@' not in text or '.' not in text:
-            cur.close()
-            conn.close()
-            return jsonify({"message": "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
-        user_data['email'] = text.strip()
+    # ---- LOGIN BRANCH ----
+    if step == 'login_identity':
+        user_data['identity'] = text.strip()
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
@@ -1805,33 +1800,36 @@ def onboard():
         conn.close()
         return jsonify({"message": "Enter your password:", "tone": "neutral"})
 
-    # --- 3. LOGIN PASSWORD ---
     if step == 'login_password':
         user_data['password'] = text
-        cur.close()
-        conn.close()
-        from core import authenticate_user
-        user = authenticate_user(user_data['email'], user_data['password'])
+        identity = user_data['identity']
+        # Try email first, then username
+        from core import authenticate_user_by_email_or_username
+        user = authenticate_user_by_email_or_username(identity, user_data['password'])
         if not user:
-            # Keep the session alive – go back to ask_password for a retry
-            conn = get_conn()
-            cur = conn.cursor()
+            # Try finding by username
+            conn2 = get_conn()
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE username = %s", (identity,))
+            row2 = cur2.fetchone()
+            conn2.close()
+            if row2 and check_password(user_data['password'], row2[3]):
+                user = {"id": str(row2[0]), "name": row2[1], "email": row2[2], "account_type": row2[4]}
+        if not user:
+            # Keep session alive – back to login_identity for retry
             cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
+                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
             )
             conn.commit()
             cur.close()
             conn.close()
             return jsonify({
-                "message": "Incorrect password. Please try again (or type 'reset' to start over).",
+                "message": "Incorrect email/username or password. Please try again (or type 'reset' to start over).",
                 "tone": "warning"
             })
-        # Success – proceed as before
+        # Success
         access_token = create_access_token(identity=str(user['id']))
-        # … rest of success handling unchanged
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
         cur.close()
@@ -1844,25 +1842,9 @@ def onboard():
             "redirect": "/dashboard"
         })
 
-    # --- 4. ASK NAME (registration) ---
+    # ---- REGISTRATION BRANCH (no email) ----
     if step == 'ask_name':
         user_data['name'] = text.strip()
-        cur.execute(
-            "UPDATE onboarding_sessions SET step = 'ask_email', data = %s WHERE token = %s",
-            (json.dumps(user_data), token)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"message": f"Nice to meet you, {user_data['name']}! What's your email address?", "tone": "neutral"})
-
-    # --- 5. ASK EMAIL (registration) ---
-    if step == 'ask_email':
-        if '@' not in text or '.' not in text:
-            cur.close()
-            conn.close()
-            return jsonify({"message": "That doesn't look like a valid email. Could you double‑check?", "tone": "neutral"})
-        user_data['email'] = text.strip()
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_password', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
@@ -1870,9 +1852,8 @@ def onboard():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": "Create a password (minimum 6 characters):", "tone": "neutral"})
+        return jsonify({"message": f"Nice to meet you, {user_data['name']}! Create a password (minimum 6 characters):", "tone": "neutral"})
 
-    # --- 6. ASK PASSWORD (registration) ---
     if step == 'ask_password':
         if len(text) < 6:
             cur.close()
@@ -1888,7 +1869,6 @@ def onboard():
         conn.close()
         return jsonify({"message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
 
-    # --- 7. ASK TYPE ---
     if step == 'ask_type':
         user_type = text.strip().lower()
         if user_type not in ['individual', 'business', 'company']:
@@ -1897,21 +1877,19 @@ def onboard():
             return jsonify({"message": "Please choose one: individual, business, or company.", "tone": "neutral"})
         user_data['account_type'] = user_type
         if user_type in ['business', 'company']:
-            new_step = 'ask_business_name'
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
         else:
-            new_step = 'finalize'
-        cur.execute(
-            "UPDATE onboarding_sessions SET step = %s, data = %s WHERE token = %s",
-            (new_step, json.dumps(user_data), token)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        if new_step == 'finalize':
-            return finalize_registration(token, user_data)
-        return jsonify({"message": "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
+            cur.close()
+            conn.close()
+            return finalize_registration(token)
 
-    # --- 8. ASK BUSINESS NAME ---
     if step == 'ask_business_name':
         if text.strip().lower() != 'skip':
             user_data['business_name'] = text.strip()
@@ -1924,15 +1902,14 @@ def onboard():
         conn.close()
         return jsonify({"message": "Business address? (or type 'skip')", "tone": "neutral"})
 
-    # --- 9. ASK BUSINESS ADDRESS ---
     if step == 'ask_business_address':
         if text.strip().lower() != 'skip':
             user_data['business_address'] = text.strip()
         cur.close()
         conn.close()
-        return finalize_registration(token, user_data)
+        return finalize_registration(token)
 
-    # --- Fallback ---
+    # Fallback
     cur.close()
     conn.close()
     return jsonify({"message": "Something went wrong. Let's start over. What's your full name?", "tone": "neutral"})
@@ -3621,6 +3598,40 @@ def debug_groq_echo():
         return jsonify({"error": str(e)})
 
 
+@app.route('/tts', methods=['POST'])
+@jwt_required()
+def text_to_speech():
+    data = request.get_json()
+    text = data.get('text', '')
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    import requests
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    resp = requests.post(
+        f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={api_key}",
+        json={
+            "input": {"text": text},
+            "voice": {
+                "languageCode": "en-NG",
+                "name": "en-NG-Wavenet-A",   # female Nigerian voice
+                "ssmlGender": "FEMALE"
+            },
+            "audioConfig": {
+                "audioEncoding": "MP3",
+                "speakingRate": 0.9,          # slower, natural pace
+                "pitch": 0.0
+            }
+        }
+    )
+    data = resp.json()
+    if "audioContent" in data:
+        import base64
+        audio_bytes = base64.b64decode(data["audioContent"])
+        return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
+    return jsonify({"error": "TTS failed"}), 500
+
+
 # --------------- FRONTEND ---------------
 @app.route('/')
 def landing():
@@ -3665,44 +3676,61 @@ def admin_summary():
 
 
 
-def finalize_registration(token, user_data):
-    from core import create_user
-    user_id = create_user(
-        name=user_data.get('name', ''),
-        email=user_data.get('email', ''),
-        password=user_data.get('password', ''),
-        account_type=user_data.get('account_type', 'personal'),
-        address=user_data.get('business_address', '')
-    )
-    if not user_id:
-        # Email already exists – go back to email step
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("UPDATE onboarding_sessions SET step = 'ask_email' WHERE token = %s", (token,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"message": "That email is already registered. Please enter a different email address:", "tone": "neutral"})
-
-    # Clean up session
+def finalize_registration(token):
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute("SELECT data FROM onboarding_sessions WHERE token = %s", (token,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Session expired. Please start again."})
+
+    user_data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+
+    # Generate a unique username from the name
+    base_username = re.sub(r'[^a-z0-9]', '', user_data["name"].lower())[:15]
+    username = base_username
+    cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+    counter = 1
+    while cur.fetchone():
+        username = f"{base_username}{counter}"
+        cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+        counter += 1
+
+    # Internal email – not asked from user
+    internal_email = f"{username}@oyinda.local"
+
+    from core import create_user
+    user_id = create_user(
+        name=user_data["name"],
+        email=internal_email,
+        password=user_data["password"],
+        account_type=user_data.get("account_type", "personal"),
+        address=user_data.get("business_address", "")
+    )
+
+    if not user_id:
+        cur.close()
+        conn.close()
+        return jsonify({"message": "That username is taken. Please try a different name."})
+
+    if user_data.get("account_type") in ['business', 'company']:
+        store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
+        store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
+
+    store_user_fact(user_id, "username", username)
+
     cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
     conn.commit()
     cur.close()
     conn.close()
 
-    if user_data.get('account_type') in ['business', 'company']:
-        store_user_fact(user_id, 'business_name', user_data.get('business_name', ''))
-        store_user_fact(user_id, 'business_address', user_data.get('business_address', ''))
-
     access_token = create_access_token(identity=str(user_id))
-    reply = onboarding_message(token, 'confirm', user_data, None)
     return jsonify({
-        "token": token,
         "jwt": access_token,
-        "user": {"id": user_id, "name": user_data['name']},
-        "message": reply or f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
+        "user": {"id": user_id, "name": user_data["name"]},
+        "message": f"All set, {user_data['name']}! Your username is {username}. You're now registered.",
         "tone": "income",
         "redirect": "/dashboard"
     })

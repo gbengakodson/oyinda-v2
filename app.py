@@ -880,6 +880,12 @@ def handle_command():
                                      'health score', 'debt', 'owe', 'liability']):
         return handle_query(text, user_id)
 
+    if 'open a bank account' in text_lower or 'open bank account' in text_lower:
+        return jsonify({
+            "message": "We are partnering with trusted banks to let you open an account right here in Oyinda. You won't need to visit a bank or fill paper forms. I'll let you know as soon as this is ready!",
+            "tone": "neutral"
+        })
+
     # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
     if swap_match:
@@ -2010,10 +2016,16 @@ def conversational_reply(user_id, text):
         print("CONVERSATIONAL_REPLY system_msg (first 200 chars):", system_msg[:200])
         reply = _call_llm("groq", system_msg)
         print("CONVERSATIONAL_REPLY groq reply:", reply)
+        if not reply:
+            reply = _call_llm("openai", system_msg)
+            print("CONVERSATIONAL_REPLY openai reply:", reply)
+
+        # Occasionally ask for feedback (10% chance)
         if reply:
-            return reply
-        reply = _call_llm("openai", system_msg)
-        print("CONVERSATIONAL_REPLY openai reply:", reply)
+            import random
+            if random.random() < 0.1:
+                reply = reply + "\n\nBy the way, how would you rate your experience with me so far? 😊"
+
         return reply
     except Exception:
         return None

@@ -74,6 +74,8 @@ CRON_SECRET = os.environ.get('CRON_SECRET', 'change-me-to-a-random-string')
 #     "category": "food" or None,
 # }
 pending_transaction = {}
+# Cache for live exchange rates
+_live_rates_cache = {"data": {}, "last_fetched": None}
 
 
 

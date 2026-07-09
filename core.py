@@ -542,12 +542,31 @@ def create_user(name, email, password, account_type="personal", address=""):
     finally:
         conn.close()
 
+
 def authenticate_user(email, password):
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE email=%s", (email,))
         row = cur.fetchone()
+        if row and check_password(password, row[3]):
+            return {"id": str(row[0]), "name": row[1], "email": row[2], "account_type": row[4]}
+        return None
+    finally:
+        conn.close()
+
+
+def authenticate_user_by_email_or_username(email_or_username, password):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # Try email first
+        cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE email=%s", (email_or_username,))
+        row = cur.fetchone()
+        if not row:
+            # Try username
+            cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE username=%s", (email_or_username,))
+            row = cur.fetchone()
         if row and check_password(password, row[3]):
             return {"id": str(row[0]), "name": row[1], "email": row[2], "account_type": row[4]}
         return None

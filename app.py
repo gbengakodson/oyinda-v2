@@ -313,15 +313,19 @@ def finalise_transaction(user_id):
     amount = data["amount"]
     description = data.get("description", "")
 
-    if trans_type in ("expense", "spent", "loan"):
+    if trans_type == "managed_funds":
+        event_type = "InvestmentMade"  # or create a dedicated event type
+        category = "investment_capital"
+        response_text = f"Noted, {name}! You received ₦{amount:,.2f} as investment capital from {description}."
+    elif trans_type in ("expense", "spent", "loan"):
         event_type = "ExpenseLogged"
         category = data.get("category", "other")
     elif trans_type == "income":
         event_type = "IncomeReceived"
-        category = "income"
+        category = data.get("category", "income")
     elif trans_type == "investment":
         event_type = "InvestmentMade"
-        category = "investment"
+        category = data.get("category", "investment")
     else:
         event_type = "ExpenseLogged"
         category = "other"
@@ -1320,12 +1324,16 @@ def handle_command():
                 pending_transaction[user_id]["data"]["category"] = "investment"
                 pending_transaction[user_id]["category"] = "investment"
                 return ask_for_location(user_id)
-            # Managed funds (money received from investor / partner to trade with)
-            elif any(word in text.lower() for word in ['investor gave', 'partner gave', 'someone gave me to invest', 'manage this money', 'capital to trade', 'investment capital']):
+            elif any(phrase in text.lower() for phrase in [
+                'investor gave', 'partner gave', 'capital to trade',
+                'manage this money', 'investment capital', 'to invest',
+                'for investment', 'fund me', 'funds to trade',
+                'money to run business', 'money for business'
+            ]):
                 pending_transaction[user_id]["data"]["type"] = "managed_funds"
                 pending_transaction[user_id]["state"] = "confirming_funds"
                 return jsonify({
-                    "message": f"I understand someone gave you {amount:,.2f} as investment capital. Is that correct? (reply 'yes' or 'no')",
+                    "message": f"I understand someone gave you {amount_converted:,.2f} {home_currency} as investment capital. Is that correct? (reply 'yes' or 'no')",
                     "tone": "neutral"
                 })
 

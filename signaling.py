@@ -1,7 +1,16 @@
 from flask_socketio import SocketIO, join_room, leave_room, emit
 from flask import request
 
-socketio = SocketIO()
+
+socketio = SocketIO(
+    cors_allowed_origins=[
+        "https://oyinda-web.onrender.com",
+        "http://localhost:5173",
+        "https://www.oyinda-ai.online",   # custom domain
+        "capacitor://localhost",
+        "http://localhost"
+    ]
+)
 
 @socketio.on('call-user')
 def handle_call(data):

@@ -116,6 +116,31 @@ def normalize_date(date_str):
     return today.strftime("%Y-%m-%d")
 
 
+def get_live_rate(from_currency, to_currency="NGN"):
+    """Fetch live exchange rate from a free API. Cached for 4 hours."""
+    if _live_rates_cache["last_fetched"] and (datetime.utcnow() - _live_rates_cache["last_fetched"]).seconds < 14400:
+        rates = _live_rates_cache["data"].get("rates", {})
+        if from_currency in rates:
+            return rates[from_currency]
+
+    try:
+        resp = requests.get(f"https://api.exchangerate-api.com/v4/latest/{to_currency}", timeout=10)
+        data = resp.json()
+        _live_rates_cache["data"] = data
+        _live_rates_cache["last_fetched"] = datetime.utcnow()
+        return data.get("rates", {}).get(from_currency, 1.0)
+    except Exception:
+        fallback = {"USD": 1550, "GBP": 1950, "EUR": 1700}
+        return fallback.get(from_currency, 1.0)
+
+def convert_currency(amount, from_currency, to_currency="NGN"):
+    """Convert amount from one currency to another using live rate."""
+    if from_currency.upper() == to_currency.upper():
+        return amount
+    rate = get_live_rate(from_currency.upper(), to_currency.upper())
+    return round(amount * rate, 2)
+
+
 def get_last_context(user_id):
     """Return the last logged expense/income details for context."""
     conn = get_conn()
@@ -311,6 +336,8 @@ def finalise_transaction(user_id):
         "location": data.get("location"),
         "housing_type": data.get("housing_type"),
         "transport_type": data.get("transport_type"),
+        "original_amount": data.get("original_amount"),
+        "original_currency": data.get("original_currency"),
 
     }
     payload = {k: v for k, v in payload.items() if v is not None}
@@ -629,6 +656,20 @@ def handle_command():
                     "tone": "neutral"
                 })
 
+        elif state == "confirming_funds":
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
+                p["data"]["type"] = "managed_funds"
+                p["data"]["category"] = "investment_capital"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            else:
+                # User says no – revert to generic type question
+                p["state"] = "collecting_type"
+                return jsonify({
+                    "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",
+                    "tone": "neutral"
+                })
+
 
         elif state == "collecting_category":
             reply_lower = reply.lower()
@@ -872,6 +913,15 @@ def handle_command():
     # 2b. Link bank command
     if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
         return jsonify({"open_mono": True, "message": "Opening bank connection…"})
+
+    # Set home currency
+    if text.lower().startswith('set my currency to ') or text.lower().startswith('change my currency to '):
+        parts = text.split()
+        new_currency = parts[-1].upper()
+        if len(new_currency) != 3:
+            return jsonify({"message": "Please use a 3‑letter currency code, like USD, GHS, NGN."})
+        store_user_fact(user_id, 'home_currency', new_currency)
+        return jsonify({"message": f"Your home currency is now {new_currency}. I'll convert future transactions to {new_currency}."})
 
 
 
@@ -1208,28 +1258,51 @@ def handle_command():
         save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
-    # ---------- SMART FALLBACK: detect number (supports "1k", "$19", "₦500", etc.) ----------
+    # ---------- SMART FALLBACK with user‑aware currency conversion ----------
     amount_match = re.search(
-        r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)\s?'
-        r'(\d[\d,]*\.?\d*)\s*(k|K)?',  # capture optional 'k' as group(2)
+        r'([₦$€£¥]|R\$?|RM|Rp|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ)?\s?'
+        r'(\d[\d,]*\.?\d*)\s*(k|K)?',
         text
     )
     if amount_match:
-        amount_str = amount_match.group(1).replace(',', '')
+        currency_symbol = amount_match.group(1) or '₦'
+        symbol_to_code = {
+            '$': 'USD', '₦': 'NGN', '€': 'EUR', '£': 'GBP',
+            '¥': 'JPY', 'R': 'ZAR', 'R$': 'ZAR', 'GH₵': 'GHS', 'DA': 'DZD',
+            'DH': 'MAD', 'Dhs': 'AED', 'TSh': 'TZS', 'FCFA': 'XAF', 'Br': 'ETB',
+            'CFA': 'XAF', 'RM': 'MYR', 'Rp': 'IDR', 'K': 'KES', 'Sh': 'KES',
+        }
+        currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
+        amount_str = amount_match.group(2).replace(',', '')
         try:
-            amount = float(amount_str)
-            if amount_match.group(2):  # 'k' or 'K' present → multiply by 1000
-                amount *= 1000
+            amount_original = float(amount_str)
+            if amount_match.group(3):  # 'k'/'K'
+                amount_original *= 1000
+
+            # Get user's home currency
+            from core import get_user_facts
+            facts = get_user_facts(user_id)
+            home_currency = facts.get('home_currency', 'NGN') or 'NGN'
+
+            # Convert to home currency
+            amount_converted = convert_currency(amount_original, currency_code,
+                                                home_currency) if currency_code != home_currency else amount_original
+
             pending_transaction[user_id] = {
                 "state": "collecting_type",
                 "data": {
-                    "amount": amount,
+                    "amount": amount_converted,  # logged in home currency
+                    "original_amount": amount_original,
+                    "original_currency": currency_code,
+                    "home_currency": home_currency,
                     "description": text,
-                    "currency": "NGN",
+                    "currency": home_currency,
                     "category": None
                 },
                 "category": None
             }
+
+            # … (rest of keyword detection unchanged, using amount_converted for messages)
 
             # Detect probable type from keywords
             if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
@@ -1245,13 +1318,22 @@ def handle_command():
                 pending_transaction[user_id]["data"]["category"] = "investment"
                 pending_transaction[user_id]["category"] = "investment"
                 return ask_for_location(user_id)
+            # Managed funds (money received from investor / partner to trade with)
+            elif any(word in text.lower() for word in ['investor gave', 'partner gave', 'someone gave me to invest', 'manage this money', 'capital to trade', 'investment capital']):
+                pending_transaction[user_id]["data"]["type"] = "managed_funds"
+                pending_transaction[user_id]["state"] = "confirming_funds"
+                return jsonify({
+                    "message": f"I understand someone gave you {amount:,.2f} as investment capital. Is that correct? (reply 'yes' or 'no')",
+                    "tone": "neutral"
+                })
+
             elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
                 pending_transaction[user_id]["data"]["type"] = "loan"
                 pending_transaction[user_id]["state"] = "collecting_category"
                 return ask_next_question(user_id)
             else:
                 return jsonify({
-                    "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
+                    "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
                     "tone": "neutral"
                 })
         except ValueError:
@@ -1675,11 +1757,41 @@ def handle_query(text, user_id):
 
         # If LLM fails, fall through to the generic conversational fallback
 
-    # If no specific query matched, try conversational LLM
-    reply = conversational_reply(user_id, text)
-    if reply:
-        save_conversation(user_id, 'cfo', reply)
-        return jsonify({"answer": reply, "tone": "neutral"})
+
+    # Currency exchange rate queries: "what is USD to NGN?", "how much is $1 in naira?", "rate of GBP to GHS", etc.
+    rate_match = re.search(r'(?:rate|exchange|convert|how much is|what is|wetin be)\s+(\w{2,4})\s*(?:to|in|for|dey)\s*(\w{2,4})', text_lower)
+    if rate_match:
+        from_cur = rate_match.group(1).upper()
+        to_cur = rate_match.group(2).upper()
+        if len(from_cur) < 3 or len(to_cur) < 3:
+            # maybe the user typed "usd" as "dollar"? We can map common names
+            currency_aliases = {
+                'dollar': 'USD', 'dollars': 'USD', 'usd': 'USD',
+                'naira': 'NGN', 'ngn': 'NGN',
+                'pounds': 'GBP', 'pound': 'GBP', 'sterling': 'GBP',
+                'euro': 'EUR', 'eur': 'EUR',
+                'cedi': 'GHS', 'ghs': 'GHS',
+                'rand': 'ZAR', 'zar': 'ZAR',
+                'shilling': 'KES', 'kes': 'KES',
+            }
+            from_cur = currency_aliases.get(from_cur.lower(), from_cur)
+            to_cur = currency_aliases.get(to_cur.lower(), to_cur)
+        if from_cur and to_cur and len(from_cur) == 3 and len(to_cur) == 3:
+            try:
+                rate = convert_currency(1, from_cur, to_cur)
+                return jsonify({
+                    "answer": f"The current exchange rate is **1 {from_cur} = {rate:,.2f} {to_cur}**.",
+                    "tone": "neutral"
+                })
+            except Exception:
+                pass
+
+        # If no specific query matched, try conversational LLM
+        reply = conversational_reply(user_id, text)
+        if reply:
+            save_conversation(user_id, 'cfo', reply)
+            return jsonify({"answer": reply, "tone": "neutral"})
+
 
     # Static fallback if LLM fails
     return jsonify({

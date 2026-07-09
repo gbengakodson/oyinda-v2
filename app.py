@@ -1208,10 +1208,10 @@ def handle_command():
         save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
-    # ---------- SMART FALLBACK: detect number (supports "1k", "2.5K", etc.) → start conversation ----------
+    # ---------- SMART FALLBACK: detect number (supports "1k", "$19", "₦500", etc.) ----------
     amount_match = re.search(
         r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)\s?'
-        r'(\d[\d,]*\.?\d*)',
+        r'(\d[\d,]*\.?\d*)\s*(k|K)?',  # capture optional 'k' as group(2)
         text
     )
     if amount_match:
@@ -1240,15 +1240,6 @@ def handle_command():
                 pending_transaction[user_id]["data"]["type"] = "income"
                 pending_transaction[user_id]["state"] = "collecting_category"
                 return ask_next_question(user_id)
-            elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
-                # We need to clarify direction: borrowed FROM someone (liability) or lent TO someone (asset)
-                pending_transaction[user_id]["state"] = "collecting_loan_direction"
-                pending_transaction[user_id]["data"]["type"] = "loan"
-                return jsonify({
-                    "message": "Did you borrow this money from someone (you will pay it back), or did you lend it to someone (they will pay you)?",
-                    "tone": "neutral"
-                })
-
             elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
                 pending_transaction[user_id]["data"]["type"] = "investment"
                 pending_transaction[user_id]["data"]["category"] = "investment"
@@ -1259,13 +1250,17 @@ def handle_command():
                 pending_transaction[user_id]["state"] = "collecting_category"
                 return ask_next_question(user_id)
             else:
-                # No clear type – ask the basic question
                 return jsonify({
                     "message": f"Did you spend, earn, invest, save, or take a loan of {amount:,.2f}? Please reply with one word.",
                     "tone": "neutral"
                 })
         except ValueError:
             pass
+        except Exception as e:
+            print("SMART_FALLBACK_ERROR:", str(e))
+            import traceback
+            traceback.print_exc()
+            return jsonify({"error": "Server error while processing your message."}), 500
 
     # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
     reply = conversational_reply(user_id, text)
@@ -3008,16 +3003,24 @@ def health():
     user_id = get_jwt_identity()
     score_data = get_credit_score(user_id)
     score = score_data["score"]
-    # Plain‑language description
-    if score < 40:
-        desc = "Keep logging to build your score"
-    elif score < 70:
-        desc = "Doing well – regular saving helps"
-    elif score < 90:
-        desc = "Great financial health!"
+    logo = score_data["logo"]
+
+    # Plain‑language description for 300‑850 scale
+    if score < 580:
+        desc = "Butterfly 🦋 – just starting out. Log more transactions and pay back loans to improve."
+    elif score < 740:
+        desc = "Transition – doing well. Regular saving and paying debts on time will boost you further."
     else:
-        desc = "Excellent! You’re an eagle"
-    return jsonify({"score": score, "logo": score_data["logo"], "description": desc})
+        desc = "Eagle 🦅 – excellent! Your financial health is strong."
+
+    return jsonify({
+        "score": score,
+        "logo": logo,
+        "description": desc,
+        "scale": "300‑850"
+    })
+
+
 
 @app.route('/debug/binance', methods=['GET'])
 def debug_binance():

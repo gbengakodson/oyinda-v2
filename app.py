@@ -314,7 +314,7 @@ def finalise_transaction(user_id):
     description = data.get("description", "")
 
     if trans_type == "managed_funds":
-        event_type = "InvestmentMade"  # or create a dedicated event type
+        event_type = "InvestmentMade"
         category = "investment_capital"
         response_text = f"Noted, {name}! You received ₦{amount:,.2f} as investment capital from {description}."
     elif trans_type in ("expense", "spent", "loan"):
@@ -326,6 +326,7 @@ def finalise_transaction(user_id):
     elif trans_type == "investment":
         event_type = "InvestmentMade"
         category = data.get("category", "investment")
+        response_text = f"Noted, {name}! You invested ₦{amount:,.2f} in {description}."
     else:
         event_type = "ExpenseLogged"
         category = "other"
@@ -349,12 +350,26 @@ def finalise_transaction(user_id):
     payload = {k: v for k, v in payload.items() if v is not None}
 
     event = append_event(user_id, user_id, event_type, payload)
+
     # After a successful log, insert a clear system note into conversation history
     log_msg = f"Oyinda just recorded this transaction: {description} – ₦{amount:,.2f} ({event_type})"
     save_conversation(user_id, 'system', log_msg)
+
     name = get_user_name(user_id)
     category_label = category.replace('_', ' ').title() if category else "Other"
-    response_text = f"Done, {name}! I’ve recorded an expense of ₦{amount:,.2f} for {description} under {category_label}."
+
+    if trans_type == "managed_funds":
+        response_text = f"Noted, {name}! You received ₦{amount:,.2f} as investment capital from {description}."
+    elif trans_type == "income":
+        response_text = f"Got it, {name}! You earned ₦{amount:,.2f} from {description}."
+    elif trans_type == "investment":
+        response_text = f"Logged, {name}! You invested ₦{amount:,.2f} in {description}."
+    elif trans_type in ("expense", "spent", "loan"):
+        response_text = f"Done, {name}! I’ve recorded an expense of ₦{amount:,.2f} for {description} under {category_label}."
+    else:
+        response_text = f"Transaction logged: ₦{amount:,.2f} – {description}."
+
+    # ... (daily spend summary remains unchanged)
 
     # Optionally, include a quick daily total if available
     conn = get_conn()
@@ -1324,11 +1339,16 @@ def handle_command():
                 pending_transaction[user_id]["data"]["category"] = "investment"
                 pending_transaction[user_id]["category"] = "investment"
                 return ask_for_location(user_id)
+
+
             elif any(phrase in text.lower() for phrase in [
                 'investor gave', 'partner gave', 'capital to trade',
                 'manage this money', 'investment capital', 'to invest',
                 'for investment', 'fund me', 'funds to trade',
-                'money to run business', 'money for business'
+                'money to run business', 'money for business',
+                'investment for', 'capital for', 'received investment',
+                'received capital', 'gave me capital', 'gave me to invest',
+                'money to invest', 'trading capital', 'business capital'
             ]):
                 pending_transaction[user_id]["data"]["type"] = "managed_funds"
                 pending_transaction[user_id]["state"] = "confirming_funds"

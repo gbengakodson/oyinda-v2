@@ -119,21 +119,36 @@ def normalize_date(date_str):
 
 
 def get_live_rate(from_currency, to_currency="NGN"):
-    """Fetch live exchange rate from a free API. Cached for 4 hours."""
-    if _live_rates_cache["last_fetched"] and (datetime.utcnow() - _live_rates_cache["last_fetched"]).seconds < 14400:
-        rates = _live_rates_cache["data"].get("rates", {})
-        if from_currency in rates:
-            return rates[from_currency]
+    if from_currency.upper() == to_currency.upper():
+        return 1.0
 
+    # Try live API – fetch with from_currency as base
     try:
-        resp = requests.get(f"https://api.exchangerate-api.com/v4/latest/{to_currency}", timeout=10)
+        resp = requests.get(
+            f"https://api.exchangerate-api.com/v4/latest/{from_currency.upper()}",
+            timeout=10
+        )
         data = resp.json()
-        _live_rates_cache["data"] = data
-        _live_rates_cache["last_fetched"] = datetime.utcnow()
-        return data.get("rates", {}).get(from_currency, 1.0)
-    except Exception:
-        fallback = {"USD": 1550, "GBP": 1950, "EUR": 1700}
-        return fallback.get(from_currency, 1.0)
+        rate = data.get("rates", {}).get(to_currency.upper())
+        if rate and rate > 0:
+            return rate
+    except Exception as e:
+        print(f"Live rate API failed: {e}")
+
+    # Fallback – always returns a reasonable value
+    fallback = {
+        "USD": 1550.0, "GBP": 1950.0, "EUR": 1700.0,
+        "GHS": 130.0, "KES": 10.5, "ZAR": 85.0, "NGN": 1.0
+    }
+    # We need rate from_currency → NGN. If from_currency is USD, we have it.
+    if to_currency.upper() == "NGN":
+        return fallback.get(from_currency.upper(), 1.0)
+    else:
+        # For other pairs, convert via NGN
+        base_to_ngn = fallback.get(from_currency.upper(), 1.0)
+        ngn_to_target = fallback.get(to_currency.upper(), 1.0)
+        return base_to_ngn / ngn_to_target if ngn_to_target else 1.0
+
 
 def convert_currency(amount, from_currency, to_currency="NGN"):
     """Convert amount from one currency to another using live rate."""
@@ -649,9 +664,16 @@ def handle_command():
                 return ask_for_location(user_id)
             elif any(w in reply_lower for w in ['loan', 'borrow']):
                 p["data"]["type"] = "loan"
+            elif any(w in reply_lower for w in
+                     ['managed', 'capital', 'funds', 'manage', 'managed funds', 'investment capital']):
+                p["data"]["type"] = "managed_funds"
+                p["data"]["category"] = "investment_capital"
+                p["category"] = "investment_capital"
+                # Skip category question, go to location
+                return ask_for_location(user_id)
             else:
                 return jsonify({
-                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, or a loan?",
+                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, managed funds, or a loan?",
                     "tone": "neutral"
                 })
             p["state"] = "collecting_category"
@@ -660,13 +682,11 @@ def handle_command():
         elif state == "collecting_loan_direction":
             reply_lower = reply.lower()
             if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
-                # Liability – the user owes money
                 p["data"]["type"] = "loan"
                 p["data"]["category"] = "loan"
                 p["state"] = "collecting_category"
                 return ask_next_question(user_id)
             elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
-                # Asset – someone else owes the user
                 p["data"]["type"] = "asset"
                 p["data"]["category"] = "loan_given"
                 p["state"] = "collecting_category"
@@ -684,7 +704,6 @@ def handle_command():
                 p["state"] = "collecting_category"
                 return ask_next_question(user_id)
             else:
-                # User says no – revert to generic type question
                 p["state"] = "collecting_type"
                 return jsonify({
                     "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",

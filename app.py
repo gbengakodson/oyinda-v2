@@ -50,6 +50,10 @@ SYSTEM_PROMPT = (
     "Use short sentences and never sound like a textbook. "
     "Avoid phrases like 'As an AI, I cannot…' or 'It is important to note…'. "
     "Match the user's energy. Be encouraging, practical, and playful when appropriate."
+    "LANGUAGE STYLE:\n"
+    "- Never use the word 'log'. Say 'tell me', 'let me know', or 'update' instead.\n"
+    "- When explaining the credit score, use this Pidgin nudge: 'You sabi say? When you dey tell me wetin you spend everyday, e dey help you build your credit score. Good credit score fit give you cheap loan from better banks, no be those loan sharks wey dey chop your money.'\n"
+    "- Always refer to the data reward in simple terms: 'You earn 33 MB for any day you tell me your expenses. You fit use am to buy real data from your network.'"
 )
 
 onboarding_state = {}
@@ -1297,6 +1301,17 @@ def handle_command():
         msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
         save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+
+    # Set phone number
+    if text.lower().startswith('set my phone number to ') or text.lower().startswith('change my phone number to '):
+        parts = text.split()
+        phone = parts[-1]
+        # Basic validation
+        if not phone.startswith('0') or len(phone) != 11:
+            return jsonify({"message": "Please enter a valid 11‑digit Nigerian phone number starting with 0."})
+        store_user_fact(user_id, 'phone', phone)
+        return jsonify({"message": f"Your phone number has been saved as {phone}. I'll send your daily data reward to this number."})
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
     amount_match = re.search(
@@ -3597,31 +3612,80 @@ def streak():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Get consecutive days from today backwards
-    today = datetime.utcnow().date()
-    streak = 0
-    while True:
-        cur.execute("SELECT 1 FROM daily_activity_log WHERE user_id = %s AND date = %s", (user_id, today))
-        if cur.fetchone():
-            streak += 1
-            today = today - timedelta(days=1)
-        else:
-            break
+    # Total days logged this month
+    first_of_month = datetime.utcnow().replace(day=1).date()
+    cur.execute(
+        "SELECT COUNT(*) FROM daily_activity_log WHERE user_id = %s AND date >= %s",
+        (user_id, first_of_month)
+    )
+    total_days = cur.fetchone()[0]
+
+    # Current data balance
+    cur.execute("SELECT COALESCE(data_balance_mb, 0) FROM users WHERE id = %s", (user_id,))
+    data_balance = cur.fetchone()[0]
+
     conn.close()
 
-    # Check if reward already given this month
-    first_of_month = datetime.utcnow().replace(day=1).date()
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM data_rewards WHERE user_id = %s AND awarded_at >= %s", (user_id, first_of_month))
-    already_rewarded = cur.fetchone() is not None
-    conn.close()
+    # Pidgin-friendly message
+    if total_days == 0:
+        msg = "You never tell me any expense this month. Start now make you dey earn data!"
+    else:
+        msg = f"You don tell me wetin you spend for {total_days} days this month. You don earn {data_balance:.0f} MB."
 
     return jsonify({
-        "streak": streak,
-        "next_reward_at": 30,
-        "eligible": streak >= 30 and not already_rewarded
+        "total_days": total_days,
+        "data_balance_mb": data_balance,
+        "message": msg
     })
+
+@app.route('/cron/daily-reward', methods=['POST'])
+def daily_data_reward():
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    if secret != os.environ.get('CRON_SECRET'):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    today = datetime.utcnow().date()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Find users who logged an activity today and have a phone number
+    cur.execute("""
+        SELECT DISTINCT u.id, u.phone
+        FROM users u
+        INNER JOIN daily_activity_log d ON u.id = d.user_id AND d.date = %s
+        WHERE u.phone IS NOT NULL AND u.phone != ''
+    """, (today,))
+
+    users = cur.fetchall()
+    rewarded = 0
+
+    for user_id, phone in users:
+        # Check if already rewarded today
+        cur.execute(
+            "SELECT 1 FROM data_rewards WHERE user_id = %s AND awarded_at::date = %s",
+            (user_id, today)
+        )
+        if cur.fetchone():
+            continue
+
+        # Purchase 10 MB MTN data bundle (smallest available plan)
+        try:
+            from connectors.vtpass import buy_data
+            result = buy_data(phone, 'mtn', 'mtn-10mb-100')
+            if result.get('code') == '000':
+                cur.execute(
+                    "INSERT INTO data_rewards (user_id, reward_type) VALUES (%s, %s)",
+                    (user_id, '10MB daily')
+                )
+                conn.commit()
+                rewarded += 1
+            else:
+                print(f"VTpass failed for {phone}: {result}")
+        except Exception as e:
+            print(f"Error rewarding {phone}: {e}")
+
+    conn.close()
+    return jsonify({"rewarded": rewarded})
 
 
 @app.route('/cron/remind', methods=['POST'])

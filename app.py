@@ -3768,6 +3768,7 @@ def daily_data_reward():
     return jsonify({"rewarded": rewarded})
 
 
+
 @app.route('/cron/remind', methods=['POST'])
 def cron_remind():
     secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
@@ -3789,19 +3790,35 @@ def cron_remind():
     """, (today,))
     users = cur.fetchall()
 
+    sent = 0
     for user in users:
-        # Log reminder (real email sending will come later)
-        cur.execute(
-            "INSERT INTO reminder_log (user_id, email) VALUES (%s, %s)",
-            (user[0], user[1])
-        )
+        if user[1] and '@' in user[1] and user[1] != f"{user[1].split('@')[0]}@oyinda.local":
+            # Only send to real email addresses (skip our auto‑generated ones)
+            subject = f"Good evening, {user[2]}! Tell Oyinda about your day."
+            body = (
+                f"Hello {user[2]},\n\n"
+                "You haven't told me what you spent today. Even a small thing like "
+                "'I spent 200 on okada' helps build your credit history.\n\n"
+                "You sabi say? When you dey tell me wetin you spend everyday, e dey help "
+                "you build your credit score. Good credit score fit give you cheap loan from "
+                "better banks, no be those loan sharks wey dey chop your money.\n\n"
+                "Just reply to this email or open Oyinda and tell me your expenses today.\n\n"
+                "— Oyinda, your personal CFO"
+            )
+            if send_email(user[1], subject, body):
+                sent += 1
+            # Log the attempt
+            cur.execute(
+                "INSERT INTO reminder_log (user_id, email) VALUES (%s, %s)",
+                (user[0], user[1])
+            )
 
     conn.commit()
     conn.close()
 
     return jsonify({
-        "reminders_logged": len(users),
-        "note": "Email sending will be enabled once an email provider is configured."
+        "reminders_sent": sent,
+        "total_eligible": len(users)
     })
 
 

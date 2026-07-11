@@ -13,3 +13,4 @@ weasyprint
 markdown
 flask-socketio
 gevent-websocket
+sendgrid

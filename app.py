@@ -1325,6 +1325,29 @@ def handle_command():
         store_user_fact(user_id, 'phone', phone)
         return jsonify({"message": f"Your phone number has been saved as {phone}. I'll send your daily data reward to this number."})
 
+    # ---------- POWER AVAILABILITY LOG ----------
+    if any(phrase in text_lower for phrase in ['light don come', 'light come', 'power don come', 'nepa bring light']):
+        append_event(user_id, user_id, 'PowerStatusChanged', {
+            "status": "on",
+            "timestamp": datetime.utcnow().isoformat(),
+            "description": "Electricity came on"
+        })
+        return jsonify({
+            "message": "I don record am. Light come back. I dey track how many hours you get this month.",
+            "tone": "neutral"
+        })
+
+    if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
+        append_event(user_id, user_id, 'PowerStatusChanged', {
+            "status": "off",
+            "timestamp": datetime.utcnow().isoformat(),
+            "description": "Electricity went off"
+        })
+        return jsonify({
+            "message": "I don record am. Light don go. I dey track how many hours you get this month.",
+            "tone": "neutral"
+        })
+
 
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
@@ -1864,11 +1887,54 @@ def handle_query(text, user_id):
             except Exception:
                 pass
 
+
+
         # If no specific query matched, try conversational LLM
         reply = conversational_reply(user_id, text)
         if reply:
             save_conversation(user_id, 'cfo', reply)
             return jsonify({"answer": reply, "tone": "neutral"})
+
+    # Power availability summary
+    if any(phrase in text_lower for phrase in ['how many hours of light', 'power hours', 'light hours', 'hours of electricity']):
+        conn = get_conn()
+        cur = conn.cursor()
+        first_of_month = datetime.utcnow().replace(day=1).strftime('%Y-%m-%d')
+        cur.execute("""
+            SELECT payload->>'status', payload->>'timestamp'
+            FROM events
+            WHERE user_id = %s AND event_type = 'PowerStatusChanged'
+            AND created_at >= %s
+            ORDER BY created_at ASC
+        """, (user_id, first_of_month))
+        rows = cur.fetchall()
+        conn.close()
+
+        # Calculate total powered hours
+        total_seconds = 0
+        last_on_time = None
+        for row in rows:
+            status = row[0]
+            timestamp = datetime.fromisoformat(row[1])
+            if status == 'on':
+                last_on_time = timestamp
+            elif status == 'off' and last_on_time:
+                total_seconds += (timestamp - last_on_time).total_seconds()
+                last_on_time = None
+
+        # If power is still on now, count time until now
+        if last_on_time:
+            total_seconds += (datetime.utcnow() - last_on_time).total_seconds()
+
+        total_hours = round(total_seconds / 3600, 1)
+
+        if total_hours == 0:
+            return jsonify({"answer": "I no record any light for this month yet. Tell me when light come back: 'light don come'.", "tone": "neutral"})
+        else:
+            return jsonify({
+                "answer": f"You don get light for about **{total_hours} hours** this month. That one fit help you negotiate your NEPA bill.",
+                "tone": "neutral"
+            })
 
 
     # Static fallback if LLM fails

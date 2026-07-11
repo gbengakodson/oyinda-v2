@@ -3774,7 +3774,6 @@ def cron_remind():
     if secret != CRON_SECRET:
         return jsonify({"error": "Unauthorized"}), 403
 
-    # Find users who haven't logged any event today
     conn = get_conn()
     cur = conn.cursor()
     today = datetime.utcnow().strftime('%Y-%m-%d')
@@ -3791,17 +3790,66 @@ def cron_remind():
     users = cur.fetchall()
 
     for user in users:
-        # Log reminder – replace with real email sending later
+        # Log reminder (real email sending will come later)
         cur.execute(
             "INSERT INTO reminder_log (user_id, email) VALUES (%s, %s)",
             (user[0], user[1])
         )
-        # TODO: send actual email using SendGrid / SMTP
-        # send_email(user[2], user[1], "Don't forget to log your transactions today!")
 
     conn.commit()
     conn.close()
-    return jsonify({"reminders_sent": len(users)})
+
+    return jsonify({
+        "reminders_logged": len(users),
+        "note": "Email sending will be enabled once an email provider is configured."
+    })
+
+
+@app.route('/cron/daily-reward', methods=['POST'])
+def daily_data_reward():
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    if secret != os.environ.get('CRON_SECRET'):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    today = datetime.utcnow().date()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT DISTINCT u.id, u.phone
+        FROM users u
+        INNER JOIN daily_activity_log d ON u.id = d.user_id AND d.date = %s
+        WHERE u.phone IS NOT NULL AND u.phone != ''
+    """, (today,))
+    users = cur.fetchall()
+    rewarded = 0
+
+    for user_id, phone in users:
+        cur.execute(
+            "SELECT 1 FROM data_rewards WHERE user_id = %s AND awarded_at::date = %s",
+            (user_id, today)
+        )
+        if cur.fetchone():
+            continue
+
+        try:
+            from connectors.vtpass import buy_data
+            result = buy_data(phone, 'mtn', 'mtn-10mb-100')
+            if result.get('code') == '000':
+                cur.execute(
+                    "INSERT INTO data_rewards (user_id, reward_type) VALUES (%s, %s)",
+                    (user_id, '10MB daily')
+                )
+                conn.commit()
+                rewarded += 1
+            else:
+                print(f"VTpass failed for {phone}: {result}")
+        except Exception as e:
+            print(f"Error rewarding {phone}: {e}")
+
+    conn.close()
+    return jsonify({"rewarded": rewarded})
+
 
 
 @app.route('/feedback', methods=['POST'])

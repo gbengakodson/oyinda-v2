@@ -1302,6 +1302,18 @@ def handle_command():
         save_conversation(user_id, 'user', text)
         return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
 
+    # ---------- DETECT PHONE NUMBER (avoid logging as amount) ----------
+    # Matches: "my phone number is 080xxx", "phone number: 080xxx", etc.
+    phone_match = re.search(r'(?:phone|number)\s*(?:number|is|be|:)?\s*(\d{11})', text, re.IGNORECASE)
+    if phone_match:
+        phone = phone_match.group(1)
+        if phone.startswith('0') and len(phone) == 11:
+            store_user_fact(user_id, 'phone', phone)
+            return jsonify({
+                "message": f"I don save your phone number: {phone}. I go send your daily data reward to this number when you tell me your expenses.",
+                "tone": "neutral"
+            })
+
 
     # Set phone number
     if text.lower().startswith('set my phone number to ') or text.lower().startswith('change my phone number to '):
@@ -1312,6 +1324,8 @@ def handle_command():
             return jsonify({"message": "Please enter a valid 11‑digit Nigerian phone number starting with 0."})
         store_user_fact(user_id, 'phone', phone)
         return jsonify({"message": f"Your phone number has been saved as {phone}. I'll send your daily data reward to this number."})
+
+
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
     amount_match = re.search(

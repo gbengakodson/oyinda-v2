@@ -442,6 +442,66 @@ def finalise_transaction(user_id):
     conn.close()
     response_text += f" You’ve spent ₦{daily_spend:,.2f} today so far."
 
+
+    # ---------- AUTOMATED BUSINESS SUGGESTION (ALL categories) ----------
+    if description:
+        import random
+        if random.random() < 0.25:  # 25% chance – keeps it helpful, not annoying
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                user_facts = get_user_facts(user_id)
+                my_city = user_facts.get('city', '').lower()
+                # Use the last meaningful word of the description as the search keyword
+                keywords = description.strip().split()[-1] if description else ''
+                if len(keywords) > 2:
+                    cur.execute("""
+                        SELECT u.name, u.facts->>'business', u.facts->>'phone'
+                        FROM users u
+                        WHERE u.id != %s
+                          AND u.facts->>'business' IS NOT NULL
+                          AND LOWER(u.facts->>'city') = %s
+                          AND u.facts->>'business' ILIKE %s
+                        LIMIT 1
+                    """, (user_id, my_city, f'%{keywords}%'))
+                    row = cur.fetchone()
+                    conn.close()
+                    if row:
+                        suggestion = f"\n\nBy the way, did you know **{row[0]}** in your area sells **{row[1]}**? Want me to connect you?"
+                        response_text += suggestion
+            except:
+                pass
+
+    # ---------- PROACTIVE MARKET PRICE COLLECTION ----------
+    import random
+    user_facts = get_user_facts(user_id)
+    last_price_update = user_facts.get('last_price_update')
+    has_business = user_facts.get('business')
+
+    # Ask if they have a business to list, or if it's been more than 7 days since last price update
+    ask_price = False
+    if not has_business:
+        ask_price = random.random() < 0.3   # 30% chance for users without a listing
+    elif last_price_update:
+        try:
+            last_update = datetime.fromisoformat(last_price_update)
+            if (datetime.utcnow() - last_update).days > 7:
+                ask_price = random.random() < 0.3
+        except:
+            ask_price = False
+
+    if ask_price:
+        pending_transaction[user_id] = {
+            "state": "collecting_business_details",
+            "data": {},
+            "category": None
+        }
+        # We'll append the prompt to the response text
+        prompt_text = "\n\nBy the way, I dey try help our community know the correct price of things for your area. Wetin you dey sell, and how much you dey sell am? (For example: 'I sell tomatoes, 5 mudu for ₦2,000')"
+        response_text += prompt_text
+
+
+
     # Optionally update user location if collected
     location = data.get("location")
     if location:
@@ -910,6 +970,44 @@ def handle_command():
                 return jsonify({"message": result["message"], "tone": "income"})
             else:
                 return jsonify({"message": result.get("error", "Verification failed."), "tone": "warning"})
+
+        elif state == "collecting_business_details":
+            # Parse the user's business description and price
+            reply_lower = reply.lower()
+            # Try to extract product, quantity/unit, and price
+            biz_match = re.search(r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)(?:,?\s*(\d+)\s*(mudu|derica|paint|kg|g|pieces?|heaps?|baskets?|bags?|litres?|liters?|units?))?\s*(?:for|at)\s*(?:₦|naira)?\s*(\d+\.?\d*)', reply, re.IGNORECASE)
+            if biz_match:
+                product = biz_match.group(1).strip()
+                quantity = biz_match.group(2)
+                unit = biz_match.group(3)
+                price = biz_match.group(4)
+
+                store_user_fact(user_id, 'business', product)
+                if price:
+                    store_user_fact(user_id, f'product_price_{product}', price)
+                if quantity and unit:
+                    store_user_fact(user_id, f'product_unit_{product}', f'{quantity} {unit}')
+                store_user_fact(user_id, 'last_price_update', datetime.utcnow().isoformat())
+
+                # Also save location for marketplace
+                user_facts = get_user_facts(user_id)
+                city = user_facts.get('city', 'your area')
+                store_user_fact(user_id, 'business_city', city)
+
+                msg = f"I don record am! When someone dey find {product} for {city}, I go connect dem to you."
+                if price:
+                    msg += f" Your price of ₦{price}"
+                    if quantity and unit:
+                        msg += f" for {quantity} {unit}"
+                    msg += " don dey our system."
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": msg, "tone": "income"})
+            else:
+                # Couldn't parse – ask again more clearly
+                return jsonify({
+                    "message": "I no fit get the price well. Try tell me like this: 'I sell tomatoes, 5 mudu for ₦2,000'. Wetin you dey sell and how much?",
+                    "tone": "neutral"
+                })
 
 
         elif state == "confirming_repayment":
@@ -1810,6 +1908,55 @@ def handle_query(text, user_id):
         total = cur.fetchone()[0] or 0
         conn.close()
         return jsonify({"answer": f"Total spent on {category} for {label}: ₦{total:,.2f}", "tone": "neutral"})
+
+
+    # ---------- BUSINESS SEARCH (with proximity) ----------
+    search_match = re.match(r'(?:who|who dey|find|i need|i dey find)\s+(?:sell|supply|make|do|get)\s+(.+)', text, re.IGNORECASE)
+    if search_match:
+        query = search_match.group(1).strip()
+        user_facts = get_user_facts(user_id)
+        my_city = user_facts.get('city', '').lower()
+
+        conn = get_conn()
+        cur = conn.cursor()
+        # First try same city
+        cur.execute("""
+            SELECT u.name, u.facts->>'city', u.facts->>'business', u.facts->>'phone'
+            FROM users u
+            WHERE u.facts->>'business' IS NOT NULL
+              AND u.facts->>'business' ILIKE %s
+              AND LOWER(u.facts->>'city') = %s
+            LIMIT 5
+        """, (f'%{query}%', my_city))
+        results = cur.fetchall()
+
+        # If no local results, search everywhere
+        if not results:
+            cur.execute("""
+                SELECT u.name, u.facts->>'city', u.facts->>'business', u.facts->>'phone'
+                FROM users u
+                WHERE u.facts->>'business' IS NOT NULL
+                  AND u.facts->>'business' ILIKE %s
+                LIMIT 5
+            """, (f'%{query}%',))
+            results = cur.fetchall()
+        conn.close()
+
+        if results:
+            lines = []
+            for r in results:
+                name, city, biz, phone = r
+                location = f"in {city}" if city else "near you"
+                lines.append(f"• {name} {location} sells {biz}")
+            answer = "Here are people wey dey sell that thing:\n" + "\n".join(lines)
+
+            # Offer to connect
+            if len(results) == 1 and results[0][3]:  # has phone
+                answer += f"\n\nWant me to connect you? I can help you call {results[0][0]} now."
+            return jsonify({"answer": answer, "tone": "neutral"})
+        else:
+            return jsonify({"answer": f"I no see anyone wey dey sell '{query}' yet. Tell your friends to list their business on Oyinda!", "tone": "neutral"})
+
 
 
     # Smart queries with date & category

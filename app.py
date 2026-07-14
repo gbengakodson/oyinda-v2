@@ -1876,7 +1876,9 @@ def handle_query(text, user_id):
         outstanding = taken - repaid
 
         if taken == 0:
-            return jsonify({"answer": "You don't have any active loans. Would you like to apply for one? Just ask 'can I get a loan?'", "tone": "neutral"})
+            return jsonify({
+                               "answer": "You don't have any active loans. Would you like to apply for one? Just ask 'can I get a loan?'",
+                               "tone": "neutral"})
 
         # Get last loan details
         conn = get_conn()
@@ -1896,15 +1898,22 @@ def handle_query(text, user_id):
             details += f"\n• Total repayable: ₦{payload.get('total_repayable', 0):,.2f}"
             details += f"\n• Interest rate: {payload.get('interest_rate', 0)}% monthly"
 
-        return jsonify({
-            "answer": f"💰 **Your Loan Summary**\n\n"
-                      f"• Total borrowed: ₦{taken:,.2f}\n"
-                      f"• Total repaid: ₦{repaid:,.2f}\n"
-                      f"• Outstanding: **₦{outstanding:,.2f}**\n"
-                      f"{details}\n\n"
-                      f"{'Well done! Your loan is fully repaid. 🎉' if outstanding <= 0 else "Make a repayment anytime: just say 'I repaid 2000 of my loan'."}",
-            "tone": "neutral"
-        })
+        # Build the answer string to avoid f‑string escaping issues
+        if outstanding <= 0:
+            repayment_hint = "Well done! Your loan is fully repaid. 🎉"
+        else:
+            repayment_hint = "Make a repayment anytime: just say 'I repaid 2000 of my loan'."
+
+        answer = (
+            f"💰 **Your Loan Summary**\n\n"
+            f"• Total borrowed: ₦{taken:,.2f}\n"
+            f"• Total repaid: ₦{repaid:,.2f}\n"
+            f"• Outstanding: **₦{outstanding:,.2f}**\n"
+            f"{details}\n\n"
+            f"{repayment_hint}"
+        )
+
+        return jsonify({"answer": answer, "tone": "neutral"})
 
     # Credit score
     if 'credit score' in text_lower or 'health score' in text_lower:

@@ -37,3 +37,35 @@ def link_paystack(user_id, api_key):
     conn.commit()
     conn.close()
     return {"message": "Paystack account linked.", "account_id": str(account_id)}
+
+
+def disburse_loan(user_id, amount, phone=None, bank_account=None):
+    """Send money from Thrivalbase to the user via Flutterwave/Paystack."""
+    import uuid
+    ref = f"loan_{user_id}_{uuid.uuid4().hex[:8]}"
+
+    # Option A: Send to bank account
+    if bank_account:
+        payload = {
+            "account_bank": bank_account.get('bank_code', '044'),  # default Access Bank
+            "account_number": bank_account.get('account_number'),
+            "amount": amount,
+            "currency": "NGN",
+            "narration": f"Oyinda Loan - {ref}",
+            "reference": ref,
+            "debit_currency": "NGN"
+        }
+        resp = requests.post(
+            "https://api.flutterwave.com/v3/transfers",
+            json=payload,
+            headers={"Authorization": f"Bearer {os.environ.get('FLUTTERWAVE_SECRET_KEY')}"}
+        )
+        resp.raise_for_status()
+        return ref
+
+    # Option B: Send to mobile money (phone)
+    if phone:
+        # Use Flutterwave mobile money payout
+        pass
+
+    raise Exception("No bank account or phone number available for disbursement.")

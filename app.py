@@ -81,6 +81,37 @@ pending_transaction = {}
 # Cache for live exchange rates
 _live_rates_cache = {"data": {}, "last_fetched": None}
 
+# ----- LOAN CONSTANTS -----
+LOAN_MIN_AMOUNT = 5000
+LOAN_MAX_AMOUNT = 500000
+LOAN_MIN_DURATION = 3
+LOAN_MAX_DURATION = 12
+GRACE_PERIOD_MONTHS = 1   # first month interest‑free
+
+def get_loan_interest_rate(credit_score):
+    """Return monthly interest rate (%) based on FICO‑style score."""
+    if credit_score >= 701:
+        return 2.0
+    elif credit_score >= 501:
+        return 4.0
+    elif credit_score >= 301:
+        return 7.0
+    else:
+        return 10.0
+
+def get_max_loan_amount(credit_score):
+    """Maximum borrowable amount based on score."""
+    if credit_score >= 700:
+        return LOAN_MAX_AMOUNT
+    elif credit_score >= 500:
+        return 200000
+    elif credit_score >= 300:
+        return 100000
+    elif credit_score >= 100:
+        return 50000
+    else:
+        return 0
+
 
 
 def mock_execute_transfer(payload):
@@ -869,6 +900,143 @@ def handle_command():
                 return jsonify({"message": result.get("error", "Verification failed."), "tone": "warning"})
 
 
+        elif state == "confirming_repayment":
+            # Parse repayment: "I repaid 5000, reference REPAY-xxx"
+            repay_match = re.search(r'(\d+\.?\d*)', reply)
+            if repay_match:
+                amount = float(repay_match.group(1))
+                # The reference is already stored in pending data
+                ref = p["data"]["repayment_ref"]
+
+                # Log the repayment
+                append_event(user_id, user_id, 'LoanRepaid', {
+                    "amount": amount,
+                    "currency": "NGN",
+                    "reference": ref,
+                    "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                    "description": f"Repaid ₦{amount:,.2f} via transfer, ref: {ref}"
+                })
+
+                conn = get_conn()
+                update_credit_score(conn, user_id)
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+
+                # Calculate new outstanding
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT SUM(CASE WHEN event_type = 'LoanTaken' THEN amount ELSE 0 END),
+                           SUM(CASE WHEN event_type = 'LoanRepaid' THEN amount ELSE 0 END)
+                    FROM events
+                    WHERE user_id = %s AND event_type IN ('LoanTaken', 'LoanRepaid')
+                """, (user_id,))
+                taken_now, repaid_now = cur.fetchone()
+                conn.close()
+                outstanding_now = (taken_now or 0) - (repaid_now or 0)
+
+                return jsonify({
+                    "message": f"✅ Repayment of ₦{amount:,.2f} recorded!\n"
+                              f"Remaining balance: ₦{max(0, outstanding_now):,.2f}\n"
+                              f"Your credit score has improved.",
+                    "tone": "income"
+                })
+            else:
+                return jsonify({"message": "I didn't catch the amount. Please tell me like 'I repaid 5000, reference REPAY-xxx'.", "tone": "neutral"})
+
+
+
+        elif state == "confirming_loan":
+
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok', 'okay']):
+
+                data = p["data"]
+
+                amount = data["amount"]
+
+                # Get user's connected bank account
+
+                accounts = get_user_connected_accounts(user_id)
+
+                bank_account = next((a for a in accounts if a['type'] == 'bank'), None)
+
+                phone = get_user_facts(user_id).get('phone', '')
+
+                if not bank_account and not phone:
+                    pending_transaction.pop(user_id, None)
+
+                    return jsonify({
+
+                        "message": "I need your bank account or phone number to send the money. Please link a bank account or set your phone number.",
+
+                        "tone": "warning"
+
+                    })
+
+                # Disburse via Flutterwave / Paystack (using phone or bank account)
+
+                try:
+
+                    from connectors.payment_gateway import disburse_loan
+
+                    ref = disburse_loan(user_id, amount, phone, bank_account)
+
+                except Exception as e:
+
+                    pending_transaction.pop(user_id, None)
+
+                    return jsonify(
+                        {"message": f"Loan disbursement failed: {str(e)}. Please try again later.", "tone": "warning"})
+
+                # Log the loan event
+
+                append_event(user_id, user_id, 'LoanTaken', {
+
+                    "amount": amount,
+
+                    "currency": "NGN",
+
+                    "interest_rate": data["interest_rate"],
+
+                    "duration_months": data["duration"],
+
+                    "monthly_payment": data["monthly_payment"],
+
+                    "total_repayable": data["total_repayable"],
+
+                    "date": datetime.utcnow().strftime("%Y-%m-%d"),
+
+                    "description": f"Loan of ₦{amount:,.2f} at {data['interest_rate']}% monthly for {data['duration']} months",
+
+                    "disbursement_ref": ref
+
+                })
+
+                conn = get_conn()
+
+                update_credit_score(conn, user_id)
+
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+
+                name = get_user_name(user_id)
+
+                return jsonify({
+
+                    "message": f"🎉 Congratulations, {name}! Your loan of ₦{amount:,.2f} has been approved and sent to your account.\n"
+
+                               f"Your first payment of ₦{data['monthly_payment']:,.2f} is due in 30 days.\n"
+
+                               f"When you're ready to repay, just say 'I want to repay my loan' and I'll guide you.",
+
+                    "tone": "income"
+
+                })
+
+
         elif state == "collecting_location":
             p["data"]["location"] = reply.strip()
             return finalise_transaction(user_id)
@@ -1139,6 +1307,8 @@ def handle_command():
         })
 
 
+
+
     # ---------- LOAN REPAYMENT ----------
     repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
     if repay_match:
@@ -1337,6 +1507,60 @@ def handle_command():
             "tone": "neutral"
         })
 
+
+    # ---------- LOAN REPAYMENT REQUEST ----------
+    if any(phrase in text_lower for phrase in ['i want to repay my loan', 'repay loan', 'pay my loan']):
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT SUM(CASE WHEN event_type = 'LoanTaken' THEN amount ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'LoanRepaid' THEN amount ELSE 0 END)
+            FROM events
+            WHERE user_id = %s AND event_type IN ('LoanTaken', 'LoanRepaid')
+        """, (user_id,))
+        taken, repaid = cur.fetchone()
+        conn.close()
+        taken = taken or 0
+        repaid = repaid or 0
+        outstanding = taken - repaid
+
+        if outstanding <= 0:
+            return jsonify({"message": "You don't have any outstanding loans. Well done! 🎉", "tone": "income"})
+
+        # Generate a unique repayment reference
+        import uuid
+        repayment_ref = f"REPAY-{user_id[:8]}-{uuid.uuid4().hex[:4].upper()}"
+
+        # Thrivalbase account details (set in environment variables)
+        thrivalbase_bank = os.environ.get('THRIVALBASE_BANK', 'Access Bank')
+        thrivalbase_account = os.environ.get('THRIVALBASE_ACCOUNT', '1234567890')
+        thrivalbase_name = os.environ.get('THRIVALBASE_ACCOUNT_NAME', 'Thrivalbase Limited')
+
+        # Store pending repayment
+        pending_transaction[user_id] = {
+            "state": "confirming_repayment",
+            "data": {
+                "outstanding": outstanding,
+                "repayment_ref": repayment_ref
+            },
+            "category": None
+        }
+
+        return jsonify({
+            "message": f"💰 **Repay Your Loan**\n\n"
+                      f"• Outstanding balance: ₦{outstanding:,.2f}\n"
+                      f"• Repayment reference: **{repayment_ref}**\n\n"
+                      f"Please transfer your repayment to:\n"
+                      f"• Bank: **{thrivalbase_bank}**\n"
+                      f"• Account: **{thrivalbase_account}**\n"
+                      f"• Account Name: **{thrivalbase_name}**\n\n"
+                      f"After you make the transfer, reply with:\n"
+                      f"*'I repaid X amount, reference Y'*\n"
+                      f"For example: *'I repaid 5000, reference {repayment_ref}'*",
+            "tone": "neutral"
+        })
+
+
     if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
         append_event(user_id, user_id, 'PowerStatusChanged', {
             "status": "off",
@@ -1345,6 +1569,60 @@ def handle_command():
         })
         return jsonify({
             "message": "I don record am. Light don go. I dey track how many hours you get this month.",
+            "tone": "neutral"
+        })
+
+    # ---------- LOAN APPLICATION ----------
+    loan_match = re.match(r'(?:i\s+(?:want|need|wan)\s+(?:to\s+)?)?borrow\s+(\d+\.?\d*)\s*(?:naira|₦|ngn)?\s*(?:for\s+)?(\d+)\s*(?:months?|month)?', text, re.IGNORECASE)
+    if loan_match:
+        amount = float(loan_match.group(1))
+        duration = int(loan_match.group(2))
+
+        # Validate amount and duration
+        if amount < LOAN_MIN_AMOUNT or amount > LOAN_MAX_AMOUNT:
+            return jsonify({"message": f"Loan amount must be between ₦{LOAN_MIN_AMOUNT:,} and ₦{LOAN_MAX_AMOUNT:,}."})
+        if duration < LOAN_MIN_DURATION or duration > LOAN_MAX_DURATION:
+            return jsonify({"message": f"Duration must be between {LOAN_MIN_DURATION} and {LOAN_MAX_DURATION} months."})
+
+        # Check eligibility
+        score_data = get_credit_score(user_id)
+        credit_score = score_data['score']
+        if credit_score < 100:
+            return jsonify({"message": "Your credit score is too low for a loan right now. Keep logging transactions!"})
+
+        max_loan = get_max_loan_amount(credit_score)
+        if amount > max_loan:
+            return jsonify({"message": f"The maximum you can borrow right now is ₦{max_loan:,}. Try a smaller amount."})
+
+        interest = get_loan_interest_rate(credit_score)
+        # Total repayable = principal + (principal * monthly_interest * (duration - GRACE_PERIOD))
+        total_interest = amount * (interest / 100) * (duration - GRACE_PERIOD_MONTHS)
+        total_repayable = amount + total_interest
+        monthly_payment = total_repayable / duration
+
+        # Store loan proposal in pending transaction for confirmation
+        pending_transaction[user_id] = {
+            "state": "confirming_loan",
+            "data": {
+                "amount": amount,
+                "duration": duration,
+                "interest_rate": interest,
+                "total_repayable": round(total_repayable, 2),
+                "monthly_payment": round(monthly_payment, 2),
+                "credit_score": credit_score
+            },
+            "category": "loan"
+        }
+
+        return jsonify({
+            "message": f"📋 **Loan Summary**\n\n"
+                      f"• Amount: ₦{amount:,.2f}\n"
+                      f"• Duration: {duration} months\n"
+                      f"• Interest rate: {interest}% monthly\n"
+                      f"• First month: interest‑free\n"
+                      f"• Monthly repayment: ₦{monthly_payment:,.2f}\n"
+                      f"• Total to repay: ₦{total_repayable:,.2f}\n\n"
+                      f"Reply **'yes'** to accept these terms.",
             "tone": "neutral"
         })
 
@@ -1581,6 +1859,53 @@ def handle_query(text, user_id):
         msg = "Here's your daily budget:\n" + "\n".join([f"• {k.replace('_',' ').title()}: ₦{v:,.2f}" for k,v in budget.items()])
         return jsonify({"answer": msg, "tone": "neutral"})
 
+    # ---------- LOAN STATUS ----------
+    if any(phrase in text_lower for phrase in ['how much do i owe', 'my loan', 'loan balance', 'outstanding loan']):
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT SUM(CASE WHEN event_type = 'LoanTaken' THEN amount ELSE 0 END),
+                   SUM(CASE WHEN event_type = 'LoanRepaid' THEN amount ELSE 0 END)
+            FROM events
+            WHERE user_id = %s AND event_type IN ('LoanTaken', 'LoanRepaid')
+        """, (user_id,))
+        taken, repaid = cur.fetchone()
+        conn.close()
+        taken = taken or 0
+        repaid = repaid or 0
+        outstanding = taken - repaid
+
+        if taken == 0:
+            return jsonify({"answer": "You don't have any active loans. Would you like to apply for one? Just ask 'can I get a loan?'", "tone": "neutral"})
+
+        # Get last loan details
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT payload FROM events
+            WHERE user_id = %s AND event_type = 'LoanTaken'
+            ORDER BY created_at DESC LIMIT 1
+        """, (user_id,))
+        last_loan = cur.fetchone()
+        conn.close()
+
+        details = ""
+        if last_loan:
+            payload = json.loads(last_loan[0]) if isinstance(last_loan[0], str) else last_loan[0]
+            details = f"\n• Monthly payment: ₦{payload.get('monthly_payment', 0):,.2f}"
+            details += f"\n• Total repayable: ₦{payload.get('total_repayable', 0):,.2f}"
+            details += f"\n• Interest rate: {payload.get('interest_rate', 0)}% monthly"
+
+        return jsonify({
+            "answer": f"💰 **Your Loan Summary**\n\n"
+                      f"• Total borrowed: ₦{taken:,.2f}\n"
+                      f"• Total repaid: ₦{repaid:,.2f}\n"
+                      f"• Outstanding: **₦{outstanding:,.2f}**\n"
+                      f"{details}\n\n"
+                      f"{'Well done! Your loan is fully repaid. 🎉' if outstanding <= 0 else "Make a repayment anytime: just say 'I repaid 2000 of my loan'."}",
+            "tone": "neutral"
+        })
+
     # Credit score
     if 'credit score' in text_lower or 'health score' in text_lower:
         score = get_credit_score(user_id)
@@ -1791,6 +2116,43 @@ def handle_query(text, user_id):
         # else: tax = 0
 
         return jsonify({"answer": f"Estimated tax for {label}: ₦{tax:,.2f} (based on Nigerian PAYE brackets)", "tone": "neutral"})
+
+
+    # ---------- LOAN ELIGIBILITY ----------
+    if any(phrase in text_lower for phrase in ['can i get a loan', 'do i qualify for a loan', 'i need a loan',
+                                                'borrow money', 'loan offer', 'lend me']):
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions_view WHERE user_id = %s", (user_id,))
+        txn_count = cur.fetchone()[0]
+        cur.execute("SELECT MIN(created_at) FROM events WHERE user_id = %s", (user_id,))
+        first_event = cur.fetchone()[0]
+        days_active = (datetime.utcnow().date() - first_event.date()).days if first_event else 0
+        conn.close()
+
+        if days_active < 7:
+            return jsonify({"answer": "You need at least 7 days of transaction history to apply for a loan. Keep telling me your daily expenses!", "tone": "neutral"})
+
+        score_data = get_credit_score(user_id)
+        credit_score = score_data['score']
+        max_loan = get_max_loan_amount(credit_score)
+        if max_loan == 0:
+            return jsonify({"answer": f"Your credit score is {credit_score}/850. You need at least 100 to qualify. Keep logging your transactions!", "tone": "neutral"})
+
+        interest = get_loan_interest_rate(credit_score)
+        return jsonify({
+            "answer": f"🎉 You qualify for a loan!\n\n"
+                      f"• Credit score: **{credit_score}/850**\n"
+                      f"• Maximum amount: **₦{max_loan:,.2f}**\n"
+                      f"• Monthly interest: **{interest}%**\n"
+                      f"• Duration: 3‑12 months\n"
+                      f"• First month interest‑free!\n\n"
+                      f"To apply, just tell me how much you want and for how many months.\n"
+                      f"Example: *'borrow 20,000 for 6 months'*",
+            "tone": "income"
+        })
+
+
 
     # ---------- PERSONALISED FINANCIAL REVIEW ----------
     if any(phrase in text_lower for phrase in [

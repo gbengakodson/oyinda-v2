@@ -1869,7 +1869,7 @@ def handle_command():
     currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
 
     # ---------- USER‑AWARE CONVERSION ----------
-    from core import get_user_facts
+
     facts = get_user_facts(user_id)
     home_currency = facts.get('home_currency', 'NGN') or 'NGN'
     amount_converted = convert_currency(amount_original, currency_code,

@@ -1170,6 +1170,26 @@ def handle_command():
             return finalise_transaction(user_id)
 
 
+        elif state == "collecting_emergency_hours":
+            hours_match = re.match(r'^(\d+)$', reply.strip())
+            if hours_match:
+                hours = int(hours_match.group(1))
+                if hours < 1 or hours > 72:
+                    return jsonify({"message": "Please choose between 1 and 72 hours."})
+                store_user_fact(user_id, 'emergency_data_hours', hours)
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
+                               "I'll check every 30 minutes.",
+                    "tone": "income"
+                })
+            else:
+                return jsonify({
+                    "message": "Please tell me a number of hours, like 3, 6, or 12.",
+                    "tone": "neutral"
+                })
+
+
         elif state == "confirming_bulk":
             reply_lower = reply.lower()
             if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
@@ -1434,9 +1454,10 @@ def handle_command():
             "tone": "neutral"
         })
 
-    # ---------- EMERGENCY DATA THRESHOLD ----------
-    if any(phrase in text_lower for phrase in ['emergency data', 'offline data', 'send me data after']):
-        # Check if phone number is set
+    # ---------- EMERGENCY DATA SETUP ----------
+    if any(phrase in text_lower for phrase in
+           ['emergency data', 'offline data', 'send me data after', 'send data after']):
+        # Check phone number
         facts = get_user_facts(user_id)
         phone = facts.get('phone')
         if not phone:
@@ -1445,6 +1466,13 @@ def handle_command():
                            "Please tell me your phone number, like 'my phone number is 080xxxxxxxx'.",
                 "tone": "neutral"
             })
+
+        # Start the emergency‑data state machine
+        pending_transaction[user_id] = {
+            "state": "collecting_emergency_hours",
+            "data": {},
+            "category": None
+        }
         return jsonify({
             "message": "How many hours offline before I send you emergency data? (e.g., 3, 6, 12)\n\n"
                        "I will send you 33 MB of **MTN** data automatically when you've been offline "

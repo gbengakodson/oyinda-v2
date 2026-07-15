@@ -68,6 +68,17 @@ SYSTEM_PROMPT = (
     "Match the user's energy. Be encouraging, practical, and playful when appropriate."
 )
 
+# ---------- INFORMAL SECTOR GOODS UNITS ----------
+GOODS_UNITS = [
+    'mudu', 'derica', 'paint', 'kg', 'kilogram', 'g', 'gram', 'litre', 'liter',
+    'pieces', 'piece', 'heap', 'heaps', 'basket', 'baskets', 'bag', 'bags',
+    'sachet', 'sachets', 'tin', 'tins', 'can', 'cans', 'carton', 'cartons',
+    'roll', 'rolls', 'bar', 'bars', 'stick', 'sticks', 'loaf', 'loaves',
+    'bottle', 'bottles', 'cup', 'cups', 'plate', 'plates', 'wrap', 'wraps',
+    'parcel', 'parcels', 'scoop', 'scoops', 'bucket', 'buckets', 'basin',
+    'bowl', 'bowls', 'crate', 'crates', 'bunch', 'bunches'
+]
+
 onboarding_state = {}
 pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
@@ -241,23 +252,30 @@ def ask_next_question(user_id):
     state = p["state"]
     data = p["data"]
     category = p.get("category") or data.get("category")
+    txn_type = data.get("transaction_type", "goods")   # default to goods
 
     # Step 1: Determine category if not known
     if state == "collecting_category" and not category:
         p["state"] = "collecting_category"
         return jsonify({
-            "message": "How should I categorise this? (For example., food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, other)",
+            "message": "What was this for? For example: food, transport, rent, data, health, education, savings, etc.",
             "tone": "neutral"
         })
 
     # Step 2: Category‑specific questions
-    if category in ['food', 'transport', 'housing', 'utilities', 'health', 'education', 'saving', 'investment'] and state == "collecting_category":
+    if category in ['food', 'transport', 'housing', 'utilities', 'health', 'education', 'savings', 'investment'] and state == "collecting_category":
         if category == 'food':
-            p["state"] = "collecting_quantity"
-            return jsonify({
-                "message": "How much did you buy? For example: 2 mudu, 1 derica, a paint, 5 kg, 10 pieces.",
-                "tone": "neutral"
-            })
+            # Only ask for quantity if it's goods
+            if txn_type == 'goods':
+                p["state"] = "collecting_quantity"
+                return jsonify({
+                    "message": "How much did you buy? For example: 2 mudu, 1 derica, a paint, 5 kg, 10 pieces.",
+                    "tone": "neutral"
+                })
+            else:
+                # Services – skip to location
+                p["state"] = "collecting_location"
+                return ask_for_location(user_id)
         elif category == 'transport':
             p["state"] = "collecting_transport_type"
             return jsonify({
@@ -271,33 +289,33 @@ def ask_next_question(user_id):
                 "tone": "neutral"
             })
         else:
+            # For other categories, skip to location
             p["state"] = "collecting_location"
             return ask_for_location(user_id)
 
-    elif state == "collecting_quantity":
-        # Try to extract multiple items: "1 loaf of bread, 5 oranges, 1 bottle of coke"
-        reply_lower = reply.lower()
+    # Step 3: Collect quantity/unit (food + goods only)
+    if state == "collecting_quantity":
+        units = '|'.join(GOODS_UNITS)
         items = re.findall(
-            r'(\d+)\s*(?:loaf|loaves|pieces?|bags?|bottles?|cups?|heaps?|bundles?|baskets?|packets?|sachets?|tins?|cans?|cartons?|rolls?|bars?|sticks?|units?|kg|g|litres?|liters?|ml|mudu|derica|paint|kongo|olodo|milk\s?cup|rubber|basin|bowl|plate|wrap|parcel|scoop)?\s*(?:of\s+)?(\w+(?:\s+\w+)?)',
-            reply_lower)
+            rf'(\d+)\s*({units})?\s*(?:of\s+)?(\w+(?:\s+\w+)?)',
+            data.get("last_reply", reply.lower())
+        )
         if items:
-            # Build a clean summary: "1 loaf bread, 5 oranges, 1 bottle coke"
             parts = []
             for qty, unit, name in items:
                 unit = unit if unit else ''
                 part = f"{qty} {unit} {name.strip()}".strip()
                 parts.append(part)
             description = ", ".join(parts)
-
-            p["data"]["quantity_description"] = description
-            p["data"]["quantity"] = len(items)  # number of distinct items
-            p["data"]["unit"] = "items"
-            p["data"] = p["data"]
+            data["quantity_description"] = description
+            data["quantity"] = len(items)
+            data["unit"] = "items"
+            p["data"] = data
             p["state"] = "collecting_location"
             return ask_for_location(user_id)
         else:
             return jsonify({
-                "message": "I didn't catch the quantity. You can say something like '2 mudu', '1 paint', or '1 loaf of bread, 5 oranges'.",
+                "message": "I didn't catch the quantity. Please tell me like '2 mudu' or '1 paint'.",
                 "tone": "neutral"
             })
 
@@ -1736,102 +1754,138 @@ def handle_command():
             "tone": "neutral"
         })
 
-
-
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
-    amount_match = re.search(
-        r'([₦$€£¥]|R\$?|RM|Rp|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ)?\s?'
-        r'(\d[\d,]*\.?\d*)\s*(k|K)?',
-        text
+    # Step 1: Look for a price‑indicating word followed by a number
+    price_match = re.search(
+        r'(?:for|at|cost|costs|sold\s*at|price\s*of)\s*'
+        r'(?:₦|naira|\$|usd|€|£|GH₵|R)?\s*'  # optional currency symbol
+        r'(\d[\d,]*\.?\d*)\s*(k|K)?',  # amount + optional k/K
+        text, re.IGNORECASE
     )
-    if amount_match:
-        currency_symbol = amount_match.group(1) or '₦'
-        symbol_to_code = {
-            '$': 'USD', '₦': 'NGN', '€': 'EUR', '£': 'GBP',
-            '¥': 'JPY', 'R': 'ZAR', 'R$': 'ZAR', 'GH₵': 'GHS', 'DA': 'DZD',
-            'DH': 'MAD', 'Dhs': 'AED', 'TSh': 'TZS', 'FCFA': 'XAF', 'Br': 'ETB',
-            'CFA': 'XAF', 'RM': 'MYR', 'Rp': 'IDR', 'K': 'KES', 'Sh': 'KES',
-        }
-        currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
-        amount_str = amount_match.group(2).replace(',', '')
-        try:
+    if price_match:
+        amount_str = price_match.group(1).replace(',', '')
+        amount_original = float(amount_str)
+        if price_match.group(2):  # 'k' or 'K' → multiply by 1000
+            amount_original *= 1000
+        currency_symbol = '₦'  # default if no symbol captured in this branch
+    else:
+        # Step 2: Try a currency‑prefixed number anywhere in the text
+        currency_match = re.search(
+            r'([₦$€£¥]|R\$?|RM|Rp|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ)\s*'
+            r'(\d[\d,]*\.?\d*)\s*(k|K)?',
+            text, re.IGNORECASE
+        )
+        if currency_match:
+            amount_str = currency_match.group(2).replace(',', '')
             amount_original = float(amount_str)
-            if amount_match.group(3):  # 'k'/'K'
+            if currency_match.group(3):
                 amount_original *= 1000
-
-            # Get user's home currency
-            from core import get_user_facts
-            facts = get_user_facts(user_id)
-            home_currency = facts.get('home_currency', 'NGN') or 'NGN'
-
-            # Convert to home currency
-            amount_converted = convert_currency(amount_original, currency_code,
-                                                home_currency) if currency_code != home_currency else amount_original
-
-            pending_transaction[user_id] = {
-                "state": "collecting_type",
-                "data": {
-                    "amount": amount_converted,  # logged in home currency
-                    "original_amount": amount_original,
-                    "original_currency": currency_code,
-                    "home_currency": home_currency,
-                    "description": text,
-                    "currency": home_currency,
-                    "category": None
-                },
-                "category": None
-            }
-
-            # … (rest of keyword detection unchanged, using amount_converted for messages)
-
-            # Detect probable type from keywords
-            if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
-                pending_transaction[user_id]["data"]["type"] = "expense"
-                pending_transaction[user_id]["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            elif any(word in text.lower() for word in ['earned', 'made', 'profit', 'income', 'received']):
-                pending_transaction[user_id]["data"]["type"] = "income"
-                pending_transaction[user_id]["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
-                pending_transaction[user_id]["data"]["type"] = "investment"
-                pending_transaction[user_id]["data"]["category"] = "investment"
-                pending_transaction[user_id]["category"] = "investment"
-                return ask_for_location(user_id)
-
-
-            elif any(phrase in text.lower() for phrase in [
-                'investor gave', 'partner gave', 'capital to trade',
-                'manage this money', 'investment capital', 'to invest',
-                'for investment', 'fund me', 'funds to trade',
-                'money to run business', 'money for business',
-                'investment for', 'capital for', 'received investment',
-                'received capital', 'gave me capital', 'gave me to invest',
-                'money to invest', 'trading capital', 'business capital'
-            ]):
-                pending_transaction[user_id]["data"]["type"] = "managed_funds"
-                pending_transaction[user_id]["state"] = "confirming_funds"
-                return jsonify({
-                    "message": f"I understand someone gave you {amount_converted:,.2f} {home_currency} as investment capital. Is that correct? (reply 'yes' or 'no')",
-                    "tone": "neutral"
-                })
-
-            elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
-                pending_transaction[user_id]["data"]["type"] = "loan"
-                pending_transaction[user_id]["state"] = "collecting_category"
-                return ask_next_question(user_id)
+            currency_symbol = currency_match.group(1) or '₦'
+        else:
+            # Step 3: Fall back to the largest number, ignoring quantity‑like numbers
+            all_numbers = re.findall(r'(\d[\d,]*\.?\d*)\s*(k|K)?', text)
+            if all_numbers:
+                candidates = []
+                for num_str, suffix in all_numbers:
+                    val = float(num_str.replace(',', ''))
+                    if suffix:
+                        val *= 1000
+                    # If a goods unit follows, it's probably a quantity → ignore
+                    after_num = text[text.find(num_str) + len(num_str):].strip()
+                    is_quantity = any(re.match(r'\b' + unit + r'\b', after_num) for unit in GOODS_UNITS)
+                    if not is_quantity:
+                        candidates.append(val)
+                if candidates:
+                    amount_original = max(candidates)
+                else:
+                    # All numbers looked like quantities – use the largest one anyway
+                    all_values = [float(n.replace(',', '')) * (1000 if s else 1) for n, s in all_numbers]
+                    amount_original = max(all_values)
+                currency_symbol = '₦'  # assume Naira if no symbol detected
             else:
+                # No number found at all – fall through to conversational LLM
+                reply = conversational_reply(user_id, text)
+                if reply:
+                    save_conversation(user_id, 'cfo', reply)
+                    return jsonify({"message": reply, "tone": "neutral"})
                 return jsonify({
-                    "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
+                    "message": "I didn't catch an amount. Could you say something like 'I spent 500 on food'?",
                     "tone": "neutral"
                 })
-        except ValueError:
-            pass
-        except Exception as e:
-            print("SMART_FALLBACK_ERROR:", str(e))
-            import traceback
-            traceback.print_exc()
-            return jsonify({"error": "Server error while processing your message."}), 500
+
+    # ---------- CURRENCY DETECTION ----------
+    symbol_to_code = {
+        '$': 'USD', '₦': 'NGN', '€': 'EUR', '£': 'GBP',
+        '¥': 'JPY', 'R': 'ZAR', 'R$': 'ZAR', 'GH₵': 'GHS', 'DA': 'DZD',
+        'DH': 'MAD', 'Dhs': 'AED', 'TSh': 'TZS', 'FCFA': 'XAF', 'Br': 'ETB',
+        'CFA': 'XAF', 'RM': 'MYR', 'Rp': 'IDR', 'K': 'KES', 'Sh': 'KES',
+    }
+    currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
+
+    # ---------- USER‑AWARE CONVERSION ----------
+    from core import get_user_facts
+    facts = get_user_facts(user_id)
+    home_currency = facts.get('home_currency', 'NGN') or 'NGN'
+    amount_converted = convert_currency(amount_original, currency_code,
+                                        home_currency) if currency_code != home_currency else amount_original
+
+    # ---------- CREATE PENDING TRANSACTION ----------
+    pending_transaction[user_id] = {
+        "state": "collecting_type",
+        "data": {
+            "amount": amount_converted,  # logged in home currency
+            "original_amount": amount_original,
+            "original_currency": currency_code,
+            "home_currency": home_currency,
+            "description": text,
+            "currency": home_currency,
+            "category": None
+        },
+        "category": None
+    }
+
+    # ---------- GOODS vs SERVICES DETECTION ----------
+    has_unit = any(re.search(r'\b' + unit + r'\b', text.lower()) for unit in GOODS_UNITS)
+    pending_transaction[user_id]["data"]["transaction_type"] = "goods" if has_unit else "services"
+
+    # ---------- TYPE DETECTION (unchanged keyword checks) ----------
+    if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
+        pending_transaction[user_id]["data"]["type"] = "expense"
+        pending_transaction[user_id]["state"] = "collecting_category"
+        return ask_next_question(user_id)
+    elif any(word in text.lower() for word in ['earned', 'made', 'profit', 'income', 'received']):
+        pending_transaction[user_id]["data"]["type"] = "income"
+        pending_transaction[user_id]["state"] = "collecting_category"
+        return ask_next_question(user_id)
+    elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
+        pending_transaction[user_id]["data"]["type"] = "investment"
+        pending_transaction[user_id]["data"]["category"] = "investment"
+        pending_transaction[user_id]["category"] = "investment"
+        return ask_for_location(user_id)
+    elif any(phrase in text.lower() for phrase in [
+        'investor gave', 'partner gave', 'capital to trade',
+        'manage this money', 'investment capital', 'to invest',
+        'for investment', 'fund me', 'funds to trade',
+        'money to run business', 'money for business',
+        'investment for', 'capital for', 'received investment',
+        'received capital', 'gave me capital', 'gave me to invest',
+        'money to invest', 'trading capital', 'business capital'
+    ]):
+        pending_transaction[user_id]["data"]["type"] = "managed_funds"
+        pending_transaction[user_id]["state"] = "confirming_funds"
+        return jsonify({
+            "message": f"I understand someone gave you {amount_converted:,.2f} {home_currency} as investment capital. Is that correct? (reply 'yes' or 'no')",
+            "tone": "neutral"
+        })
+    elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
+        pending_transaction[user_id]["data"]["type"] = "loan"
+        pending_transaction[user_id]["state"] = "collecting_category"
+        return ask_next_question(user_id)
+    else:
+        return jsonify({
+            "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
+            "tone": "neutral"
+        })
 
     # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
     reply = conversational_reply(user_id, text)

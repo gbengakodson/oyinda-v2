@@ -458,7 +458,10 @@ def finalise_transaction(user_id):
                 (user_id, datetime.utcnow().strftime('%Y-%m-%d')))
     daily_spend = cur.fetchone()[0]
     conn.close()
-    response_text += f" You’ve spent ₦{daily_spend:,.2f} today so far."
+    if event_type == "ExpenseLogged":
+        response_text += f" You've spent ₦{daily_spend:,.2f} today so far."
+    elif event_type == "IncomeReceived":
+        response_text += f" You've earned ₦{daily_spend:,.2f} today so far."
 
 
     # ---------- AUTOMATED BUSINESS SUGGESTION (ALL categories) ----------
@@ -1169,7 +1172,6 @@ def handle_command():
             p["data"]["location"] = reply.strip()
             return finalise_transaction(user_id)
 
-
         elif state == "collecting_emergency_hours":
             hours_match = re.match(r'^(\d+)$', reply.strip())
             if hours_match:
@@ -1802,8 +1804,8 @@ def handle_command():
     # Step 1: Look for a price‑indicating word followed by a number
     price_match = re.search(
         r'(?:for|at|cost|costs|sold\s*at|price\s*of)\s*'
-        r'(?:₦|naira|\$|usd|€|£|GH₵|R)?\s*'  # optional currency symbol
-        r'(\d[\d,]*\.?\d*)\s*(k|K)?',  # amount + optional k/K
+        r'(?:₦|naira|\$|usd|€|£|GH₵|R)?\s*'
+        r'(\d[\d,]*\.?\d*)\s*(k|K)?',
         text, re.IGNORECASE
     )
     if price_match:

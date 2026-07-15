@@ -1434,7 +1434,20 @@ def handle_command():
             "tone": "neutral"
         })
 
-
+    # ---------- EMERGENCY DATA THRESHOLD ----------
+    threshold_match = re.match(
+        r'(?:send me data after|set my emergency data to|send emergency data after)\s+(\d+)\s*(?:hours?|hrs?)?\s*(?:offline)?',
+        text, re.IGNORECASE
+    )
+    if threshold_match:
+        hours = int(threshold_match.group(1))
+        if hours < 1 or hours > 72:
+            return jsonify({"message": "Please choose a time between 1 and 72 hours."})
+        store_user_fact(user_id, 'emergency_data_hours', hours)
+        return jsonify({
+            "message": f"Got it! I'll send you 33MB of data after you've been offline for {hours} hours. Make sure your phone number is set.",
+            "tone": "income"
+        })
 
 
     # ---------- LOAN REPAYMENT ----------
@@ -3664,6 +3677,79 @@ def tax_receipt():
     conn.close()
 
     return jsonify({"message": f"Receipt {receipt_id} has been sent to {email}."})
+
+
+@app.route('/cron/emergency-data', methods=['POST'])
+def emergency_data():
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    if secret != CRON_SECRET:
+        return jsonify({"error": "Unauthorized"}), 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Find users who have a threshold and a phone number
+    cur.execute("""
+        SELECT id, phone, COALESCE(data_balance_mb, 0)
+        FROM users
+        WHERE phone IS NOT NULL AND phone != ''
+          AND facts->>'emergency_data_hours' IS NOT NULL
+    """)
+    users = cur.fetchall()
+
+    today = datetime.utcnow().date()
+    sent = 0
+
+    for user_id, phone, balance in users:
+        # Get the user's threshold
+        cur.execute("SELECT facts->>'emergency_data_hours' FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            continue
+        threshold_hours = int(row[0])
+
+        # Last activity time
+        cur.execute("SELECT MAX(created_at) FROM events WHERE user_id = %s", (user_id,))
+        last_activity = cur.fetchone()[0]
+
+        if last_activity:
+            offline_duration = (datetime.utcnow() - last_activity).total_seconds() / 3600
+        else:
+            offline_duration = 999  # never active → treat as long offline
+
+        if offline_duration >= threshold_hours:
+            # Check if already sent today
+            cur.execute(
+                "SELECT 1 FROM data_rewards WHERE user_id = %s AND awarded_at::date = %s AND reward_type = 'emergency'",
+                (user_id, today)
+            )
+            if cur.fetchone():
+                continue
+
+            # Ensure enough balance (33 MB)
+            if balance < 33:
+                continue
+
+            # Send 33 MB via VTpass
+            try:
+                from connectors.vtpass import buy_data
+                result = buy_data(phone, 'mtn', 'mtn-10mb-100')  # smallest MTN data plan
+                if result.get('code') == '000':
+                    cur.execute(
+                        "INSERT INTO data_rewards (user_id, reward_type) VALUES (%s, %s)",
+                        (user_id, 'emergency')
+                    )
+                    cur.execute(
+                        "UPDATE users SET data_balance_mb = GREATEST(0, data_balance_mb - 33) WHERE id = %s",
+                        (user_id,)
+                    )
+                    conn.commit()
+                    sent += 1
+            except Exception as e:
+                print(f"Emergency data failed for {phone}: {e}")
+
+    conn.close()
+    return jsonify({"emergency_sent": sent})
 
 
 

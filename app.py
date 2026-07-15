@@ -1435,17 +1435,49 @@ def handle_command():
         })
 
     # ---------- EMERGENCY DATA THRESHOLD ----------
-    threshold_match = re.match(
-        r'(?:send me data after|set my emergency data to|send emergency data after)\s+(\d+)\s*(?:hours?|hrs?)?\s*(?:offline)?',
-        text, re.IGNORECASE
-    )
+    if any(phrase in text_lower for phrase in
+           ['emergency data', 'offline data', 'send me data after', 'send data after']):
+        # Check if phone number is set
+        facts = get_user_facts(user_id)
+        phone = facts.get('phone')
+        if not phone:
+            return jsonify({
+                "message": "I need your phone number first so I know where to send the data. "
+                           "Please tell me your phone number, like 'my phone number is 080xxxxxxxx'.",
+                "tone": "neutral"
+            })
+
+        # Ask for the threshold
+        return jsonify({
+            "message": "How many hours offline before I send you emergency data? (e.g., 3, 6, 12)\n\n"
+                       "I will send you 33 MB of **MTN** data automatically when you've been offline "
+                       "longer than that. Other networks coming soon!",
+            "tone": "neutral"
+        })
+
+    # Handle the actual threshold number when the user replies
+    threshold_match = re.match(r'^(\d+)\s*(?:hours?|hrs?)?$', text)
     if threshold_match:
+        # Check if the user was in the middle of setting emergency data
+        # We'll use a pending state to know they're responding to the threshold question
+        # (You can enhance this by checking conversation context, but for simplicity,
+        #  we assume if they just sent a number and have no other pending state,
+        #  we treat it as the threshold answer.)
+        facts = get_user_facts(user_id)
+        phone = facts.get('phone')
+        if not phone:
+            return jsonify({"message": "Please set your phone number first."})
+
         hours = int(threshold_match.group(1))
         if hours < 1 or hours > 72:
-            return jsonify({"message": "Please choose a time between 1 and 72 hours."})
+            return jsonify({"message": "Please choose between 1 and 72 hours."})
+
         store_user_fact(user_id, 'emergency_data_hours', hours)
+
+        # Also make sure the backend cron will work — we already have the endpoint ready
         return jsonify({
-            "message": f"Got it! I'll send you 33MB of data after you've been offline for {hours} hours. Make sure your phone number is set.",
+            "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
+                       "I'll check every 30 minutes. Make sure your MTN number is set!",
             "tone": "income"
         })
 

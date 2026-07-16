@@ -4591,61 +4591,52 @@ def cron_remind():
     })
 
 
-@app.route('/business/search', methods=['GET'])
-@jwt_required()
-def business_search():
-    user_id = get_jwt_identity()
-    query = request.args.get('q', '').strip()
-    city = request.args.get('city', '').strip()
-    category = request.args.get('category', 'all')
 
-    if not query or len(query) < 2:
-        return jsonify({"results": [], "message": "Type at least 2 letters to search."})
+
+@app.route('/api/business/search', methods=['GET'])
+@jwt_required()
+def search_business():
+    user_id = get_jwt_identity()
+    q = request.args.get('q', '').strip().lower()
+    city = request.args.get('city', '').strip().lower()
+
+    if not q or len(q) < 2:
+        return jsonify({"results": [], "message": "Please enter at least 2 letters to search."})
 
     conn = get_conn()
     cur = conn.cursor()
-
-    # Simpler query – always matches by product name, sorted by rating
-    sql = """
-        SELECT name, product, category, market_name, city, phone, price_info, rating, total_ratings, is_verified
-        FROM business_listings
-        WHERE product ILIKE %s
-          AND user_id != %s
+    # Fuzzy search on product, name, market_name; filter by city if provided, but include listings with empty city (system)
+    query = """
+    SELECT id, name, product, category, market_name, city, phone, avatar_url, rating, total_ratings, is_verified, listing_type
+    FROM business_listings
+    WHERE (LOWER(product) LIKE %s OR LOWER(name) LIKE %s OR LOWER(market_name) LIKE %s)
+    AND (LOWER(city) = %s OR city = '' OR city IS NULL)
+    ORDER BY rating DESC NULLS LAST, created_at DESC
+    LIMIT 20
     """
-    params = [f'%{query}%', user_id]
-
-    # Only filter by city if a city is provided
-    if city:
-        sql += " AND LOWER(city) = LOWER(%s)"
-        params.append(city)
-
-    # Show top results, preferring those with ratings
-    sql += " ORDER BY total_ratings DESC, rating DESC LIMIT 30"
-
-    # DEBUG: print the exact SQL and parameters
-    print("BUSINESS_SEARCH SQL:", cur.mogrify(sql, params).decode('utf-8'))
-
-    cur.execute(sql, params)
+    like_q = f'%{q}%'
+    cur.execute(query, (like_q, like_q, like_q, city))
     rows = cur.fetchall()
     conn.close()
 
-    results = [
-        {
-            "name": r[0],
-            "product": r[1],
-            "category": r[2],
-            "market_name": r[3] or '',
-            "city": r[4] or '',
-            "phone": r[5] or '',
-            "price_info": r[6] or '',
-            "rating": r[7] or 0,
-            "total_ratings": r[8] or 0,
-            "is_verified": r[9] or False
-        }
-        for r in rows
-    ]
+    results = []
+    for r in rows:
+        results.append({
+            "id": r[0],
+            "name": r[1],
+            "product": r[2],
+            "category": r[3],
+            "market_name": r[4],
+            "city": r[5],
+            "phone": r[6],
+            "avatar_url": r[7],
+            "rating": r[8],
+            "total_ratings": r[9],
+            "is_verified": r[10],
+            "listing_type": r[11]
+        })
 
-    return jsonify({"results": results, "count": len(results)})
+    return jsonify({"results": results})
 
 
 @app.route('/debug/business/all', methods=['GET'])

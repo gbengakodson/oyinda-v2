@@ -4648,6 +4648,16 @@ def business_search():
     return jsonify({"results": results, "count": len(results)})
 
 
+@app.route('/debug/business/all', methods=['GET'])
+def debug_business_all():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM business_listings")
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([dict(zip([desc[0] for desc in cur.description], row)) for row in rows])
+
+
 @app.route('/feedback', methods=['POST'])
 @jwt_required()
 def submit_feedback():

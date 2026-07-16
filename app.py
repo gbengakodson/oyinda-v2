@@ -697,6 +697,17 @@ def handle_command():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
+    # ---------- HARDCODED TEST (first rule) ----------
+    if 'who sells' in text.lower() or 'who sell' in text.lower():
+        query = text.lower().replace('who sells', '').replace('who sell', '').strip() or 'crypto'
+        return jsonify({
+            "action": "show_business_search",
+            "search_query": query,
+            "city": "",
+            "message": f"Searching for '{query}'…",
+            "tone": "neutral"
+        })
+
     # --- Transfer confirmation (unchanged) ---
     if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
         pending = pending_transfers.get(user_id)
@@ -1975,19 +1986,6 @@ def handle_command():
             "tone": "neutral"
         })
 
-    # ---------- TEMPORARY HARDCODED TEST (in handle_command) ----------
-    if 'who sells' in text_lower or 'who sell' in text_lower:
-        print("HARDCODED_BUSINESS_SEARCH triggered:", text)  # ← ADD THIS
-        query = text_lower.replace('who sells', '').replace('who sell', '').strip()
-        if not query:
-            query = 'crypto'
-        return jsonify({
-            "action": "show_business_search",
-            "search_query": query,
-            "city": "",
-            "message": f"Searching for '{query}'…",
-            "tone": "neutral"
-        })
 
     # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
     reply = conversational_reply(user_id, text)

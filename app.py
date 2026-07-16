@@ -2513,8 +2513,6 @@ def handle_query(text, user_id):
                 pass
 
 
-
-
     # Power availability summary
     if any(phrase in text_lower for phrase in ['how many hours of light', 'power hours', 'light hours', 'hours of electricity']):
         conn = get_conn()
@@ -2555,6 +2553,19 @@ def handle_query(text, user_id):
                 "answer": f"You don get light for about **{total_hours} hours** this month. That one fit help you negotiate your NEPA bill.",
                 "tone": "neutral"
             })
+
+    # ---------- TEMPORARY HARDCODED TEST ----------
+    if 'who sells' in text_lower or 'who sell' in text_lower:
+        query = text_lower.replace('who sells', '').replace('who sell', '').strip()
+        if not query:
+            query = 'crypto'
+        return jsonify({
+            "action": "show_business_search",
+            "search_query": query,
+            "city": "",
+            "message": f"Searching for '{query}'…",
+            "tone": "neutral"
+        })
 
     # ---------- BUSINESS NETWORK SEARCH ----------
     search_triggers = [

@@ -4597,7 +4597,7 @@ def business_search():
     user_id = get_jwt_identity()
     query = request.args.get('q', '').strip()
     city = request.args.get('city', '').strip()
-    category = request.args.get('category', 'all')  # goods, services, all
+    category = request.args.get('category', 'all')
 
     if not query or len(query) < 2:
         return jsonify({"results": [], "message": "Type at least 2 letters to search."})
@@ -4605,7 +4605,7 @@ def business_search():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Build query
+    # Simpler query – always matches by product name, sorted by rating
     sql = """
         SELECT name, product, category, market_name, city, phone, price_info, rating, total_ratings, is_verified
         FROM business_listings
@@ -4614,17 +4614,16 @@ def business_search():
     """
     params = [f'%{query}%', user_id]
 
+    # Only filter by city if a city is provided
     if city:
         sql += " AND LOWER(city) = LOWER(%s)"
         params.append(city)
 
-    if category != 'all':
-        sql += " AND category = %s"
-        params.append(category)
+    # Show top results, preferring those with ratings
+    sql += " ORDER BY total_ratings DESC, rating DESC LIMIT 30"
 
-    # Prefer same city, then by rating
-    sql += " ORDER BY CASE WHEN LOWER(city) = LOWER(%s) THEN 0 ELSE 1 END, rating DESC, total_ratings DESC LIMIT 30"
-    params.append(city if city else '')
+    # DEBUG: print the exact SQL and parameters
+    print("BUSINESS_SEARCH SQL:", cur.mogrify(sql, params).decode('utf-8'))
 
     cur.execute(sql, params)
     rows = cur.fetchall()

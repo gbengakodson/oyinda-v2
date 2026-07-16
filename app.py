@@ -2145,36 +2145,7 @@ def handle_query(text, user_id):
         msg = "Here's your daily budget:\n" + "\n".join([f"• {k.replace('_',' ').title()}: ₦{v:,.2f}" for k,v in budget.items()])
         return jsonify({"answer": msg, "tone": "neutral"})
 
-    # ---------- BUSINESS NETWORK SEARCH ----------
-    if any(phrase in text_lower for phrase in [
-        'who sells', 'who dey sell', 'find supplier', 'find someone who',
-        'who does', 'who dey do', 'i need a', 'i dey find',
-        'who supplies', 'where can i get', 'who get', 'who dey supply'
-    ]):
-        # Extract the product/service being searched
-        query_match = re.search(
-            r'(?:who\s+(?:sells|dey\s+sell|supplies?|dey\s+supply|does|dey\s+do)|'
-            r'find\s+(?:supplier|someone\s+who)|'
-            r'i\s+need\s+a|i\s+dey\s+find|'
-            r'where\s+can\s+i\s+get|who\s+get|who\s+dey)\s+(.+)',
-            text_lower
-        )
-        if query_match:
-            search_query = query_match.group(1).strip()
-            # Clean up the query
-            search_query = re.sub(r'\s*(?:in|for|at|near|around)\s*.*$', '', search_query).strip()
 
-            # Get user's city for better results
-            facts = get_user_facts(user_id)
-            my_city = facts.get('city', '')
-
-            return jsonify({
-                "action": "show_business_search",
-                "search_query": search_query,
-                "city": my_city,
-                "message": f"Searching for '{search_query}' near you…",
-                "tone": "neutral"
-            })
 
     # ---------- LOAN STATUS ----------
     if any(phrase in text_lower for phrase in ['how much do i owe', 'my loan', 'loan balance', 'outstanding loan']):
@@ -2577,11 +2548,6 @@ def handle_query(text, user_id):
 
 
 
-        # If no specific query matched, try conversational LLM
-        reply = conversational_reply(user_id, text)
-        if reply:
-            save_conversation(user_id, 'cfo', reply)
-            return jsonify({"answer": reply, "tone": "neutral"})
 
     # Power availability summary
     if any(phrase in text_lower for phrase in ['how many hours of light', 'power hours', 'light hours', 'hours of electricity']):
@@ -2623,6 +2589,49 @@ def handle_query(text, user_id):
                 "answer": f"You don get light for about **{total_hours} hours** this month. That one fit help you negotiate your NEPA bill.",
                 "tone": "neutral"
             })
+
+    # ---------- BUSINESS NETWORK SEARCH ----------
+    search_triggers = [
+        'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
+        'who does', 'who dey do', 'i need a', 'i dey find',
+        'who supplies', 'where can i get', 'who get', 'who dey supply',
+        'which person dey', 'who fit', 'who sabi', 'who dey run'
+    ]
+    if any(phrase in text_lower for phrase in search_triggers):
+        # Extract the product/service – grab everything after the trigger phrase
+        search_query = ''
+        for phrase in search_triggers:
+            if phrase in text_lower:
+                idx = text_lower.find(phrase) + len(phrase)
+                search_query = text_lower[idx:].strip()
+                break
+
+        # If extraction failed, just use the whole text after the trigger as the query
+        if not search_query:
+            search_query = text_lower
+
+        # Remove trailing fluff like "in ibadan", "for me", etc.
+        search_query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', search_query).strip()
+
+        if len(search_query) < 2:
+            return jsonify({"answer": "What are you looking for? Please say something like 'who sells tomatoes'.", "tone": "neutral"})
+
+        facts = get_user_facts(user_id)
+        my_city = facts.get('city', '')
+
+        return jsonify({
+            "action": "show_business_search",
+            "search_query": search_query,
+            "city": my_city,
+            "message": f"Searching for '{search_query}' near you…",
+            "tone": "neutral"
+        })
+
+    # If no specific query matched, try conversational LLM
+    reply = conversational_reply(user_id, text)
+    if reply:
+        save_conversation(user_id, 'cfo', reply)
+        return jsonify({"answer": reply, "tone": "neutral"})
 
 
     # Static fallback if LLM fails

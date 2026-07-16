@@ -2060,7 +2060,7 @@ def handle_query(text, user_id):
         'which person dey', 'who fit', 'who sabi', 'who dey run'
     ]
     if any(phrase in text_lower for phrase in search_triggers):
-        # Extract the product/service – grab everything after the trigger phrase
+        print("BUSINESS_SEARCH triggered:", text)
         for phrase in search_triggers:
             if phrase in text_lower:
                 idx = text_lower.find(phrase) + len(phrase)

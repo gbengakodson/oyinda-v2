@@ -7,10 +7,11 @@ from flask_cors import CORS, cross_origin
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from io import BytesIO
 
+
 from core import *
 from groq_parser import parse_intent_groq, classify_query_intent
 from utils.crypto import encrypt, decrypt
-from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer
+from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer, MonoReservedAccount
 from connectors.exchange import BinanceConnector, get_exchange_connector
 from web3 import Web3
 import connectors.balances as balance_module   # to get token contract addresses
@@ -537,6 +538,66 @@ def finalise_transaction(user_id):
         store_user_fact(user_id, 'city', location)
 
     return jsonify({"message": response_text, "tone": "neutral", "event_id": event["event_id"]})
+
+
+def ensure_wallet(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM user_wallets WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    if row:
+        wallet = { "account_id": row[2], "account_number": row[3], "bank_name": row[4], "bank_code": row[5], "balance": row[6] }
+        conn.close()
+        return wallet
+
+    # Create wallet via Mono Reserved Account API
+    user = get_user_facts(user_id)  # we need name, phone, email, NIN/BVN
+    # Fetch user details from users table
+    cur.execute("SELECT name, email, facts FROM users WHERE id = %s", (user_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        conn.close()
+        raise Exception("User not found")
+    name, email, facts = user_row[0], user_row[1], user_row[2] or {}
+    bvn = facts.get('bvn') or facts.get('nin')  # we need at least one verified ID
+    if not bvn:
+        conn.close()
+        raise Exception("You need to verify your BVN or NIN first. Type 'verify my identity'.")
+
+    identity_type = 'bvn' if len(bvn) == 11 else 'nin'  # crude but works
+    phone = facts.get('phone', '')
+    mono_user = {
+        "customer": {
+            "name": name,
+            "email": email,
+            "identity": {"type": identity_type, "number": bvn},
+            "phone": phone
+        },
+        "meta": {"user_id": user_id}
+    }
+    try:
+        mono_wallet = MonoReservedAccount()
+        result = mono_wallet.create_account(mono_user)
+        if 'id' not in result:
+            conn.close()
+            raise Exception("Wallet creation failed: " + str(result))
+        acc_id = result['id']
+        acc_number = result['account_number']
+        bank_name = result['bank']['name']
+        bank_code = result['bank']['code']
+        # Insert into user_wallets
+        cur.execute("""
+            INSERT INTO user_wallets (user_id, mono_account_id, account_number, bank_name, bank_code, balance)
+            VALUES (%s, %s, %s, %s, %s, 0.0)
+        """, (user_id, acc_id, acc_number, bank_name, bank_code))
+        conn.commit()
+        wallet = {"account_id": acc_id, "account_number": acc_number, "bank_name": bank_name, "bank_code": bank_code, "balance": 0.0}
+        return wallet
+    except Exception as e:
+        conn.close()
+        raise e
+    finally:
+        conn.close()
 
 
 
@@ -1808,6 +1869,100 @@ def handle_command():
             "tone": "neutral"
         })
 
+    # ---------- WALLET COMMANDS ----------
+    text_lower_wallet = text.lower()
+    if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
+        try:
+            wallet = ensure_wallet(user_id)
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
+                           f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
+                           f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
+                "tone": "neutral"
+            })
+        except Exception as e:
+            return jsonify({"message": str(e), "tone": "warning"})
+
+    # Internal transfer
+    send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
+    if send_match:
+        amount = float(send_match.group(1))
+        recipient_phone = send_match.group(2)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+        recip_row = cur.fetchone()
+        if not recip_row:
+            conn.close()
+            return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
+        recip_id = recip_row[0]
+        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+        recip_wallet_row = cur.fetchone()
+        if not recip_wallet_row:
+            conn.close()
+            return jsonify(
+                {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity."})
+        sender_wallet = ensure_wallet(user_id)
+        if sender_wallet['balance'] < amount:
+            conn.close()
+            return jsonify({"message": "Insufficient wallet balance."})
+
+        new_sender_balance = sender_wallet['balance'] - amount
+        new_recip_balance = float(recip_wallet_row[0]) + amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_sender_balance, user_id))
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_recip_balance, recip_id))
+        conn.commit()
+        conn.close()
+
+        sender_phone = get_user_facts(user_id).get('phone', '')
+        append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
+        append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
+        save_conversation(user_id, 'user', text)
+        return jsonify({
+            "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+            "tone": "income"
+        })
+
+    # External withdrawal
+    withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
+    if withdraw_match:
+        amount = float(withdraw_match.group(1))
+        bank_code = withdraw_match.group(2)
+        account_number = withdraw_match.group(3)
+        wallet = ensure_wallet(user_id)
+        if wallet['balance'] < amount:
+            return jsonify({"message": "Insufficient wallet balance."})
+
+        mono = MonoReservedAccount()
+        try:
+            result = mono.payout(amount, bank_code, account_number, f"Oyinda withdrawal for {user_id}")
+            if result.get('status') == 'success':
+                new_balance = wallet['balance'] - amount
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                            (new_balance, user_id))
+                conn.commit()
+                conn.close()
+                append_event(user_id, user_id, 'WalletDebited',
+                             {"amount": amount, "bank_code": bank_code, "account_number": account_number,
+                              "type": "withdrawal"})
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"🏦 Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. New balance: ₦{new_balance:,.2f}",
+                    "tone": "income"
+                })
+            else:
+                return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
+        except Exception as e:
+            return jsonify({"message": f"Withdrawal error: {str(e)}"})
+
+
+
+
 
     if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
         append_event(user_id, user_id, 'PowerStatusChanged', {
@@ -1873,6 +2028,86 @@ def handle_command():
                       f"Reply **'yes'** to accept these terms.",
             "tone": "neutral"
         })
+
+    send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
+    if send_match:
+        amount = float(send_match.group(1))
+        recipient_phone = send_match.group(2)
+        # Look up recipient by phone (they might not have a wallet yet)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+        recip_row = cur.fetchone()
+        if not recip_row:
+            conn.close()
+            return jsonify({"message": "User with phone number not found. Ask them to join Oyinda first."})
+        recip_id = recip_row[0]
+        # Check if recipient has a wallet
+        cur.execute("SELECT id, balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+        recip_wallet = cur.fetchone()
+        if not recip_wallet:
+            conn.close()
+            return jsonify(
+                {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity first."})
+        # Perform internal transfer: debit sender, credit recipient (both ledger updates)
+        sender_wallet = ensure_wallet(user_id)
+        if sender_wallet['balance'] < amount:
+            conn.close()
+            return jsonify({"message": "Insufficient balance."})
+        # Debit sender
+        new_sender_balance = sender_wallet['balance'] - amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_sender_balance, user_id))
+        # Credit recipient
+        recip_new_balance = recip_wallet[1] + amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (recip_new_balance, recip_id))
+        conn.commit()
+        conn.close()
+        # Log events
+        append_event(user_id, user_id, 'WalletDebited',
+                     {"amount": amount, "recipient": recip_id, "description": f"Sent to {recipient_phone}"})
+        append_event(recip_id, recip_id, 'WalletCredited',
+                     {"amount": amount, "sender": user_id, "description": f"Received from {user_id}"})
+        save_conversation(user_id, 'user', text)
+        return jsonify({
+            "message": f"Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+            "tone": "income"
+        })
+
+    withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
+    if withdraw_match:
+        amount = float(withdraw_match.group(1))
+        bank_code = withdraw_match.group(2)
+        account_number = withdraw_match.group(3)
+        wallet = ensure_wallet(user_id)
+        if wallet['balance'] < amount:
+            return jsonify({"message": "Insufficient wallet balance."})
+        mono = MonoReservedAccount()
+        try:
+            result = mono.payout(amount, bank_code, account_number, "Oyinda withdrawal")
+            if result.get('status') == 'success':
+                # Debit wallet
+                conn = get_conn()
+                cur = conn.cursor()
+                new_balance = wallet['balance'] - amount
+                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                            (new_balance, user_id))
+                conn.commit()
+                conn.close()
+                append_event(user_id, user_id, 'WalletDebited',
+                             {"amount": amount, "bank_code": bank_code, "account_number": account_number,
+                              "type": "withdrawal"})
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. Your new balance: ₦{new_balance:,.2f}",
+                    "tone": "income"
+                })
+            else:
+                return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
+        except Exception as e:
+            return jsonify({"message": f"Error: {str(e)}"})
+
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
     # Step 1: Look for a price‑indicating word followed by a number
@@ -4014,11 +4249,22 @@ def verify_identity():
     # ------------------------------------------------
 
     if verified:
+        # Store verification flags
         store_user_fact(user_id, f'{id_type}_verified', True)
         store_user_fact(user_id, f'{id_type}_number', id_number)
-        return jsonify({"message": f"Your {id_type.upper()} has been verified. Your identity is now upgraded.", "verified": True})
-    else:
-        return jsonify({"error": f"Invalid {id_type.upper()} number. Please check and try again."}), 400
+        # Also store under generic 'bvn' or 'nin' for wallet creation
+        store_user_fact(user_id, id_type, id_number)
+
+        # Auto-create wallet (silent, don’t block user if it fails)
+        try:
+            ensure_wallet(user_id)
+        except Exception:
+            pass
+
+        return jsonify({
+            "message": f"Your {id_type.upper()} has been verified. Your identity is now upgraded and your Oyinda wallet is active.",
+            "verified": True
+        })
 
 
 # --------------- HEALTH ---------------
@@ -4147,6 +4393,24 @@ def start_bank_link():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/wallet', methods=['GET'])
+@jwt_required()
+def get_wallet():
+    user_id = get_jwt_identity()
+    try:
+        wallet = ensure_wallet(user_id)
+        return jsonify({
+            "has_wallet": True,
+            "balance": wallet['balance'],
+            "account_number": wallet['account_number'],
+            "bank_name": wallet['bank_name'],
+            "bank_code": wallet['bank_code']
+        })
+    except Exception as e:
+        return jsonify({
+            "has_wallet": False,
+            "message": str(e)
+        })
 
 
 
@@ -4261,6 +4525,31 @@ def link_account():
 
     return jsonify({"message": f"{provider.capitalize()} {account_type} account linked successfully.", "account_id": str(account_id)})
 
+
+@app.route('/webhook/mono', methods=['POST'])
+def mono_webhook():
+    payload = request.get_json()
+    # Verify signature if needed
+    # Expect payload: {"event": "credit", "data": {"account": "acc_id", "amount": 5000, ...}}
+    event = payload.get('event')
+    data = payload.get('data', {})
+    if event == 'credit':
+        account_id = data.get('account')
+        amount = data.get('amount')
+        # Find user by mono_account_id
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, balance FROM user_wallets WHERE mono_account_id = %s", (account_id,))
+        row = cur.fetchone()
+        if row:
+            new_balance = row[1] + amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE mono_account_id = %s", (new_balance, account_id))
+            conn.commit()
+            # Log event
+            append_event(row[0], row[0], 'WalletCredited', {"amount": amount, "source": "bank_transfer", "account_id": account_id})
+            # Optionally send notification to user
+        conn.close()
+    return jsonify({"status": "received"}), 200
 
 
 @app.route('/credit/report', methods=['GET'])

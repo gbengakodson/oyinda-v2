@@ -364,6 +364,18 @@ def calculate_net_worth(user_id):
         except Exception as e:
             assets.append(f"{acc['label']}: error ({str(e)})")
 
+
+    # Add in‑app wallet balance
+    conn_wallet = get_conn()
+    cur_wallet = conn_wallet.cursor()
+    cur_wallet.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+    wallet_row = cur_wallet.fetchone()
+    conn_wallet.close()
+    if wallet_row and wallet_row[0]:
+        wallet_balance = float(wallet_row[0])
+        total_assets_ngn += wallet_balance
+        assets.append(f"Oyinda Wallet: ₦{wallet_balance:,.2f}")
+
     # Liabilities
     conn = get_conn()
     cur = conn.cursor()

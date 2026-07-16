@@ -1532,16 +1532,14 @@ def handle_command():
         city = facts.get('city', 'your city')
         name = get_user_name(user_id)
 
-        # Determine category
+        # Determine category (goods vs services)
         has_unit = any(re.search(r'\b' + unit + r'\b', product.lower()) for unit in GOODS_UNITS)
         category = 'goods' if has_unit else 'services'
 
-        # Store in business_listings
+        # Insert into business_listings table (delete old listing first)
         conn = get_conn()
         cur = conn.cursor()
-        # First delete old listing for this user
         cur.execute("DELETE FROM business_listings WHERE user_id = %s", (user_id,))
-        # Insert new listing
         cur.execute(
             """INSERT INTO business_listings (user_id, name, product, category, market_name, city, phone)
             VALUES (%s, %s, %s, %s, %s, %s, %s)""",

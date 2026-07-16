@@ -697,13 +697,34 @@ def handle_command():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    # ---------- HARDCODED TEST (first rule) ----------
-    if 'who sells' in text.lower() or 'who sell' in text.lower():
-        query = text.lower().replace('who sells', '').replace('who sell', '').strip() or 'crypto'
+    # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
+    search_triggers = [
+        'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
+        'who does', 'who dey do', 'i need a', 'i dey find',
+        'who supplies', 'where can i get', 'who get', 'who dey supply',
+        'which person dey', 'who fit', 'who sabi', 'who dey run'
+    ]
+    if any(phrase in text.lower() for phrase in search_triggers):
+        # Extract the search query
+        query = text.lower()
+        for phrase in search_triggers:
+            if phrase in query:
+                query = query.replace(phrase, '').strip()
+                break
+
+        # Remove trailing location words
+        query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query).strip()
+
+        if len(query) < 2:
+            query = 'crypto'  # fallback for vague queries
+
+        facts = get_user_facts(user_id)
+        my_city = facts.get('city', '')
+
         return jsonify({
             "action": "show_business_search",
             "search_query": query,
-            "city": "",
+            "city": my_city,
             "message": f"Searching for '{query}'…",
             "tone": "neutral"
         })

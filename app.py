@@ -1975,6 +1975,19 @@ def handle_command():
             "tone": "neutral"
         })
 
+    # ---------- TEMPORARY HARDCODED TEST ----------
+    if 'who sells' in text_lower or 'who sell' in text_lower:
+        query = text_lower.replace('who sells', '').replace('who sell', '').strip()
+        if not query:
+            query = 'crypto'
+        return jsonify({
+            "action": "show_business_search",
+            "search_query": query,
+            "city": "",
+            "message": f"Searching for '{query}'…",
+            "tone": "neutral"
+        })
+
     # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
     reply = conversational_reply(user_id, text)
     if reply:
@@ -2554,18 +2567,7 @@ def handle_query(text, user_id):
                 "tone": "neutral"
             })
 
-    # ---------- TEMPORARY HARDCODED TEST ----------
-    if 'who sells' in text_lower or 'who sell' in text_lower:
-        query = text_lower.replace('who sells', '').replace('who sell', '').strip()
-        if not query:
-            query = 'crypto'
-        return jsonify({
-            "action": "show_business_search",
-            "search_query": query,
-            "city": "",
-            "message": f"Searching for '{query}'…",
-            "tone": "neutral"
-        })
+
 
     # ---------- BUSINESS NETWORK SEARCH ----------
     search_triggers = [

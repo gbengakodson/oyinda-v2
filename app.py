@@ -2052,40 +2052,6 @@ def handle_query(text, user_id):
         return jsonify({"answer": f"Total spent on {category} for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
 
-    # ---------- BUSINESS NETWORK SEARCH (new) ----------
-    search_triggers = [
-        'who sells', 'who dey sell', 'find supplier', 'find someone who',
-        'who does', 'who dey do', 'i need a', 'i dey find',
-        'who supplies', 'where can i get', 'who get', 'who dey supply',
-        'which person dey', 'who fit', 'who sabi', 'who dey run'
-    ]
-    if any(phrase in text_lower for phrase in search_triggers):
-        print("BUSINESS_SEARCH triggered:", text)
-        for phrase in search_triggers:
-            if phrase in text_lower:
-                idx = text_lower.find(phrase) + len(phrase)
-                search_query = text_lower[idx:].strip()
-                # Remove trailing fluff like "in ibadan", "for me", etc.
-                search_query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', search_query).strip()
-                break
-
-        if not search_query:
-            return jsonify({"answer": "Who are you looking for? I can connect you to suppliers far and wide.",
-                            "tone": "neutral"})
-
-        facts = get_user_facts(user_id)
-        my_city = facts.get('city', '')
-
-        # Return an action so the frontend renders the contact list
-        return jsonify({
-            "action": "show_business_search",
-            "search_query": search_query,
-            "city": my_city,
-            "message": f"Searching for '{search_query}' near you…",
-            "tone": "neutral"
-        })
-
-
     # Smart queries with date & category
     if query_info:
         intent = query_info.get('intent')

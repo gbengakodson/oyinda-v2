@@ -1975,8 +1975,9 @@ def handle_command():
             "tone": "neutral"
         })
 
-    # ---------- TEMPORARY HARDCODED TEST ----------
+    # ---------- TEMPORARY HARDCODED TEST (in handle_command) ----------
     if 'who sells' in text_lower or 'who sell' in text_lower:
+        print("HARDCODED_BUSINESS_SEARCH triggered:", text)  # ← ADD THIS
         query = text_lower.replace('who sells', '').replace('who sell', '').strip()
         if not query:
             query = 'crypto'

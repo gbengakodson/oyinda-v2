@@ -2052,53 +2052,38 @@ def handle_query(text, user_id):
         return jsonify({"answer": f"Total spent on {category} for {label}: ₦{total:,.2f}", "tone": "neutral"})
 
 
-    # ---------- BUSINESS SEARCH (with proximity) ----------
-    search_match = re.match(r'(?:who|who dey|find|i need|i dey find)\s+(?:sell|supply|make|do|get)\s+(.+)', text, re.IGNORECASE)
-    if search_match:
-        query = search_match.group(1).strip()
-        user_facts = get_user_facts(user_id)
-        my_city = user_facts.get('city', '').lower()
+    # ---------- BUSINESS NETWORK SEARCH (new) ----------
+    search_triggers = [
+        'who sells', 'who dey sell', 'find supplier', 'find someone who',
+        'who does', 'who dey do', 'i need a', 'i dey find',
+        'who supplies', 'where can i get', 'who get', 'who dey supply',
+        'which person dey', 'who fit', 'who sabi', 'who dey run'
+    ]
+    if any(phrase in text_lower for phrase in search_triggers):
+        # Extract the product/service – grab everything after the trigger phrase
+        for phrase in search_triggers:
+            if phrase in text_lower:
+                idx = text_lower.find(phrase) + len(phrase)
+                search_query = text_lower[idx:].strip()
+                # Remove trailing fluff like "in ibadan", "for me", etc.
+                search_query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', search_query).strip()
+                break
 
-        conn = get_conn()
-        cur = conn.cursor()
-        # First try same city
-        cur.execute("""
-            SELECT u.name, u.facts->>'city', u.facts->>'business', u.facts->>'phone'
-            FROM users u
-            WHERE u.facts->>'business' IS NOT NULL
-              AND u.facts->>'business' ILIKE %s
-              AND LOWER(u.facts->>'city') = %s
-            LIMIT 5
-        """, (f'%{query}%', my_city))
-        results = cur.fetchall()
+        if not search_query:
+            return jsonify({"answer": "Who are you looking for? I can connect you to suppliers far and wide.",
+                            "tone": "neutral"})
 
-        # If no local results, search everywhere
-        if not results:
-            cur.execute("""
-                SELECT u.name, u.facts->>'city', u.facts->>'business', u.facts->>'phone'
-                FROM users u
-                WHERE u.facts->>'business' IS NOT NULL
-                  AND u.facts->>'business' ILIKE %s
-                LIMIT 5
-            """, (f'%{query}%',))
-            results = cur.fetchall()
-        conn.close()
+        facts = get_user_facts(user_id)
+        my_city = facts.get('city', '')
 
-        if results:
-            lines = []
-            for r in results:
-                name, city, biz, phone = r
-                location = f"in {city}" if city else "near you"
-                lines.append(f"• {name} {location} sells {biz}")
-            answer = "Here are people wey dey sell that thing:\n" + "\n".join(lines)
-
-            # Offer to connect
-            if len(results) == 1 and results[0][3]:  # has phone
-                answer += f"\n\nWant me to connect you? I can help you call {results[0][0]} now."
-            return jsonify({"answer": answer, "tone": "neutral"})
-        else:
-            return jsonify({"answer": f"I no see anyone wey dey sell '{query}' yet. Tell your friends to list their business on Oyinda!", "tone": "neutral"})
-
+        # Return an action so the frontend renders the contact list
+        return jsonify({
+            "action": "show_business_search",
+            "search_query": search_query,
+            "city": my_city,
+            "message": f"Searching for '{search_query}' near you…",
+            "tone": "neutral"
+        })
 
 
     # Smart queries with date & category

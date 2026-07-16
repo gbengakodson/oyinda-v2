@@ -1482,6 +1482,48 @@ def handle_command():
             "tone": "neutral"
         })
 
+    # ---------- BUSINESS REGISTRATION ----------
+    biz_reg_match = re.match(
+        r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)\s*(?:at|in|for)\s+([^,]+)'
+        r'(?:,?\s*(?:call\s*(?:me|on))?\s*(\d{11}))?',
+        text, re.IGNORECASE
+    )
+    if biz_reg_match:
+        product = biz_reg_match.group(1).strip()
+        market = biz_reg_match.group(2).strip()
+        phone = biz_reg_match.group(3) or ''
+
+        # Get user info
+        facts = get_user_facts(user_id)
+        city = facts.get('city', 'your city')
+        name = get_user_name(user_id)
+
+        # Determine category
+        has_unit = any(re.search(r'\b' + unit + r'\b', product.lower()) for unit in GOODS_UNITS)
+        category = 'goods' if has_unit else 'services'
+
+        # Store in business_listings
+        conn = get_conn()
+        cur = conn.cursor()
+        # First delete old listing for this user
+        cur.execute("DELETE FROM business_listings WHERE user_id = %s", (user_id,))
+        # Insert new listing
+        cur.execute(
+            """INSERT INTO business_listings (user_id, name, product, category, market_name, city, phone)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, name, product, category, market, city, phone)
+        )
+        conn.commit()
+        conn.close()
+
+        phone_msg = f" Call me {phone}" if phone else ""
+        return jsonify({
+            "message": f"Your business is now listed! When someone searches for '{product}', they'll see: "
+                       f"{name}, {market}, {city}{phone_msg}. "
+                       f"Tap the 📞 button and they'll call you directly.",
+            "tone": "income"
+        })
+
 
     # ---------- LOAN REPAYMENT ----------
     repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
@@ -2117,6 +2159,37 @@ def handle_query(text, user_id):
             return jsonify({"answer": "I don't have enough data yet. Log some income and expenses first.", "tone": "neutral"})
         msg = "Here's your daily budget:\n" + "\n".join([f"• {k.replace('_',' ').title()}: ₦{v:,.2f}" for k,v in budget.items()])
         return jsonify({"answer": msg, "tone": "neutral"})
+
+    # ---------- BUSINESS NETWORK SEARCH ----------
+    if any(phrase in text_lower for phrase in [
+        'who sells', 'who dey sell', 'find supplier', 'find someone who',
+        'who does', 'who dey do', 'i need a', 'i dey find',
+        'who supplies', 'where can i get', 'who get', 'who dey supply'
+    ]):
+        # Extract the product/service being searched
+        query_match = re.search(
+            r'(?:who\s+(?:sells|dey\s+sell|supplies?|dey\s+supply|does|dey\s+do)|'
+            r'find\s+(?:supplier|someone\s+who)|'
+            r'i\s+need\s+a|i\s+dey\s+find|'
+            r'where\s+can\s+i\s+get|who\s+get|who\s+dey)\s+(.+)',
+            text_lower
+        )
+        if query_match:
+            search_query = query_match.group(1).strip()
+            # Clean up the query
+            search_query = re.sub(r'\s*(?:in|for|at|near|around)\s*.*$', '', search_query).strip()
+
+            # Get user's city for better results
+            facts = get_user_facts(user_id)
+            my_city = facts.get('city', '')
+
+            return jsonify({
+                "action": "show_business_search",
+                "search_query": search_query,
+                "city": my_city,
+                "message": f"Searching for '{search_query}' near you…",
+                "tone": "neutral"
+            })
 
     # ---------- LOAN STATUS ----------
     if any(phrase in text_lower for phrase in ['how much do i owe', 'my loan', 'loan balance', 'outstanding loan']):
@@ -4525,6 +4598,62 @@ def cron_remind():
     })
 
 
+@app.route('/business/search', methods=['GET'])
+@jwt_required()
+def business_search():
+    user_id = get_jwt_identity()
+    query = request.args.get('q', '').strip()
+    city = request.args.get('city', '').strip()
+    category = request.args.get('category', 'all')  # goods, services, all
+
+    if not query or len(query) < 2:
+        return jsonify({"results": [], "message": "Type at least 2 letters to search."})
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Build query
+    sql = """
+        SELECT name, product, category, market_name, city, phone, price_info, rating, total_ratings, is_verified
+        FROM business_listings
+        WHERE product ILIKE %s
+          AND user_id != %s
+    """
+    params = [f'%{query}%', user_id]
+
+    if city:
+        sql += " AND LOWER(city) = LOWER(%s)"
+        params.append(city)
+
+    if category != 'all':
+        sql += " AND category = %s"
+        params.append(category)
+
+    # Prefer same city, then by rating
+    sql += " ORDER BY CASE WHEN LOWER(city) = LOWER(%s) THEN 0 ELSE 1 END, rating DESC, total_ratings DESC LIMIT 30"
+    params.append(city if city else '')
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    results = [
+        {
+            "name": r[0],
+            "product": r[1],
+            "category": r[2],
+            "market_name": r[3] or '',
+            "city": r[4] or '',
+            "phone": r[5] or '',
+            "price_info": r[6] or '',
+            "rating": r[7] or 0,
+            "total_ratings": r[8] or 0,
+            "is_verified": r[9] or False
+        }
+        for r in rows
+    ]
+
+    return jsonify({"results": results, "count": len(results)})
 
 
 @app.route('/feedback', methods=['POST'])

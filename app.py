@@ -705,18 +705,20 @@ def handle_command():
         'which person dey', 'who fit', 'who sabi', 'who dey run'
     ]
     if any(phrase in text.lower() for phrase in search_triggers):
-        # Extract the search query
-        query = text.lower()
+        # Find the LONGEST matching trigger
+        matched_trigger = ''
         for phrase in search_triggers:
-            if phrase in query:
-                query = query.replace(phrase, '').strip()
-                break
+            if phrase in text.lower() and len(phrase) > len(matched_trigger):
+                matched_trigger = phrase
+
+        # Remove the trigger phrase from the text (case‑insensitive)
+        query = re.sub(re.escape(matched_trigger), '', text, flags=re.IGNORECASE).strip()
 
         # Remove trailing location words
-        query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query).strip()
+        query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query, flags=re.IGNORECASE).strip()
 
         if len(query) < 2:
-            query = 'crypto'  # fallback for vague queries
+            query = 'crypto'
 
         facts = get_user_facts(user_id)
         my_city = facts.get('city', '')

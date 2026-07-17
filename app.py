@@ -125,15 +125,23 @@ def get_loan_interest_rate(credit_score):
         return 10.0
 
 def get_max_loan_amount(credit_score):
-    """Maximum borrowable amount based on score."""
-    if credit_score >= 700:
-        return LOAN_MAX_AMOUNT
-    elif credit_score >= 500:
-        return 200000
-    elif credit_score >= 300:
-        return 100000
-    elif credit_score >= 100:
-        return 50000
+    """Maximum borrowable amount based on credit score tier."""
+    if credit_score >= 801:
+        return 1_100_000   # > 1.1M (we'll say up to 1.5M for now)
+    elif credit_score >= 701:
+        return 1_000_000
+    elif credit_score >= 501:
+        return 500_000
+    elif credit_score >= 351:
+        return 200_000
+    elif credit_score >= 201:
+        return 100_000
+    elif credit_score >= 151:
+        return 49_000
+    elif credit_score >= 101:
+        return 20_000
+    elif credit_score >= 50:
+        return 10_000
     else:
         return 0
 
@@ -1324,8 +1332,12 @@ def process_user_command(user_id, text):
 
 
     # 3. Balance / budget / net worth / credit score / debt keywords
-    if any(w in text_lower for w in ['balance', 'how much is in', 'how much in', 'budget', 'net worth', 'credit score',
-                                     'health score', 'debt', 'owe', 'liability']):
+    if any(w in text_lower for w in [
+        'balance', 'how much is in', 'how much in', 'budget',
+        'net worth', 'credit score', 'health score', 'debt', 'owe', 'liability',
+        'how much am i worth', 'what am i worth', 'how much i worth',
+        'my net worth', 'calculate my net worth'
+    ]):
         return handle_query(text, user_id)
 
     if 'open a bank account' in text_lower or 'open bank account' in text_lower:
@@ -2090,6 +2102,29 @@ def process_user_command(user_id, text):
             })
         else:
             return jsonify({"message": "You have no active inventory loan."})
+
+    # ---------- GENERIC LOAN INQUIRY (before fallback) ----------
+    if any(phrase in text_lower for phrase in [
+        'can i get a loan', 'how to get loan', 'i need loan',
+        'loan eligibility', 'how much loan can i get'
+    ]):
+        credit = get_credit_score(user_id)
+        max_loan = get_max_loan_amount(credit['score'])
+        if max_loan == 0:
+            return jsonify({
+                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                "tone": "neutral"
+            })
+        else:
+            return jsonify({
+                "message": (
+                    f"Your credit score is {credit['score']}/850. "
+                    f"You can borrow up to ₦{max_loan:,}.\n"
+                    "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
+                    "I'll pay the supplier directly and you repay in 14 days."
+                ),
+                "tone": "income"
+            })
 
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
@@ -3163,6 +3198,7 @@ def conversational_reply(user_id, text):
         from core import get_user_facts, get_credit_score
         facts = get_user_facts(user_id)
         score_data = get_credit_score(user_id)
+        user_lang = facts.get('language', 'english')
 
         # Build system message
         system_msg = SYSTEM_PROMPT + "\n\n"
@@ -3186,12 +3222,11 @@ def conversational_reply(user_id, text):
         system_msg += f"\nThe user just said: \"{text}\"\n"
         # Language matching rule
         system_msg += (
-            "\nCRITICAL: You must respond in the EXACT language the user used. "
-            "If they wrote in English, reply in English. If Pidgin, reply Pidgin. "
-            "If Yoruba, reply Yoruba. Never mix unless the user mixed first. "
+            f"\nCRITICAL: The user's preferred language is '{user_lang}'. "
+            "You MUST respond in that language. If the user writes in English, reply in English. "
+            "If they write in Pidgin, reply in Pidgin. Never force Pidgin for an English speaker. "
             "Keep your reply to 1-2 short, caring sentences. "
-            "If the user is just chatting or expressing feelings, acknowledge them warmly without forcing a transaction. "
-            "Only guide them to share an expense or income if they seem open to it."
+            "If the user is just chatting, acknowledge them warmly without forcing a transaction."
         )
 
         # Try Groq first, then Google, then OpenAI fallback

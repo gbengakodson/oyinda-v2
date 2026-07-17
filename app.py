@@ -1878,6 +1878,7 @@ def process_user_command(user_id, text):
             "tone": "neutral"
         })
 
+
     # ---------- LOAN APPLICATION ----------
     # Inventory loan: borrow <amount> to buy <product> from <supplier>
     inv_loan_match = re.match(
@@ -2102,6 +2103,129 @@ def process_user_command(user_id, text):
             })
         else:
             return jsonify({"message": "You have no active inventory loan."})
+
+    # ---- PARTIAL BORROW REQUEST (no product/supplier) ----
+    partial_borrow_match = re.match(
+        r'(?:i\s+(?:want|wan|need)\s+to\s+)?borrow\s+(\d[\d,]*\.?\d*)\s*(?:k|k\s*)?(?:\s*loan)?\s*$',
+        text, re.IGNORECASE
+    )
+    if partial_borrow_match:
+        amount_str = partial_borrow_match.group(1).replace(',', '')
+        amount = float(amount_str)
+        # Check eligibility quickly
+        credit = get_credit_score(user_id)
+        max_loan = get_max_loan_amount(credit['score'])
+        if max_loan == 0:
+            return jsonify({
+                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                "tone": "neutral"
+            })
+        if amount > max_loan:
+            return jsonify({
+                "message": (
+                    f"With your current credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
+                    f"Would you like to borrow ₦{max_loan:,} instead?"
+                ),
+                "tone": "warning"
+            })
+        return jsonify({
+            "message": (
+                f"You want to borrow ₦{amount:,.0f}. Great! Now tell me:\n"
+                "• What do you want to buy? (e.g., 'bags of rice')\n"
+                "• Which supplier? (e.g., 'from Mama Tunde')\n\n"
+                "Just say like: 'borrow 50000 to buy bags of rice from Mama Tunde'"
+            ),
+            "tone": "neutral"
+        })
+
+
+    # ---- MINIMUM SCORE FOR A TARGET LOAN AMOUNT ----
+    score_for_amount_match = re.search(
+        r'(?:how\s+(?:many|much)\s+credit\s+score\s+(?:do|will)\s+I\s+(?:need|have)\s+to\s+borrow\s+)?(\d[\d,]*\.?\d*)',
+        text, re.IGNORECASE
+    )
+    if score_for_amount_match and any(phrase in text_lower for phrase in [
+        'how many credit score', 'how much credit score', 'credit score to borrow',
+        'score to borrow', 'score do i need', 'score will i have'
+    ]):
+        target_amount = float(score_for_amount_match.group(1).replace(',', ''))
+        # Find the minimum score tier that allows at least this amount
+        tiers = [
+            (50, 10_000),
+            (101, 20_000),
+            (151, 49_000),
+            (201, 100_000),
+            (351, 200_000),
+            (501, 500_000),
+            (701, 1_000_000),
+            (801, 1_100_000),
+        ]
+        min_score_needed = None
+        for score_threshold, max_loan in tiers:
+            if target_amount <= max_loan:
+                min_score_needed = score_threshold
+                break
+        if min_score_needed:
+            return jsonify({
+                "message": (
+                    f"To borrow ₦{target_amount:,.0f}, you need a credit score of at least {min_score_needed}. "
+                    "Keep logging your daily expenses and income to grow your score!"
+                ),
+                "tone": "neutral"
+            })
+        else:
+            return jsonify({
+                "message": f"₦{target_amount:,.0f} is above our current maximum loan amount. Please try a smaller amount.",
+                "tone": "warning"
+            })
+    # ---- LOAN AMOUNT FOR A GIVEN SCORE ----
+    hypothetical_score_match = re.search(
+        r'(?:if\s+(?:I\s+have|my)\s+credit\s+score\s+(?:is|of)\s+)?(\d{2,3})',
+        text, re.IGNORECASE
+    )
+    if hypothetical_score_match and any(phrase in text_lower for phrase in [
+        'if i have', 'if my credit score', 'credit score of', 'how much will i be able to borrow',
+        'how much can i borrow', 'how much will i get'
+    ]):
+        hypothetical_score = int(hypothetical_score_match.group(1))
+        if 50 <= hypothetical_score <= 850:
+            max_loan = get_max_loan_amount(hypothetical_score)
+            if max_loan == 0:
+                return jsonify({
+                    "message": f"With a score of {hypothetical_score}, you won't qualify for a loan yet. Keep logging transactions to reach 50.",
+                    "tone": "neutral"
+                })
+            else:
+                return jsonify({
+                    "message": (
+                        f"If your credit score is {hypothetical_score}, you can borrow up to ₦{max_loan:,}.\n"
+                        "Your current score is {}/850. Keep logging expenses to reach that target!"
+                    ).format(get_credit_score(user_id)['score']),
+                    "tone": "neutral"
+                })
+        else:
+            return jsonify({"message": "Credit score must be between 50 and 850.", "tone": "warning"})
+
+    # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
+    if re.match(r'(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
+        # Treat it exactly like "can I get a loan"
+        credit = get_credit_score(user_id)
+        max_loan = get_max_loan_amount(credit['score'])
+        if max_loan == 0:
+            return jsonify({
+                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                "tone": "neutral"
+            })
+        else:
+            return jsonify({
+                "message": (
+                    f"Your credit score is {credit['score']}/850. "
+                    f"You can borrow up to ₦{max_loan:,}.\n"
+                    "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
+                    "I'll pay the supplier directly and you repay in 14 days."
+                ),
+                "tone": "income"
+            })
 
     # ---------- GENERIC LOAN INQUIRY (before fallback) ----------
     if any(phrase in text_lower for phrase in [

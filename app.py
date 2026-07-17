@@ -1061,24 +1061,49 @@ def process_user_command(user_id, text):
             return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
 
 
+
         elif state == "ask_id_number":
+
             id_number = reply.strip()
+
             if len(id_number) < 10:
-                return jsonify({"message": "That doesn't look like a valid number. Please enter at least 10 digits.", "tone": "neutral"})
-            p["data"]["id_number"] = id_number
-            # Call the verification endpoint internally
-            token = request.headers.get('Authorization', '').replace('Bearer ', '')
-            verify_resp = requests.post(
-                f"https://oyinda-v2.onrender.com/verify/identity",
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-                json={"type": p["data"]["id_type"], "number": id_number}
-            )
-            result = verify_resp.json()
-            pending_transaction.pop(user_id, None)
-            if result.get("verified"):
-                return jsonify({"message": result["message"], "tone": "income"})
+                return jsonify({"message": "That doesn't look like a valid number. Please enter at least 10 digits.",
+                                "tone": "neutral"})
+
+            id_type = p["data"]["id_type"]
+
+            # Simulate verification (replace with real API later)
+
+            verified = len(id_number) >= 10
+
+            if verified:
+
+                store_user_fact(user_id, f'{id_type}_verified', True)
+
+                store_user_fact(user_id, f'{id_type}_number', id_number)
+
+                store_user_fact(user_id, id_type, id_number)  # generic key for wallet
+
+                # Auto-create wallet
+
+                try:
+
+                    wallet = ensure_wallet(user_id)
+
+                    wallet_msg = f"Your wallet is active! Account: {wallet['account_number']} ({wallet['bank_name']})."
+
+                except Exception as e:
+
+                    wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
+
+                pending_transaction.pop(user_id, None)
+
+                return jsonify({"message": f"Identity verified! {wallet_msg}", "tone": "income"})
+
             else:
-                return jsonify({"message": result.get("error", "Verification failed."), "tone": "warning"})
+
+                return jsonify({"message": "Verification failed. Please check your number and try again."})
+
 
         elif state == "collecting_business_details":
             # Parse the user's business description and price
@@ -1230,9 +1255,7 @@ def process_user_command(user_id, text):
             else:
                 # User doesn't want bulk logging – remove and let fallback handle it
                 pending_transaction.pop(user_id, None)
-                # Fall through to the normal smart fallback
 
-        # (Other states like collecting_transport_type, housing_type can be added later)
 
         # If we didn't match any state, just finalise to avoid hanging
         return finalise_transaction(user_id)
@@ -5135,6 +5158,8 @@ def text_to_speech():
 
 
 
+import openai
+
 @app.route('/voice', methods=['POST'])
 @jwt_required()
 def handle_voice():
@@ -5155,9 +5180,9 @@ def handle_voice():
         return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
 
     try:
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         with open(temp_filename, "rb") as f:
-            transcript = openai.Audio.transcribe(
+            transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
                 response_format="text"

@@ -11,7 +11,7 @@ from io import BytesIO
 from core import *
 from groq_parser import parse_intent_groq, classify_query_intent
 from utils.crypto import encrypt, decrypt
-from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer, MonoReservedAccount
+from connectors.mono import exchange_code, get_account_details, get_transactions, initiate_transfer
 from connectors.exchange import BinanceConnector, get_exchange_connector
 from web3 import Web3
 import connectors.balances as balance_module   # to get token contract addresses
@@ -542,63 +542,47 @@ def finalise_transaction(user_id):
 
 
 def ensure_wallet(user_id):
+    """Return wallet dict or create one with internal ledger (no external API)."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM user_wallets WHERE user_id = %s", (user_id,))
+    cur.execute("SELECT mono_account_id, account_number, bank_name, bank_code, balance FROM user_wallets WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
     if row:
-        wallet = { "account_id": row[2], "account_number": row[3], "bank_name": row[4], "bank_code": row[5], "balance": row[6] }
+        wallet = {
+            "account_id": row[0],
+            "account_number": row[1],
+            "bank_name": row[2],
+            "bank_code": row[3],
+            "balance": float(row[4])
+        }
         conn.close()
         return wallet
 
-    # Create wallet via Mono Reserved Account API
-    user = get_user_facts(user_id)  # we need name, phone, email, NIN/BVN
-    # Fetch user details from users table
-    cur.execute("SELECT name, email, facts FROM users WHERE id = %s", (user_id,))
-    user_row = cur.fetchone()
-    if not user_row:
-        conn.close()
-        raise Exception("User not found")
-    name, email, facts = user_row[0], user_row[1], user_row[2] or {}
-    bvn = facts.get('bvn') or facts.get('nin')  # we need at least one verified ID
-    if not bvn:
-        conn.close()
-        raise Exception("You need to verify your BVN or NIN first. Type 'verify my identity'.")
+    # Generate a unique account number for this user
+    # We'll use the format: 79 + last 8 digits of user_id (hex -> int, take last 8)
+    # This gives a 10-digit number that looks like a NUBAN.
+    short_id = str(int(user_id.replace('-', ''), 16))[-8:]  # last 8 digits
+    account_number = "79" + short_id.zfill(8)  # 10 digits starting with 79
 
-    identity_type = 'bvn' if len(bvn) == 11 else 'nin'  # crude but works
-    phone = facts.get('phone', '')
-    mono_user = {
-        "customer": {
-            "name": name,
-            "email": email,
-            "identity": {"type": identity_type, "number": bvn},
-            "phone": phone
-        },
-        "meta": {"user_id": user_id}
+    # Use a fixed system ID that represents our pooled Mono account
+    system_account_id = "oyinda_pool"
+    bank_name = "Oyinda Vault"
+    bank_code = "000"  # Not a real bank code
+
+    cur.execute("""
+        INSERT INTO user_wallets (user_id, mono_account_id, account_number, bank_name, bank_code, balance)
+        VALUES (%s, %s, %s, %s, %s, 0.0)
+    """, (user_id, system_account_id, account_number, bank_name, bank_code))
+    conn.commit()
+    conn.close()
+
+    return {
+        "account_id": system_account_id,
+        "account_number": account_number,
+        "bank_name": bank_name,
+        "bank_code": bank_code,
+        "balance": 0.0
     }
-    try:
-        mono_wallet = MonoReservedAccount()
-        result = mono_wallet.create_account(mono_user)
-        if 'id' not in result:
-            conn.close()
-            raise Exception("Wallet creation failed: " + str(result))
-        acc_id = result['id']
-        acc_number = result['account_number']
-        bank_name = result['bank']['name']
-        bank_code = result['bank']['code']
-        # Insert into user_wallets
-        cur.execute("""
-            INSERT INTO user_wallets (user_id, mono_account_id, account_number, bank_name, bank_code, balance)
-            VALUES (%s, %s, %s, %s, %s, 0.0)
-        """, (user_id, acc_id, acc_number, bank_name, bank_code))
-        conn.commit()
-        wallet = {"account_id": acc_id, "account_number": acc_number, "bank_name": bank_name, "bank_code": bank_code, "balance": 0.0}
-        return wallet
-    except Exception as e:
-        conn.close()
-        raise e
-    finally:
-        conn.close()
 
 
 

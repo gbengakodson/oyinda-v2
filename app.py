@@ -746,17 +746,9 @@ def login():
     token = create_access_token(identity=user['id'])
     return jsonify({"message": f"Welcome back, {user['name']}! Ready to take control of your finances?", "user": user, "token": token})
 
-# --------------- COMMAND HANDLER ---------------
-@app.route('/command', methods=['POST'])
-@jwt_required()
-def handle_command():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    text = data.get('text', '').strip()
-    save_conversation(user_id, 'user', text)
 
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+
+def process_user_command(user_id, text):
 
     # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
     search_triggers = [
@@ -2224,7 +2216,16 @@ def handle_command():
         "tone": "neutral"
     })
 
-
+@app.route('/command', methods=['POST'])
+@jwt_required()
+def handle_command():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    text = data.get('text', '').strip()
+    save_conversation(user_id, 'user', text)
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    return process_user_command(user_id, text)
 
 
 # --------------- QUERY HANDLER (with voice-friendly responses) ---------------
@@ -5129,6 +5130,38 @@ def text_to_speech():
         audio_bytes = base64.b64decode(data["audioContent"])
         return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
     return jsonify({"error": "TTS failed"}), 500
+
+
+@app.route('/voice', methods=['POST'])
+@jwt_required()
+def handle_voice():
+    user_id = get_jwt_identity()
+    if 'audio' not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+
+    audio_file = request.files['audio']
+    temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
+    audio_file.save(temp_filename)
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        with open(temp_filename, "rb") as f:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=f,
+                response_format="text"
+            )
+        text = transcription.strip()
+        if not text:
+            return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
+        save_conversation(user_id, 'user', text)
+        return process_user_command(user_id, text)
+    except Exception as e:
+        return jsonify({"error": f"Transcription failed: {str(e)}"}), 500
+    finally:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
 
 # --------------- FRONTEND ---------------

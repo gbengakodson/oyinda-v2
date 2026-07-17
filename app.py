@@ -2207,7 +2207,7 @@ def process_user_command(user_id, text):
             return jsonify({"message": "Credit score must be between 50 and 850.", "tone": "warning"})
 
     # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
-    if re.match(r'(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
+    if re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
         # Treat it exactly like "can I get a loan"
         credit = get_credit_score(user_id)
         max_loan = get_max_loan_amount(credit['score'])

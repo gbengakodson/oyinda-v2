@@ -19,6 +19,7 @@ from core import calculate_net_worth
 import json
 from collections import defaultdict
 import io
+import openai
 import hashlib
 try:
     from signaling import socketio
@@ -5132,11 +5133,12 @@ def text_to_speech():
     return jsonify({"error": "TTS failed"}), 500
 
 
+
+
 @app.route('/voice', methods=['POST'])
 @jwt_required()
 def handle_voice():
     user_id = get_jwt_identity()
-    # Check if the file is present and not empty
     if 'audio' not in request.files:
         return jsonify({"error": "No audio file provided"}), 422
     audio_file = request.files['audio']
@@ -5148,27 +5150,24 @@ def handle_voice():
     temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
     audio_file.save(temp_filename)
 
-    # Check if the file actually contains data
     if os.path.getsize(temp_filename) == 0:
         os.remove(temp_filename)
         return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
 
     try:
-        from groq import Groq
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        openai.api_key = os.getenv("OPENAI_API_KEY")
         with open(temp_filename, "rb") as f:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3",
+            transcript = openai.Audio.transcribe(
+                model="whisper-1",
                 file=f,
                 response_format="text"
             )
-        text = transcription.strip()
+        text = transcript.strip()
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
 
         save_conversation(user_id, 'user', text)
 
-        # Process the command and get its response
         resp = process_user_command(user_id, text)
         resp_json = resp.get_json()
         resp_json['transcription'] = text

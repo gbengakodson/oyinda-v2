@@ -1262,6 +1262,67 @@ def handle_command():
 
                 })
 
+        elif state == "confirming_inventory_loan":
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
+                data = p["data"]
+                amount = data["amount"]
+                supplier_user_id = data["supplier_user_id"]
+
+                # Check user wallet has enough? No, Oyinda pays from its own pool.
+                # For simulation, we'll use a system pool wallet (Oyinda's own wallet).
+                # In production, you'd have a pre-funded Mono reserved account.
+                # We'll simulate by creating a system user with a wallet, or just assume Oyinda has infinite balance for now.
+                # We'll log a transfer from a system account to supplier.
+                # Actually, we'll just directly credit the supplier's wallet (simulate disbursement).
+                # In reality, you'd use MonoReservedAccount.payout() to send money from Oyinda's pool to supplier's virtual account.
+                # But since we are inside Oyinda's ledger, we can just update supplier's wallet balance directly
+                # because both are internal. We'll assume Oyinda's pool is represented by a special system user 'oyinda_treasury'.
+                # For sandbox, we'll just add the amount to supplier's wallet.
+
+                conn = get_conn()
+                cur = conn.cursor()
+                # Add funds to supplier wallet
+                cur.execute("UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
+                            (amount, supplier_user_id))
+                # Also log a credit event for supplier
+                append_event(supplier_user_id, supplier_user_id, 'WalletCredited', {
+                    "amount": amount,
+                    "source": "oyinda_inventory_loan",
+                    "product": data["product"],
+                    "borrower": user_id
+                })
+                conn.commit()
+                conn.close()
+
+                # Create loan record
+                start_date = datetime.utcnow().date()
+                end_date = start_date + timedelta(days=21)
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO inventory_loans
+                    (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+                     daily_amount, remaining_balance, start_date, end_date, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                """, (
+                    user_id, supplier_user_id, data["product"], amount,
+                    data["flat_fee"], data["total_repayable"], data["daily_amount"],
+                    data["total_repayable"], start_date, end_date
+                ))
+                conn.commit()
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+                return jsonify({
+                    "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
+                               f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
+                    "tone": "income"
+                })
+            else:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "Loan cancelled."})
+
 
         elif state == "collecting_location":
             p["data"]["location"] = reply.strip()
@@ -1976,56 +2037,77 @@ def handle_command():
         })
 
     # ---------- LOAN APPLICATION ----------
-    loan_match = re.match(r'(?:i\s+(?:want|need|wan)\s+(?:to\s+)?)?borrow\s+(\d+\.?\d*)\s*(?:naira|₦|ngn)?\s*(?:for\s+)?(\d+)\s*(?:months?|month)?', text, re.IGNORECASE)
-    if loan_match:
-        amount = float(loan_match.group(1))
-        duration = int(loan_match.group(2))
+    # Inventory loan: borrow <amount> to buy <product> from <supplier>
+    inv_loan_match = re.match(
+        r'borrow\s+(\d+\.?\d*)\s+to\s+buy\s+(.+?)\s+from\s+(.+)',
+        text, re.IGNORECASE
+    )
+    if inv_loan_match:
+        amount = float(inv_loan_match.group(1))
+        product = inv_loan_match.group(2).strip()
+        supplier_name = inv_loan_match.group(3).strip()
 
-        # Validate amount and duration
-        if amount < LOAN_MIN_AMOUNT or amount > LOAN_MAX_AMOUNT:
-            return jsonify({"message": f"Loan amount must be between ₦{LOAN_MIN_AMOUNT:,} and ₦{LOAN_MAX_AMOUNT:,}."})
-        if duration < LOAN_MIN_DURATION or duration > LOAN_MAX_DURATION:
-            return jsonify({"message": f"Duration must be between {LOAN_MIN_DURATION} and {LOAN_MAX_DURATION} months."})
+        # Get user's city for supplier search
+        user_facts = get_user_facts(user_id)
+        city = user_facts.get('city', '')
 
-        # Check eligibility
-        score_data = get_credit_score(user_id)
-        credit_score = score_data['score']
-        if credit_score < 100:
-            return jsonify({"message": "Your credit score is too low for a loan right now. Keep logging transactions!"})
+        supplier = find_supplier(supplier_name, city)
+        if not supplier:
+            supplier = find_supplier(supplier_name)  # search without city
 
-        max_loan = get_max_loan_amount(credit_score)
-        if amount > max_loan:
-            return jsonify({"message": f"The maximum you can borrow right now is ₦{max_loan:,}. Try a smaller amount."})
+        if not supplier:
+            return jsonify({
+                "message": f"Supplier '{supplier_name}' not found. Make sure they have a registered business on Oyinda.",
+                "tone": "warning"
+            })
 
-        interest = get_loan_interest_rate(credit_score)
-        # Total repayable = principal + (principal * monthly_interest * (duration - GRACE_PERIOD))
-        total_interest = amount * (interest / 100) * (duration - GRACE_PERIOD_MONTHS)
-        total_repayable = amount + total_interest
-        monthly_payment = total_repayable / duration
+        # Credit check
+        credit = get_credit_score(user_id)
+        if credit['score'] < 100:
+            return jsonify({"message": "Your credit score is too low for inventory loans. Keep logging transactions!",
+                            "tone": "warning"})
 
-        # Store loan proposal in pending transaction for confirmation
+        # Check active loans (user can only have one active inventory loan at a time)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM inventory_loans WHERE user_id = %s AND status = 'active'", (user_id,))
+        if cur.fetchone():
+            conn.close()
+            return jsonify({"message": "You already have an active inventory loan. Repay it first.", "tone": "warning"})
+        conn.close()
+
+        # Calculate flat fee and daily amount
+        flat_fee = amount * 0.05
+        total_repayable = amount + flat_fee
+        daily_amount = round(total_repayable / 14, 2)
+
+        # Store in pending transaction for confirmation
         pending_transaction[user_id] = {
-            "state": "confirming_loan",
+            "state": "confirming_inventory_loan",
             "data": {
                 "amount": amount,
-                "duration": duration,
-                "interest_rate": interest,
-                "total_repayable": round(total_repayable, 2),
-                "monthly_payment": round(monthly_payment, 2),
-                "credit_score": credit_score
+                "product": product,
+                "supplier_name": supplier_name,
+                "supplier_user_id": supplier['user_id'],
+                "supplier_wallet": supplier['wallet'],
+                "flat_fee": flat_fee,
+                "total_repayable": total_repayable,
+                "daily_amount": daily_amount
             },
-            "category": "loan"
+            "category": None
         }
 
         return jsonify({
-            "message": f"📋 **Loan Summary**\n\n"
-                      f"• Amount: ₦{amount:,.2f}\n"
-                      f"• Duration: {duration} months\n"
-                      f"• Interest rate: {interest}% monthly\n"
-                      f"• First month: interest‑free\n"
-                      f"• Monthly repayment: ₦{monthly_payment:,.2f}\n"
-                      f"• Total to repay: ₦{total_repayable:,.2f}\n\n"
-                      f"Reply **'yes'** to accept these terms.",
+            "message": (
+                f"📦 **Inventory Loan Request**\n\n"
+                f"• Amount: ₦{amount:,.2f}\n"
+                f"• Product: {product}\n"
+                f"• Supplier: {supplier_name}\n"
+                f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+                f"• Total to repay: ₦{total_repayable:,.2f}\n"
+                f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days\n\n"
+                f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+            ),
             "tone": "neutral"
         })
 
@@ -2107,6 +2189,77 @@ def handle_command():
                 return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
         except Exception as e:
             return jsonify({"message": f"Error: {str(e)}"})
+
+
+    # Manual loan repayment
+    manual_repay_match = re.match(r'repay\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan)?', text, re.IGNORECASE)
+    if manual_repay_match:
+        amount = float(manual_repay_match.group(1))
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, remaining_balance FROM inventory_loans WHERE user_id = %s AND status = 'active'", (user_id,))
+        loan = cur.fetchone()
+        if not loan:
+            conn.close()
+            return jsonify({"message": "No active loan found."})
+        loan_id, remaining = loan[0], loan[1]
+        if amount > remaining:
+            conn.close()
+            return jsonify({"message": f"Amount exceeds remaining balance of ₦{remaining:,.2f}."})
+        # Check wallet balance
+        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+        wallet_row = cur.fetchone()
+        if not wallet_row or wallet_row[0] < amount:
+            conn.close()
+            return jsonify({"message": "Insufficient wallet balance."})
+
+        # Deduct wallet
+        new_wallet_balance = wallet_row[0] - amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_wallet_balance, user_id))
+        # Update loan
+        new_remaining = remaining - amount
+        cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s", (new_remaining, loan_id))
+        cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'manual')",
+                    (loan_id, amount))
+        if new_remaining <= 0:
+            cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
+        conn.commit()
+        conn.close()
+        append_event(user_id, user_id, 'LoanRepaid', {"loan_id": str(loan_id), "amount": amount, "method": "manual"})
+        save_conversation(user_id, 'user', text)
+        return jsonify({
+            "message": f"✅ Repaid ₦{amount:,.2f}. Remaining: ₦{max(0, new_remaining):,.2f}.",
+            "tone": "income"
+        })
+
+
+    if any(phrase in text_lower for phrase in ['loan status', 'my loan', 'check my loan']):
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT il.product, il.principal, il.flat_fee, il.total_repayable, il.daily_amount,
+                   il.remaining_balance, il.start_date, il.end_date, il.status, u.name
+            FROM inventory_loans il
+            JOIN users u ON il.supplier_id = u.id
+            WHERE il.user_id = %s AND il.status = 'active'
+        """, (user_id,))
+        loan = cur.fetchone()
+        conn.close()
+        if loan:
+            return jsonify({
+                "message": f"📋 **Active Loan**\n"
+                           f"• Product: {loan[0]}\n"
+                           f"• Amount: ₦{loan[1]:,.2f}\n"
+                           f"• Fee (5%): ₦{loan[2]:,.2f}\n"
+                           f"• Total repayable: ₦{loan[3]:,.2f}\n"
+                           f"• Daily repayment: ₦{loan[4]:,.2f}\n"
+                           f"• Remaining: ₦{loan[5]:,.2f}\n"
+                           f"• Period: {loan[6]} to {loan[7]}\n"
+                           f"• Supplier: {loan[9]}"
+            })
+        else:
+            return jsonify({"message": "You have no active inventory loan."})
 
 
     # ---------- SMART FALLBACK with user‑aware currency conversion ----------
@@ -4412,6 +4565,94 @@ def get_wallet():
             "message": str(e)
         })
 
+
+def find_supplier(supplier_name, city=None):
+    conn = get_conn()
+    cur = conn.cursor()
+    if city:
+        cur.execute("""
+            SELECT bl.user_id, uw.mono_account_id, uw.account_number, uw.bank_name, uw.bank_code
+            FROM business_listings bl
+            JOIN user_wallets uw ON bl.user_id = uw.user_id
+            WHERE LOWER(bl.name) = LOWER(%s) AND LOWER(bl.city) = LOWER(%s)
+            LIMIT 1
+        """, (supplier_name, city))
+    else:
+        cur.execute("""
+            SELECT bl.user_id, uw.mono_account_id, uw.account_number, uw.bank_name, uw.bank_code
+            FROM business_listings bl
+            JOIN user_wallets uw ON bl.user_id = uw.user_id
+            WHERE LOWER(bl.name) = LOWER(%s)
+            LIMIT 1
+        """, (supplier_name,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {
+            "user_id": row[0],
+            "wallet": {
+                "mono_account_id": row[1],
+                "account_number": row[2],
+                "bank_name": row[3],
+                "bank_code": row[4]
+            }
+        }
+    return None
+
+
+@app.route('/cron/deduct-loans', methods=['POST'])
+def deduct_loans():
+    # Simple auth (use CRON_SECRET)
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    if secret != CRON_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Fetch all active loans where today <= end_date
+    today = datetime.utcnow().date()
+    cur.execute("""
+        SELECT id, user_id, daily_amount, remaining_balance
+        FROM inventory_loans
+        WHERE status = 'active' AND end_date >= %s
+    """, (today,))
+    loans = cur.fetchall()
+
+    for loan in loans:
+        loan_id, user_id, daily_amount, remaining, start_date = loan[0], loan[1], loan[2], loan[3], loan[4]
+        # Grace period: no deduction for first 7 days
+        if today <= start_date + timedelta(days=7):
+            continue
+        # Check user wallet balance
+        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+        wallet_row = cur.fetchone()
+        if not wallet_row or wallet_row[0] < daily_amount:
+            # Insufficient balance; skip or mark missed (we'll just skip for now)
+            continue
+
+        # Deduct
+        new_balance = wallet_row[0] - daily_amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_balance, user_id))
+        new_remaining = remaining - daily_amount
+        cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s",
+                    (new_remaining, loan_id))
+        # Log repayment
+        cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'auto')",
+                    (loan_id, daily_amount))
+        # Log event
+        append_event(user_id, user_id, 'LoanRepaid', {
+            "loan_id": str(loan_id),
+            "amount": daily_amount,
+            "method": "auto"
+        })
+        # If fully repaid, mark completed
+        if new_remaining <= 0:
+            cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"processed": len(loans)})
 
 
 @app.route('/link/bank/callback', methods=['GET'])

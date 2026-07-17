@@ -833,7 +833,7 @@ def process_user_command(user_id, text):
 
 
     # ---------- IDENTITY VERIFICATION ----------
-    if any(phrase in text.lower() for phrase in ['verify my identity', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
+    if any(phrase in text.lower() for phrase in ['verify my identity', 'verify my account', 'activate wallet', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
         pending_transaction[user_id] = {
             "state": "ask_id_type",
             "data": {},
@@ -1081,8 +1081,15 @@ def process_user_command(user_id, text):
                     wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
 
                 pending_transaction.pop(user_id, None)
-
-                return jsonify({"message": f"Identity verified! {wallet_msg}", "tone": "income"})
+                return jsonify({
+                    "message": f"Identity verified! {wallet_msg}",
+                    "tone": "income",
+                    "feedback_prompt": {
+                        "context": "after_wallet_activation",
+                        "question": "How was the verification process?",
+                        "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
+                    }
+                })
 
             else:
 
@@ -1182,10 +1189,17 @@ def process_user_command(user_id, text):
 
                 pending_transaction.pop(user_id, None)
                 name = get_user_name(user_id)
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
                 return jsonify({
                     "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
                                f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
-                    "tone": "income"
+                    "tone": "income",
+                    "feedback_prompt": {
+                        "context": "after_loan",
+                        "question": "How was the loan process?",
+                        "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
+                    }
                 })
             else:
                 pending_transaction.pop(user_id, None)
@@ -2211,6 +2225,24 @@ def process_user_command(user_id, text):
             "tone": "neutral"
         })
 
+    # ---------- ENHANCED SMALL‑TALK FALLBACK (avoids LLM loop) ----------
+    small_talk = {
+        'what can you do': "I'm your CFO, Gbenga! I track expenses & income, build your credit score, give cheap inventory loans, connect you with suppliers, and even pay your taxes. Just tell me like 'spent 500 on food' or 'earned 2000 from sales'.",
+        'what can unida do': "You mean Oyinda! 😊 I track your money, build your credit score, give loans for stock, and connect you with suppliers. Tell me something you spent or earned today.",
+        'what is my next word': "Your next word can be anything – like 'spent 2000 on fuel' or 'earned 5000 from my shop'. Tell me what happened with your money today!",
+        'how much i do': "I need a little more detail. Did you spend or receive money? For example, 'spent 1500 on transport' or 'earned 3000 from sales'.",
+        'hello': None,  # already handled earlier
+        'hi': None,
+        'help': "I can help you track money, get loans, find suppliers, and more. Just tell me an expense like 'spent 500 on data', or ask 'what is my balance'.",
+    }
+    # Clean the text for matching
+    clean_text = text_lower.strip().rstrip('?.!')
+    if clean_text in small_talk:
+        reply = small_talk[clean_text]
+        if reply:
+            save_conversation(user_id, 'user', text)
+            return jsonify({"message": reply, "tone": "neutral"})
+
 
     # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
     reply = conversational_reply(user_id, text)
@@ -2907,6 +2939,10 @@ def onboard():
 
     step = row[0]
     user_data = row[1] if isinstance(row[1], dict) else json.loads(row[1])
+    # Always keep language in sync with the user's latest choice
+    language = data.get('language', '').lower()
+    if language:
+        user_data['language'] = language
 
     # ---------- RESET HANDLER ----------
     if text.strip().lower() == 'reset':
@@ -3148,9 +3184,17 @@ def conversational_reply(user_id, text):
             role = "User" if msg['role'] == 'user' else "Oyinda"
             system_msg += f"{role}: {msg['content']}\n"
         system_msg += f"\nThe user just said: \"{text}\"\n"
-        system_msg += "Respond as Oyinda. Keep it short, warm, and helpful. If the user seems confused about finances, gently guide them to log an expense or income."
+        # Language matching rule
+        system_msg += (
+            "\nCRITICAL: You must respond in the EXACT language the user used. "
+            "If they wrote in English, reply in English. If Pidgin, reply Pidgin. "
+            "If Yoruba, reply Yoruba. Never mix unless the user mixed first. "
+            "Keep your reply to 1-2 short, caring sentences. "
+            "If the user is just chatting or expressing feelings, acknowledge them warmly without forcing a transaction. "
+            "Only guide them to share an expense or income if they seem open to it."
+        )
 
-        # Try Groq first, then OpenAI fallback
+        # Try Groq first, then Google, then OpenAI fallback
         print("CONVERSATIONAL_REPLY system_msg (first 200 chars):", system_msg[:200])
         reply = _call_llm("groq", system_msg)
         print("CONVERSATIONAL_REPLY groq reply:", reply)
@@ -3161,12 +3205,7 @@ def conversational_reply(user_id, text):
             reply = _call_llm("openai", system_msg)
             print("CONVERSATIONAL_REPLY openai reply:", reply)
 
-        # Occasionally ask for feedback (10% chance)
-        if reply:
-            import random
-            if random.random() < 0.1:
-                reply = reply + "\n\nBy the way, how would you rate your experience with me so far? 😊"
-
+        # Random feedback request removed – Oyinda no longer asks for ratings
         return reply
     except Exception:
         return None
@@ -5010,15 +5049,30 @@ def debug_business_all():
 def submit_feedback():
     user_id = get_jwt_identity()
     data = request.get_json()
-    message = data.get('message')
-    if not message or not message.strip():
+    message = (data.get('message') or '').strip()
+    context = (data.get('context') or '').strip()
+    sentiment = (data.get('sentiment') or '').strip()
+
+    if not message:
         return jsonify({"error": "Message required"}), 400
+
+    # Auto‑derive sentiment if not provided
+    if not sentiment:
+        msg_lower = message.lower()
+        positive_words = ['easy', 'quick', 'great', 'good', 'helpful', 'smooth', 'happy', 'love']
+        negative_words = ['stressful', 'hard', 'bad', 'confusing', 'slow', 'frustrating', 'annoying']
+        if any(w in msg_lower for w in positive_words):
+            sentiment = 'positive'
+        elif any(w in msg_lower for w in negative_words):
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
 
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO feedback (user_id, message) VALUES (%s, %s)",
-        (user_id, message.strip())
+        "INSERT INTO feedback (user_id, context, message, sentiment) VALUES (%s, %s, %s, %s)",
+        (user_id, context, message, sentiment)
     )
     conn.commit()
     conn.close()

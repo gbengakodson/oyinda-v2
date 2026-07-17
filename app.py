@@ -743,6 +743,91 @@ def login():
 
 def process_user_command(user_id, text):
 
+    # ---------- WALLET COMMANDS ----------
+    text_lower_wallet = text.lower()
+    if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
+        try:
+            wallet = ensure_wallet(user_id)
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
+                           f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
+                           f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
+                "tone": "neutral"
+            })
+        except Exception as e:
+            return jsonify({"message": str(e), "tone": "warning"})
+
+    # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
+    past_borrowing = any(phrase in text_lower for phrase in [
+        'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
+        'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
+    ])
+
+    borrow_trigger = any(phrase in text_lower for phrase in [
+        'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
+        'can i get a loan', 'how much loan', 'i need loan',
+        'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
+        'get a loan', 'how can i borrow', 'can i borrow'
+    ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
+
+    # Only start the wizard if it's a genuine request (not a past report)
+    if borrow_trigger and not past_borrowing:
+        # Try to extract an amount from the message
+        amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
+        amount = None
+        if amount_match:
+            amount_str = amount_match.group(1).replace(',', '')
+            amount = float(amount_str)
+            # If "k" or "thousand" is mentioned, multiply by 1000
+            if 'k' in text_lower or 'thousand' in text_lower:
+                amount *= 1000
+
+        credit = get_credit_score(user_id)
+        max_loan = get_max_loan_amount(credit['score'])
+
+        # Eligibility check
+        if max_loan == 0:
+            return jsonify({
+                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                "tone": "neutral"
+            })
+
+        # If an amount was given, validate it
+        if amount is not None:
+            if amount > max_loan:
+                return jsonify({
+                    "message": (
+                        f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
+                        f"Would you like to borrow ₦{max_loan:,} instead?"
+                    ),
+                    "tone": "warning"
+                })
+        else:
+            amount = None  # will be asked later if not provided
+
+        # Store loan intent in pending transaction
+        pending_transaction[user_id] = {
+            "state": "loan_ask_product",
+            "data": {
+                "amount": amount,
+                "max_loan": max_loan,
+                "credit_score": credit['score']
+            },
+            "category": None
+        }
+
+        if amount:
+            return jsonify({
+                "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                "tone": "neutral"
+            })
+        else:
+            return jsonify({
+                "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
+                "tone": "neutral"
+            })
+
     # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
     search_triggers = [
         'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
@@ -853,7 +938,7 @@ def process_user_command(user_id, text):
         })
 
 
-    # ---------- CONTINUE PENDING CONVERSATION ----------
+    # ---------- CONTINUE PENDING CONVERSATION ---
     if user_id in pending_transaction:
         p = pending_transaction[user_id]
         state = p["state"]
@@ -1161,9 +1246,12 @@ def process_user_command(user_id, text):
                         "tone": "neutral"
                     })
 
-            # Now text_clean should contain the product
+            # Remove common filler words from the product description
+            text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
+            text_clean = re.sub(r'\s+', ' ', text_clean).strip()
             if not text_clean:
-                return jsonify({"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+                return jsonify(
+                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
 
             p["data"]["product"] = text_clean
             p["state"] = "loan_ask_supplier"
@@ -1900,22 +1988,6 @@ def process_user_command(user_id, text):
 
 
 
-
-    # ---------- WALLET COMMANDS ----------
-    text_lower_wallet = text.lower()
-    if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
-        try:
-            wallet = ensure_wallet(user_id)
-            save_conversation(user_id, 'user', text)
-            return jsonify({
-                "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
-                           f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
-                           f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
-                "tone": "neutral"
-            })
-        except Exception as e:
-            return jsonify({"message": str(e), "tone": "warning"})
-
     # Internal transfer
     send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
     if send_match:
@@ -2007,70 +2079,6 @@ def process_user_command(user_id, text):
             "tone": "neutral"
         })
 
-
-    # ---------- LOAN APPLICATION ----------
-    # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent) ----
-    borrow_trigger = any(phrase in text_lower for phrase in [
-        'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
-        'can i get a loan', 'how much loan', 'i need loan',
-        'borrow me', 'give me loan'
-    ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
-
-    if borrow_trigger:
-        # Try to extract an amount from the message
-        amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
-        amount = None
-        if amount_match:
-            amount_str = amount_match.group(1).replace(',', '')
-            amount = float(amount_str)
-            # If "k" is mentioned, multiply by 1000
-            if 'k' in text_lower or 'thousand' in text_lower:
-                amount *= 1000
-
-        credit = get_credit_score(user_id)
-        max_loan = get_max_loan_amount(credit['score'])
-
-        # Eligibility check
-        if max_loan == 0:
-            return jsonify({
-                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                "tone": "neutral"
-            })
-
-        # If an amount was given, validate it
-        if amount is not None:
-            if amount > max_loan:
-                return jsonify({
-                    "message": (
-                        f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                        f"Would you like to borrow ₦{max_loan:,} instead?"
-                    ),
-                    "tone": "warning"
-                })
-        else:
-            amount = None  # will be asked later if not provided
-
-        # Store loan intent in pending transaction
-        pending_transaction[user_id] = {
-            "state": "loan_ask_product",
-            "data": {
-                "amount": amount,
-                "max_loan": max_loan,
-                "credit_score": credit['score']
-            },
-            "category": None
-        }
-
-        if amount:
-            return jsonify({
-                "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                "tone": "neutral"
-            })
-        else:
-            return jsonify({
-                "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
-                "tone": "neutral"
-            })
 
     send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
     if send_match:

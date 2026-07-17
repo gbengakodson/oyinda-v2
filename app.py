@@ -5136,12 +5136,22 @@ def text_to_speech():
 @jwt_required()
 def handle_voice():
     user_id = get_jwt_identity()
+    # Check if the file is present and not empty
     if 'audio' not in request.files:
-        return jsonify({"error": "No audio file provided"}), 400
-
+        return jsonify({"error": "No audio file provided"}), 422
     audio_file = request.files['audio']
+    if audio_file.filename == '':
+        return jsonify({"error": "Empty file name"}), 422
+    if not audio_file.mimetype.startswith('audio/'):
+        return jsonify({"error": "Invalid file type"}), 422
+
     temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
     audio_file.save(temp_filename)
+
+    # Check if the file actually contains data
+    if os.path.getsize(temp_filename) == 0:
+        os.remove(temp_filename)
+        return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
 
     try:
         from groq import Groq
@@ -5155,8 +5165,15 @@ def handle_voice():
         text = transcription.strip()
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
+
         save_conversation(user_id, 'user', text)
-        return process_user_command(user_id, text)
+
+        # Process the command and get its response
+        resp = process_user_command(user_id, text)
+        resp_json = resp.get_json()
+        resp_json['transcription'] = text
+        return jsonify(resp_json)
+
     except Exception as e:
         return jsonify({"error": f"Transcription failed: {str(e)}"}), 500
     finally:

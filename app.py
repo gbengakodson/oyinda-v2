@@ -1142,7 +1142,136 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
+        elif state == "loan_ask_product":
+            # User might provide amount + product in one go, or just product
+            text_clean = reply.strip()
+            # Check if they also gave an amount now (if we didn't have one)
+            if p["data"]["amount"] is None:
+                amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
+                if amount_match:
+                    amount_str = amount_match.group(1).replace(',', '')
+                    p["data"]["amount"] = float(amount_str)
+                    if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
+                        p["data"]["amount"] *= 1000
+                    # Remove the amount from the product description
+                    text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean, flags=re.IGNORECASE).strip()
+                else:
+                    return jsonify({
+                        "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
+                        "tone": "neutral"
+                    })
 
+            # Now text_clean should contain the product
+            if not text_clean:
+                return jsonify({"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
+            p["data"]["product"] = text_clean
+            p["state"] = "loan_ask_supplier"
+            return jsonify({
+                "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
+                "tone": "neutral"
+            })
+
+        elif state == "loan_ask_supplier":
+            supplier_query = reply.strip()
+            if not supplier_query:
+                return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
+
+            # Search the business directory
+            conn = get_conn()
+            cur = conn.cursor()
+            like_query = f'%{supplier_query}%'
+            cur.execute("""
+                SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
+                FROM business_listings bl
+                JOIN user_wallets uw ON bl.user_id = uw.user_id
+                WHERE LOWER(bl.name) ILIKE %s
+                ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
+                LIMIT 5
+            """, (like_query,))
+            suppliers = cur.fetchall()
+            conn.close()
+
+            if not suppliers:
+                return jsonify({
+                    "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
+                    "tone": "warning"
+                })
+
+            # Build the same kind of business list we use for search
+            results = []
+            for s in suppliers:
+                results.append({
+                    "id": s[0],          # user_id (supplier)
+                    "name": s[1],
+                    "product": s[2],
+                    "market_name": s[3] or '',
+                    "city": s[4] or '',
+                    "phone": s[5] or '',
+                    "rating": s[6] or 0,
+                    "total_ratings": s[7] or 0,
+                    "is_verified": s[8] or False,
+                    "listing_type": "user"
+                })
+
+            p["data"]["supplier_options"] = results
+            p["state"] = "loan_confirm_supplier"
+            return jsonify({
+                "action": "show_business_search",
+                "search_query": supplier_query,
+                "city": get_user_facts(user_id).get('city', ''),
+                "message": f"I found {len(results)} supplier(s) matching '{supplier_query}'. Tap the correct one to continue.",
+                "tone": "neutral",
+                "component": "BusinessList",
+                "props": {
+                    "data": results,
+                    "query": supplier_query,
+                    "emptyMessage": "No suppliers found."
+                }
+            })
+
+        elif state == "loan_confirm_supplier":
+            # The frontend will send back the selected supplier's name (or ID) as text.
+            # We'll match the selected name from the options we stored.
+            selected_name = reply.strip()
+            options = p["data"].get("supplier_options", [])
+            selected = None
+            for opt in options:
+                if opt["name"].lower() == selected_name.lower():
+                    selected = opt
+                    break
+            if not selected:
+                return jsonify({
+                    "message": "Please tap one of the suppliers from the list I sent.",
+                    "tone": "warning"
+                })
+
+            p["data"]["supplier_user_id"] = selected["id"]
+            p["data"]["supplier_name"] = selected["name"]
+            p["state"] = "confirming_inventory_loan"   # reuse the existing confirmation state
+
+            amount = p["data"]["amount"]
+            flat_fee = amount * 0.05
+            total_repayable = amount + flat_fee
+            daily_amount = round(total_repayable / 14, 2)
+
+            p["data"]["flat_fee"] = flat_fee
+            p["data"]["total_repayable"] = total_repayable
+            p["data"]["daily_amount"] = daily_amount
+
+            return jsonify({
+                "message": (
+                    f"📦 **Loan Summary**\n\n"
+                    f"• Amount: ₦{amount:,.2f}\n"
+                    f"• Product: {p['data']['product']}\n"
+                    f"• Supplier: {selected['name']}\n"
+                    f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+                    f"• Total to repay: ₦{total_repayable:,.2f}\n"
+                    f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+                    f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+                ),
+                "tone": "neutral"
+            })
 
 
         elif state == "confirming_inventory_loan":
@@ -1880,79 +2009,68 @@ def process_user_command(user_id, text):
 
 
     # ---------- LOAN APPLICATION ----------
-    # Inventory loan: borrow <amount> to buy <product> from <supplier>
-    inv_loan_match = re.match(
-        r'borrow\s+(\d+\.?\d*)\s+to\s+buy\s+(.+?)\s+from\s+(.+)',
-        text, re.IGNORECASE
-    )
-    if inv_loan_match:
-        amount = float(inv_loan_match.group(1))
-        product = inv_loan_match.group(2).strip()
-        supplier_name = inv_loan_match.group(3).strip()
+    # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent) ----
+    borrow_trigger = any(phrase in text_lower for phrase in [
+        'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
+        'can i get a loan', 'how much loan', 'i need loan',
+        'borrow me', 'give me loan'
+    ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
-        # Get user's city for supplier search
-        user_facts = get_user_facts(user_id)
-        city = user_facts.get('city', '')
+    if borrow_trigger:
+        # Try to extract an amount from the message
+        amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
+        amount = None
+        if amount_match:
+            amount_str = amount_match.group(1).replace(',', '')
+            amount = float(amount_str)
+            # If "k" is mentioned, multiply by 1000
+            if 'k' in text_lower or 'thousand' in text_lower:
+                amount *= 1000
 
-        supplier = find_supplier(supplier_name, city)
-        if not supplier:
-            supplier = find_supplier(supplier_name)  # search without city
+        credit = get_credit_score(user_id)
+        max_loan = get_max_loan_amount(credit['score'])
 
-        if not supplier:
+        # Eligibility check
+        if max_loan == 0:
             return jsonify({
-                "message": f"Supplier '{supplier_name}' not found. Make sure they have a registered business on Oyinda.",
-                "tone": "warning"
+                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                "tone": "neutral"
             })
 
-        # Credit check
-        credit = get_credit_score(user_id)
-        if credit['score'] < 100:
-            return jsonify({"message": "Your credit score is too low for inventory loans. Keep logging transactions!",
-                            "tone": "warning"})
+        # If an amount was given, validate it
+        if amount is not None:
+            if amount > max_loan:
+                return jsonify({
+                    "message": (
+                        f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
+                        f"Would you like to borrow ₦{max_loan:,} instead?"
+                    ),
+                    "tone": "warning"
+                })
+        else:
+            amount = None  # will be asked later if not provided
 
-        # Check active loans (user can only have one active inventory loan at a time)
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM inventory_loans WHERE user_id = %s AND status = 'active'", (user_id,))
-        if cur.fetchone():
-            conn.close()
-            return jsonify({"message": "You already have an active inventory loan. Repay it first.", "tone": "warning"})
-        conn.close()
-
-        # Calculate flat fee and daily amount
-        flat_fee = amount * 0.05
-        total_repayable = amount + flat_fee
-        daily_amount = round(total_repayable / 14, 2)
-
-        # Store in pending transaction for confirmation
+        # Store loan intent in pending transaction
         pending_transaction[user_id] = {
-            "state": "confirming_inventory_loan",
+            "state": "loan_ask_product",
             "data": {
                 "amount": amount,
-                "product": product,
-                "supplier_name": supplier_name,
-                "supplier_user_id": supplier['user_id'],
-                "supplier_wallet": supplier['wallet'],
-                "flat_fee": flat_fee,
-                "total_repayable": total_repayable,
-                "daily_amount": daily_amount
+                "max_loan": max_loan,
+                "credit_score": credit['score']
             },
             "category": None
         }
 
-        return jsonify({
-            "message": (
-                f"📦 **Inventory Loan Request**\n\n"
-                f"• Amount: ₦{amount:,.2f}\n"
-                f"• Product: {product}\n"
-                f"• Supplier: {supplier_name}\n"
-                f"• Fee (5%): ₦{flat_fee:,.2f}\n"
-                f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days\n\n"
-                f"Reply **'yes'** to confirm and I'll pay the supplier directly."
-            ),
-            "tone": "neutral"
-        })
+        if amount:
+            return jsonify({
+                "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                "tone": "neutral"
+            })
+        else:
+            return jsonify({
+                "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
+                "tone": "neutral"
+            })
 
     send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
     if send_match:
@@ -2104,39 +2222,6 @@ def process_user_command(user_id, text):
         else:
             return jsonify({"message": "You have no active inventory loan."})
 
-    # ---- PARTIAL BORROW REQUEST (no product/supplier) ----
-    partial_borrow_match = re.match(
-        r'(?:i\s+(?:want|wan|need)\s+to\s+)?borrow\s+(\d[\d,]*\.?\d*)\s*(?:k|k\s*)?(?:\s*loan)?\s*$',
-        text, re.IGNORECASE
-    )
-    if partial_borrow_match:
-        amount_str = partial_borrow_match.group(1).replace(',', '')
-        amount = float(amount_str)
-        # Check eligibility quickly
-        credit = get_credit_score(user_id)
-        max_loan = get_max_loan_amount(credit['score'])
-        if max_loan == 0:
-            return jsonify({
-                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                "tone": "neutral"
-            })
-        if amount > max_loan:
-            return jsonify({
-                "message": (
-                    f"With your current credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                    f"Would you like to borrow ₦{max_loan:,} instead?"
-                ),
-                "tone": "warning"
-            })
-        return jsonify({
-            "message": (
-                f"You want to borrow ₦{amount:,.0f}. Great! Now tell me:\n"
-                "• What do you want to buy? (e.g., 'bags of rice')\n"
-                "• Which supplier? (e.g., 'from Mama Tunde')\n\n"
-                "Just say like: 'borrow 50000 to buy bags of rice from Mama Tunde'"
-            ),
-            "tone": "neutral"
-        })
 
 
     # ---- MINIMUM SCORE FOR A TARGET LOAN AMOUNT ----

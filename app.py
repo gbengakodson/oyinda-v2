@@ -2860,6 +2860,7 @@ def handle_query(text, user_id):
 @app.route('/onboard', methods=['POST'])
 def onboard():
     data = request.get_json()
+    language = data.get('language', 'english').lower()
     token = data.get('token', '')
     text = data.get('text', '').strip()
 
@@ -2871,7 +2872,7 @@ def onboard():
         token = str(uuid.uuid4())
         cur.execute(
             "INSERT INTO onboarding_sessions (token, step, data) VALUES (%s, %s, %s)",
-            (token, 'ask_new_or_returning', json.dumps({}))
+            (token, 'ask_new_or_returning', json.dumps({"language": language}))
         )
         conn.commit()
         cur.close()
@@ -2893,7 +2894,7 @@ def onboard():
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO onboarding_sessions (token, step, data) VALUES (%s, %s, %s)",
-            (token, 'ask_new_or_returning', json.dumps({}))
+            (token, 'ask_new_or_returning', json.dumps({"language": language}))
         )
         conn.commit()
         cur.close()
@@ -5166,11 +5167,27 @@ def handle_voice():
     try:
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         with open(temp_filename, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                response_format="text"
-            )
+            # Get user's preferred language (default to English)
+            user_facts = get_user_facts(user_id)
+            lang_pref = user_facts.get('language', 'english').lower()
+
+            # Map internal language names to Whisper language codes
+            lang_map = {
+                'english': 'en',
+                'pidgin': 'en',  # Pidgin is English‑based, so 'en' works best
+                'yoruba': 'yo',
+                'hausa': 'ha',
+                'igbo': 'ig'
+            }
+            whisper_lang = lang_map.get(lang_pref, 'en')
+
+            with open(temp_filename, "rb") as f:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    response_format="text",
+                    language=whisper_lang
+                )
         text = transcript.strip()
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
@@ -5275,6 +5292,7 @@ def finalize_registration(token):
     if user_data.get("account_type") in ['business', 'company']:
         store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
         store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
+        store_user_fact(user_id, 'language', user_data.get('language', 'english'))
 
     store_user_fact(user_id, "username", username)
 

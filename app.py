@@ -765,10 +765,10 @@ def process_user_command(user_id, text):
         state = p["state"]
         reply = text.strip()
 
-        # Allow user to abort any pending wizard
-        if state.startswith('loan_') and reply.strip().lower() == 'cancel':
+        # Allow user to abort ANY pending wizard with "cancel"
+        if reply.strip().lower() == 'cancel':
             pending_transaction.pop(user_id, None)
-            return jsonify({"message": "Loan request cancelled. How can I help you?", "tone": "neutral"})
+            return jsonify({"message": "Process Cancelled. What would you like to do next?", "tone": "neutral"})
 
         if state == "collecting_type":
             reply_lower = reply.lower()

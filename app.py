@@ -875,6 +875,19 @@ def process_user_command(user_id, text):
             if not supplier_query:
                 return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
 
+            # If the user sounds stuck or can't find the supplier
+            confusion_words = [
+                "cant find", "don't see", "dont see", "not there", "none", "no one",
+                "nobody", "nothing", "i don't know", "i dont know", "what do i do",
+                "help", "how do i", "not working", "can't find", "cant tap"
+            ]
+            if any(phrase in reply.lower() for phrase in confusion_words):
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": "No problem! You can search for any supplier by typing 'who sells [product]'. Or if you know the supplier's name, just tell me and I'll search again. How can I help?",
+                    "tone": "neutral"
+                })
+
             # Search the business directory
             conn = get_conn()
             cur = conn.cursor()
@@ -992,6 +1005,26 @@ def process_user_command(user_id, text):
             p["data"]["id_type"] = id_type
             p["state"] = "ask_id_number"
             return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
+
+        elif state == "loan_confirm_lower_amount":
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'ok', 'okay']):
+                offered = p["data"]["offered_amount"]
+                pending_transaction[user_id] = {
+                    "state": "loan_ask_product",
+                    "data": {
+                        "amount": offered,
+                        "max_loan": p["data"]["max_loan"],
+                        "credit_score": p["data"]["credit_score"]
+                    },
+                    "category": None
+                }
+                return jsonify({
+                    "message": f"Okay! You want to borrow ₦{offered:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                    "tone": "neutral"
+                })
+            else:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "No problem. How can I help you instead?", "tone": "neutral"})
 
 
         elif state == "collecting_loan_direction":
@@ -1433,10 +1466,20 @@ def process_user_command(user_id, text):
         # If an amount was given, validate it
         if amount is not None:
             if amount > max_loan:
+                # Store a pending intent to confirm the lower amount
+                pending_transaction[user_id] = {
+                    "state": "loan_confirm_lower_amount",
+                    "data": {
+                        "offered_amount": max_loan,
+                        "max_loan": max_loan,
+                        "credit_score": credit['score']
+                    },
+                    "category": None
+                }
                 return jsonify({
                     "message": (
                         f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                        f"Would you like to borrow ₦{max_loan:,} instead?"
+                        f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
                     ),
                     "tone": "warning"
                 })

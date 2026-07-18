@@ -743,6 +743,7 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
+    data = {}   # temporary stub – replace with proper fix after checking logs
 
     # ===== ABSOLUTE CANCEL – abort any pending flow immediately =====
     if text.strip().lower() == '!cancel':

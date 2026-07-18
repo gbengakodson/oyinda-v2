@@ -3555,14 +3555,28 @@ def onboard():
                            "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
                            "tone": "neutral"})
 
-    if step == 'ask_what_they_sell':
-        product = text.strip()
-        if product.lower() != 'skip':
-            user_data['product'] = product
-        # Move to finalization
-        cur.close()
-        conn.close()
-        return finalize_registration(token)
+
+    if step == 'ask_type':
+        user_type = text.strip().lower()
+        if user_type not in ['individual', 'business', 'company']:
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Please choose one: individual, business, or company.", "tone": "neutral"})
+        user_data['account_type'] = user_type
+        if user_type in ['business', 'company']:
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'ask_what_they_sell', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')", "tone": "neutral"})
+        else:
+            cur.close()
+            conn.close()
+            return finalize_registration(token)
+
 
 
     if user_type in ['business', 'company']:

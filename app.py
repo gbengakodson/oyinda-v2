@@ -723,7 +723,7 @@ def register():
     user_id = create_user(name, email, password, account_type, address)
     if not user_id:
         return jsonify({"error": "Registration failed. Email may already be in use."}), 400
-    token = create_access_token(identity=user_id)
+    token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
     return jsonify({"message": f"Welcome {name}! I'm your CFO. Let's build your financial future. How much have you made or spent today?.", "user": {"id": user_id, "name": name}, "token": token})
 
 @app.route('/login', methods=['POST'])
@@ -741,7 +741,7 @@ def login():
         user = authenticate_user(email, password)
         if not user:
             return jsonify({"error": "Invalid credentials."}), 401
-        token = create_access_token(identity=user['id'])
+        token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
         return jsonify({"message": f"Welcome back, {user['name']}!", "user": user, "token": token})
 
     # Lookup by phone number (stored in user facts)
@@ -758,7 +758,7 @@ def login():
     if not check_password(pin, password_hash):
         return jsonify({"error": "Incorrect PIN."}), 401
 
-    token = create_access_token(identity=str(user_id))
+    token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
     return jsonify({
         "message": f"Welcome back, {name}!",
         "user": {"id": user_id, "name": name},
@@ -1085,6 +1085,41 @@ def process_user_command(user_id, text):
                         "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
                         "tone": "neutral"
                     })
+
+            elif state == "ask_business_details":
+                p["data"]["product"] = reply.strip()
+                p["state"] = "ask_business_name"
+                return jsonify({"message": "Great! What is the name of your business?", "tone": "neutral"})
+
+            elif state == "ask_business_name":
+                p["data"]["business_name"] = reply.strip()
+                p["state"] = "ask_business_city"
+                return jsonify(
+                    {"message": "Which city are you located in? (e.g., 'Lagos', 'Ibadan')", "tone": "neutral"})
+
+            elif state == "ask_business_city":
+                city = reply.strip()
+                product = p["data"]["product"]
+                business_name = p["data"]["business_name"]
+                phone = get_user_facts(user_id).get('phone', '')
+
+                # Insert into business_listings
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    """INSERT INTO business_listings
+                       (user_id, name, product, category, market_name, city, phone, listing_type)
+                       VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
+                    (user_id, business_name, product, '', city, phone)
+                )
+                conn.commit()
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"Done! {business_name} is now listed under '{product}' in {city}. Anyone searching for '{product}' will find you.",
+                    "tone": "income"
+                })
 
             elif state == "confirming_funds":
                 if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
@@ -1963,6 +1998,22 @@ def process_user_command(user_id, text):
                 "tone": "income"
             })
 
+        # ---- FLEXIBLE BUSINESS LISTING (conversational) ----
+        if any(phrase in text_lower for phrase in [
+            'list my business', 'register my business', 'add my business',
+            'my business name is', 'i want to list my business'
+        ]):
+            # Store a pending state to collect business details
+            pending_transaction[user_id] = {
+                "state": "ask_business_details",
+                "data": {},
+                "category": None
+            }
+            return jsonify({
+                "message": "I'd love to list your business! First, what do you sell or what service do you provide? (e.g., 'digital assets', 'tailoring')",
+                "tone": "neutral"
+            })
+
 
         # ---------- LOAN REPAYMENT ----------
         repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
@@ -2830,10 +2881,11 @@ def handle_query(text, user_id):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
-            SELECT SUM(CASE WHEN event_type = 'LoanTaken' THEN amount ELSE 0 END),
-                   SUM(CASE WHEN event_type = 'LoanRepaid' THEN amount ELSE 0 END)
-            FROM events
-            WHERE user_id = %s AND event_type IN ('LoanTaken', 'LoanRepaid')
+            SELECT
+                  SUM(CASE WHEN event_type = 'LoanTaken' THEN (payload->>'amount')::numeric ELSE 0 END),
+                  SUM(CASE WHEN event_type = 'LoanRepaid' THEN (payload->>'amount')::numeric ELSE 0 END)
+                FROM events
+                WHERE user_id = %s AND event_type IN ('LoanTaken', 'LoanRepaid')
         """, (user_id,))
         taken, repaid = cur.fetchone()
         conn.close()
@@ -3460,7 +3512,7 @@ def onboard():
                 "tone": "warning"
             })
         # Success
-        access_token = create_access_token(identity=str(user['id']))
+        access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
         cur.close()
@@ -3588,7 +3640,7 @@ def confirm_registration(token):
         store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
         store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
 
-    access_token = create_access_token(identity=str(user_id))
+    access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
     reply = onboarding_message(token, "confirm", user_data, None)
     return jsonify({
         "token": token,
@@ -5823,7 +5875,7 @@ def finalize_registration(token):
     cur.close()
     conn.close()
 
-    access_token = create_access_token(identity=str(user_id))
+    access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
     return jsonify({
         "jwt": access_token,
         "user": {"id": user_id, "name": user_data["name"]},

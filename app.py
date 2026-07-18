@@ -879,20 +879,13 @@ def process_user_command(user_id, text):
                 like_query = f'%{supplier_query}%'
 
                 cur.execute("""
-    
                     SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
-    
                     FROM business_listings bl
-    
                     JOIN user_wallets uw ON bl.user_id = uw.user_id
-    
-                    WHERE LOWER(bl.name) ILIKE %s
-    
+                    WHERE LOWER(bl.name) ILIKE %s AND bl.user_id != %s
                     ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
-    
                     LIMIT 5
-    
-                """, (like_query,))
+                """, (like_query, user_id))
 
                 suppliers = cur.fetchall()
 
@@ -982,6 +975,13 @@ def process_user_command(user_id, text):
                 if not selected:
                     return jsonify({
                         "message": "Please tap one of the suppliers from the list I sent.",
+                        "tone": "warning"
+                    })
+                # Prevent borrowing from yourself
+                if selected["id"] == user_id:
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({
+                        "message": "You can't borrow from yourself. Please choose a different supplier.",
                         "tone": "warning"
                     })
 

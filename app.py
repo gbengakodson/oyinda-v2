@@ -3580,20 +3580,6 @@ def onboard():
 
 
 
-    if user_type in ['business', 'company']:
-        cur.execute(
-            "UPDATE onboarding_sessions SET step = 'ask_what_they_sell', data = %s WHERE token = %s",
-            (json.dumps(user_data), token)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({
-                           "message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')",
-                           "tone": "neutral"})
-
-
-
     if step == 'ask_business_name':
         if text.strip().lower() != 'skip':
             user_data['business_name'] = text.strip()

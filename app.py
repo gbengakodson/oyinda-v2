@@ -743,1920 +743,1927 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
-    data = request.get_json(silent=True) or {}
+    try:
 
-    # ===== ABSOLUTE CANCEL – abort any pending flow immediately =====
-    if text.strip().lower() == '!cancel':
-        if user_id in pending_transaction:
-            pending_transaction.pop(user_id, None)
-        save_conversation(user_id, 'user', text)
-        return jsonify({"message": "Cancelled. How can I help you?", "tone": "neutral"})
 
-    # ---------- WALLET COMMANDS ----------
-    text_lower_wallet = text.lower()
-    if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
-        try:
-            wallet = ensure_wallet(user_id)
+        # ===== ABSOLUTE CANCEL – abort any pending flow immediately =====
+        if text.strip().lower() == '!cancel':
+            if user_id in pending_transaction:
+                pending_transaction.pop(user_id, None)
             save_conversation(user_id, 'user', text)
-            return jsonify({
-                "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
-                           f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
-                           f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
-                "tone": "neutral"
-            })
-        except Exception as e:
-            return jsonify({"message": str(e), "tone": "warning"})
+            return jsonify({"message": "Cancelled. How can I help you?", "tone": "neutral"})
 
-    # ---------- CONTINUE PENDING CONVERSATION ---
-    if user_id in pending_transaction:
-        p = pending_transaction[user_id]
-        state = p["state"]
-        reply = text.strip()
-
-        # Allow user to abort ANY pending wizard with "cancel"
-        if reply.strip().lower() == 'cancel':
-            pending_transaction.pop(user_id, None)
-            return jsonify({"message": "Process Cancelled. What would you like to do next?", "tone": "neutral"})
-
-        if state == "collecting_type":
-            reply_lower = reply.lower()
-            if any(w in reply_lower for w in ['spent', 'expense', 'spend', 'bought', 'paid']):
-                p["data"]["type"] = "expense"
-            elif any(w in reply_lower for w in ['income', 'earned', 'profit']):
-                p["data"]["type"] = "income"
-            elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
-                p["data"]["type"] = "investment"
-                p["data"]["category"] = "investment"
-                p["category"] = "investment"
-                return ask_for_location(user_id)
-            elif any(w in reply_lower for w in ['loan', 'borrow']):
-                p["data"]["type"] = "loan"
-            elif any(w in reply_lower for w in
-                     ['managed', 'capital', 'funds', 'manage', 'managed funds', 'investment capital']):
-                p["data"]["type"] = "managed_funds"
-                p["data"]["category"] = "investment_capital"
-                p["category"] = "investment_capital"
-                # Skip category question, go to location
-                return ask_for_location(user_id)
-            else:
+        # ---------- WALLET COMMANDS ----------
+        text_lower_wallet = text.lower()
+        if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
+            try:
+                wallet = ensure_wallet(user_id)
+                save_conversation(user_id, 'user', text)
                 return jsonify({
-                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, managed funds, or a loan?",
+                    "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
+                               f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
+                               f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
                     "tone": "neutral"
                 })
-            p["state"] = "collecting_category"
-            return ask_next_question(user_id)
+            except Exception as e:
+                return jsonify({"message": str(e), "tone": "warning"})
 
+        # ---------- CONTINUE PENDING CONVERSATION ---
+        if user_id in pending_transaction:
+            p = pending_transaction[user_id]
+            state = p["state"]
+            reply = text.strip()
 
-        elif state == "loan_ask_product":
-            # If the user seems to be starting a new task, cancel the loan wizard
-            likely_other_task = any(word in reply.lower() for word in [
-                # Actions
-                'spent', 'bought', 'paid', 'earned', 'received', 'made',
-                'balance', 'net worth', 'credit score', 'statement', 'tax',
-                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
-                'search', 'find', 'who sells', 'i need', 'what', 'how',
-                # Questions / new intents
-                'list', 'show', 'register', 'link', 'connect',
-                # Explicit cancellation
-                'cancel', 'stop', 'never mind', 'forget',
-                # Loan re-trigger (start fresh)
-                'borrow', 'loan', 'lend'
-            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
-
-            if likely_other_task:
+            # Allow user to abort ANY pending wizard with "cancel"
+            if reply.strip().lower() == 'cancel':
                 pending_transaction.pop(user_id, None)
-                return process_user_command(user_id, reply)
-            # User might provide amount + product in one go, or just product
-            text_clean = reply.strip()
-            # Check if they also gave an amount now (if we didn't have one)
-            if p["data"]["amount"] is None:
-                amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
-                if amount_match:
-                    amount_str = amount_match.group(1).replace(',', '')
-                    p["data"]["amount"] = float(amount_str)
-                    if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
-                        p["data"]["amount"] *= 1000
-                    # Remove the amount from the product description
-                    text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean,
-                                        flags=re.IGNORECASE).strip()
+                return jsonify({"message": "Process Cancelled. What would you like to do next?", "tone": "neutral"})
+
+            if state == "collecting_type":
+                reply_lower = reply.lower()
+                if any(w in reply_lower for w in ['spent', 'expense', 'spend', 'bought', 'paid']):
+                    p["data"]["type"] = "expense"
+                elif any(w in reply_lower for w in ['income', 'earned', 'profit']):
+                    p["data"]["type"] = "income"
+                elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
+                    p["data"]["type"] = "investment"
+                    p["data"]["category"] = "investment"
+                    p["category"] = "investment"
+                    return ask_for_location(user_id)
+                elif any(w in reply_lower for w in ['loan', 'borrow']):
+                    p["data"]["type"] = "loan"
+                elif any(w in reply_lower for w in
+                         ['managed', 'capital', 'funds', 'manage', 'managed funds', 'investment capital']):
+                    p["data"]["type"] = "managed_funds"
+                    p["data"]["category"] = "investment_capital"
+                    p["category"] = "investment_capital"
+                    # Skip category question, go to location
+                    return ask_for_location(user_id)
                 else:
                     return jsonify({
-                        "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
+                        "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, managed funds, or a loan?",
+                        "tone": "neutral"
+                    })
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+
+
+            elif state == "loan_ask_product":
+                # If the user seems to be starting a new task, cancel the loan wizard
+                likely_other_task = any(word in reply.lower() for word in [
+                    # Actions
+                    'spent', 'bought', 'paid', 'earned', 'received', 'made',
+                    'balance', 'net worth', 'credit score', 'statement', 'tax',
+                    'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
+                    'search', 'find', 'who sells', 'i need', 'what', 'how',
+                    # Questions / new intents
+                    'list', 'show', 'register', 'link', 'connect',
+                    # Explicit cancellation
+                    'cancel', 'stop', 'never mind', 'forget',
+                    # Loan re-trigger (start fresh)
+                    'borrow', 'loan', 'lend'
+                ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
+
+                if likely_other_task:
+                    pending_transaction.pop(user_id, None)
+                    return process_user_command(user_id, reply)
+                # User might provide amount + product in one go, or just product
+                text_clean = reply.strip()
+                # Check if they also gave an amount now (if we didn't have one)
+                if p["data"]["amount"] is None:
+                    amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
+                    if amount_match:
+                        amount_str = amount_match.group(1).replace(',', '')
+                        p["data"]["amount"] = float(amount_str)
+                        if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
+                            p["data"]["amount"] *= 1000
+                        # Remove the amount from the product description
+                        text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean,
+                                            flags=re.IGNORECASE).strip()
+                    else:
+                        return jsonify({
+                            "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
+                            "tone": "neutral"
+                        })
+
+                # Remove common filler words from the product description
+                text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
+                text_clean = re.sub(r'\s+', ' ', text_clean).strip()
+                if not text_clean:
+                    return jsonify(
+                        {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
+                p["data"]["product"] = text_clean
+                p["state"] = "loan_ask_supplier"
+                return jsonify({
+                    "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
+                    "tone": "neutral"
+                })
+
+
+            elif state == "loan_ask_supplier":
+
+                # ... keep the existing "likely_other_task" check and confusion_words check ...
+
+                supplier_query = reply.strip()
+
+                if not supplier_query:
+                    return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
+
+                # Search the business directory
+
+                conn = get_conn()
+
+                cur = conn.cursor()
+
+                like_query = f'%{supplier_query}%'
+
+                cur.execute("""
+    
+                    SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
+    
+                    FROM business_listings bl
+    
+                    JOIN user_wallets uw ON bl.user_id = uw.user_id
+    
+                    WHERE LOWER(bl.name) ILIKE %s
+    
+                    ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
+    
+                    LIMIT 5
+    
+                """, (like_query,))
+
+                suppliers = cur.fetchall()
+
+                conn.close()
+
+                if not suppliers:
+                    return jsonify({
+
+                        "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
+
+                        "tone": "warning"
+
+                    })
+
+                # Build supplier options and store in pending data
+
+                options = []
+
+                for s in suppliers:
+                    options.append({
+
+                        "id": s[0],
+
+                        "name": s[1],
+
+                        "product": s[2],
+
+                        "market": s[3] or '',
+
+                        "city": s[4] or '',
+
+                        "phone": s[5] or ''
+
+                    })
+
+                p["data"]["supplier_options"] = options
+
+                p["state"] = "loan_confirm_supplier"
+
+                # Return feedback chips with supplier names
+
+                return jsonify({
+
+                    "message": f"I found {len(options)} supplier(s) matching '{supplier_query}'. Tap the one you want:",
+
+                    "tone": "neutral",
+
+                    "feedback_prompt": {
+
+                        "context": "supplier_selection",
+
+                        "question": "Choose supplier",
+
+                        "options": [opt["name"] for opt in options]
+
+                    }
+
+                })
+
+            elif state == "loan_confirm_supplier":
+                # If the user seems to be starting a new task, cancel the loan wizard
+                likely_other_task = any(word in reply.lower() for word in [
+                    # Actions
+                    'spent', 'bought', 'paid', 'earned', 'received', 'made',
+                    'balance', 'net worth', 'credit score', 'statement', 'tax',
+                    'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
+                    'search', 'find', 'who sells', 'i need', 'what', 'how',
+                    # Questions / new intents
+                    'list', 'show', 'register', 'link', 'connect',
+                    # Explicit cancellation
+                    'cancel', 'stop', 'never mind', 'forget',
+                    # Loan re-trigger (start fresh)
+                    'borrow', 'loan', 'lend'
+                ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
+
+                if likely_other_task:
+                    pending_transaction.pop(user_id, None)
+                    return process_user_command(user_id, reply)
+                # We'll match the selected name from the options we stored.
+                selected_name = reply.strip()
+                options = p["data"].get("supplier_options", [])
+                selected = None
+                for opt in options:
+                    if opt["name"].lower() == selected_name.lower():
+                        selected = opt
+                        break
+                if not selected:
+                    return jsonify({
+                        "message": "Please tap one of the suppliers from the list I sent.",
+                        "tone": "warning"
+                    })
+
+                p["data"]["supplier_user_id"] = selected["id"]
+                p["data"]["supplier_name"] = selected["name"]
+                p["state"] = "confirming_inventory_loan"  # reuse the existing confirmation state
+
+                amount = p["data"]["amount"]
+                flat_fee = amount * 0.05
+                total_repayable = amount + flat_fee
+                daily_amount = round(total_repayable / 14, 2)
+
+                p["data"]["flat_fee"] = flat_fee
+                p["data"]["total_repayable"] = total_repayable
+                p["data"]["daily_amount"] = daily_amount
+
+                return jsonify({
+                    "message": (
+                        f"📦 **Loan Summary**\n\n"
+                        f"• Amount: ₦{amount:,.2f}\n"
+                        f"• Product: {p['data']['product']}\n"
+                        f"• Supplier: {selected['name']}\n"
+                        f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+                        f"• Total to repay: ₦{total_repayable:,.2f}\n"
+                        f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+                        f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+                    ),
+                    "tone": "neutral"
+                })
+
+
+
+            elif state == "ask_id_type":
+                id_type = reply.strip().lower()
+                if id_type not in ['bvn', 'nin']:
+                    return jsonify({"message": "Please type either 'BVN' or 'NIN'.", "tone": "neutral"})
+                p["data"]["id_type"] = id_type
+                p["state"] = "ask_id_number"
+                return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
+
+            elif state == "loan_confirm_lower_amount":
+                if any(word in reply.lower() for word in ['yes', 'yeah', 'ok', 'okay']):
+                    offered = p["data"]["offered_amount"]
+                    pending_transaction[user_id] = {
+                        "state": "loan_ask_product",
+                        "data": {
+                            "amount": offered,
+                            "max_loan": p["data"]["max_loan"],
+                            "credit_score": p["data"]["credit_score"]
+                        },
+                        "category": None
+                    }
+                    return jsonify({
+                        "message": f"Okay! You want to borrow ₦{offered:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                        "tone": "neutral"
+                    })
+                else:
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "No problem. How can I help you instead?", "tone": "neutral"})
+
+
+            elif state == "collecting_loan_direction":
+                reply_lower = reply.lower()
+                if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
+                    p["data"]["type"] = "loan"
+                    p["data"]["category"] = "loan"
+                    p["state"] = "collecting_category"
+                    return ask_next_question(user_id)
+                elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
+                    p["data"]["type"] = "asset"
+                    p["data"]["category"] = "loan_given"
+                    p["state"] = "collecting_category"
+                    return ask_next_question(user_id)
+                else:
+                    return jsonify({
+                        "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
                         "tone": "neutral"
                     })
 
-            # Remove common filler words from the product description
-            text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
-            text_clean = re.sub(r'\s+', ' ', text_clean).strip()
-            if not text_clean:
-                return jsonify(
-                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+            elif state == "confirming_funds":
+                if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
+                    p["data"]["type"] = "managed_funds"
+                    p["data"]["category"] = "investment_capital"
+                    p["state"] = "collecting_category"
+                    return ask_next_question(user_id)
+                else:
+                    p["state"] = "collecting_type"
+                    return jsonify({
+                        "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",
+                        "tone": "neutral"
+                    })
 
-            p["data"]["product"] = text_clean
-            p["state"] = "loan_ask_supplier"
-            return jsonify({
-                "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
-                "tone": "neutral"
-            })
 
-
-        elif state == "loan_ask_supplier":
-
-            # ... keep the existing "likely_other_task" check and confusion_words check ...
-
-            supplier_query = reply.strip()
-
-            if not supplier_query:
-                return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
-
-            # Search the business directory
-
-            conn = get_conn()
-
-            cur = conn.cursor()
-
-            like_query = f'%{supplier_query}%'
-
-            cur.execute("""
-
-                SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
-
-                FROM business_listings bl
-
-                JOIN user_wallets uw ON bl.user_id = uw.user_id
-
-                WHERE LOWER(bl.name) ILIKE %s
-
-                ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
-
-                LIMIT 5
-
-            """, (like_query,))
-
-            suppliers = cur.fetchall()
-
-            conn.close()
-
-            if not suppliers:
-                return jsonify({
-
-                    "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
-
-                    "tone": "warning"
-
-                })
-
-            # Build supplier options and store in pending data
-
-            options = []
-
-            for s in suppliers:
-                options.append({
-
-                    "id": s[0],
-
-                    "name": s[1],
-
-                    "product": s[2],
-
-                    "market": s[3] or '',
-
-                    "city": s[4] or '',
-
-                    "phone": s[5] or ''
-
-                })
-
-            p["data"]["supplier_options"] = options
-
-            p["state"] = "loan_confirm_supplier"
-
-            # Return feedback chips with supplier names
-
-            return jsonify({
-
-                "message": f"I found {len(options)} supplier(s) matching '{supplier_query}'. Tap the one you want:",
-
-                "tone": "neutral",
-
-                "feedback_prompt": {
-
-                    "context": "supplier_selection",
-
-                    "question": "Choose supplier",
-
-                    "options": [opt["name"] for opt in options]
-
+            elif state == "collecting_category":
+                reply_lower = reply.lower()
+                cat_map = {
+                    'food': ['food', 'foods', 'feeding', 'groceries', 'rice', 'beans', 'garri', 'yam', 'meat',
+                             'spaghetti',
+                             'noodle', 'indomie', 'bread', 'egg', 'eggs', 'milk', 'sugar', 'oil', 'tomato', 'tomatoes',
+                             'pepper', 'onion', 'fish', 'chicken', 'beef', 'snack', 'snacks', 'drink', 'drinks',
+                             'water',
+                             'juice', 'soda', 'coke', 'fanta', 'pepsi', 'chinchin', 'cake', 'biscuit', 'biscuits',
+                             'sweets',
+                             'ice cream', 'restaurant', 'eatery', 'bukka', 'mama put', 'chop', 'swallow', 'eba',
+                             'amala',
+                             'fufu', 'pounded yam', 'semo'],
+                    'transport': ['transport', 'transportation', 'okada', 'bike', 'motorcycle', 'uber', 'bolt', 'taxi',
+                                  'bus', 'buses', 'keke', 'napep', 'tricycle', 'fuel', 'petrol', 'diesel', 'gas',
+                                  'parking',
+                                  'parking fee', 'toll', 'toll gate', 'fare', 'transport fare'],
+                    'housing': ['rent', 'house rent', 'house', 'room', 'accommodation', 'apartment', 'landlord',
+                                'rentage',
+                                'property', 'maintenance', 'repair', 'repairs', 'plumbing', 'electrician', 'painting',
+                                'renovation', 'furniture', 'bed', 'mattress', 'curtain', 'curtains', 'carpet', 'rug'],
+                    'utilities': ['data', 'internet', 'net', 'subscription', 'subscriptions', 'airtime', 'recharge',
+                                  'top up', 'topup', 'phone bill', 'phone', 'electricity', 'electric', 'power', 'neepa',
+                                  'nepa', 'bill', 'bills', 'water', 'waste', 'sewage', 'sanitation', 'utility',
+                                  'utilities',
+                                  'mifi', 'router', 'wifi', 'broadband', 'cable', 'dstv', 'gotv', 'startimes',
+                                  'tv subscription', 'netflix', 'prime video', 'showmax', 'domain', 'domain name',
+                                  'hosting', 'website'],
+                    'health': ['doctor', 'hospital', 'medicine', 'drug', 'drugs', 'pharmacy', 'chemist', 'health',
+                               'healthcare', 'medical', 'medicals', 'dental', 'dentist', 'eye', 'optician', 'glasses',
+                               'surgery', 'injection', 'vaccine', 'checkup', 'check up', 'lab', 'laboratory', 'test',
+                               'tests', 'scan', 'x-ray', 'xray', 'bandage', 'plaster', 'first aid', 'blood', 'malaria',
+                               'typhoid', 'fever', 'headache', 'pain', 'pills', 'tablets', 'capsules', 'syrup',
+                               'ointment',
+                               'cream', 'inhaler'],
+                    'education': ['school', 'school fees', 'fees', 'tuition', 'book', 'books', 'textbook', 'course',
+                                  'courses', 'online course', 'udemy', 'coursera', 'training', 'workshop', 'seminar',
+                                  'certification', 'exam', 'examination', 'jamb', 'waec', 'neco', 'gce', 'post utme',
+                                  'form', 'registration', 'admission', 'pen', 'pencil', 'notebook', 'stationery',
+                                  'calculator', 'laptop', 'research', 'project', 'thesis', 'dissertation', 'library',
+                                  'printing', 'photocopy', 'typing', 'assignment', 'lesson', 'tutor', 'coaching',
+                                  'extra lessons', 'after school'],
+                    'investment': ['invest', 'investment', 'investments', 'stocks', 'shares', 'stock', 'bond', 'bonds',
+                                   'mutual fund', 'mutual funds', 'etf', 'etfs', 'crypto', 'cryptocurrency', 'bitcoin',
+                                   'btc', 'ethereum', 'eth', 'usdt', 'usdc', 'bnb', 'binance', 'bamboo', 'chaka',
+                                   'trove',
+                                   'rise', 'piggyvest', 'cowrywise', 'wealth', 'wealth.ng', 'asset', 'assets',
+                                   'portfolio',
+                                   'dividend', 'interest', 'roi', 'return', 'capital', 'equity', 'real estate', 'land',
+                                   'property', 'gold', 'silver', 'forex', 'fx', 'trading', 'trade', 'buying shares'],
+                    'savings': ['save', 'saving', 'savings', 'saved', 'deposit', 'deposits', 'fixed deposit',
+                                'treasury bill', 'tbills', 'money market', 'vault', 'lock', 'locked', 'savings plan',
+                                'target', 'goal', 'goals', 'emergency fund', 'sinking fund', 'fund', 'contribution',
+                                'contributions', 'ajo', 'esusu', 'collect', 'thrift', 'cooperative', 'coop',
+                                'piggy bank',
+                                'piggyvest', 'cowrywise', 'kolo', 'wooden box', 'safe'],
+                    'loan': ['loan', 'loans', 'borrow', 'borrowed', 'lend', 'lent', 'debt', 'debts', 'credit',
+                             'advance',
+                             'owe', 'owing', 'repay', 'repayment', 'repayments', 'repay loan', 'pay back', 'paid back',
+                             'refund', 'microfinance', 'lapo', 'access bank loan', 'gtbank loan', 'uba loan',
+                             'quick check',
+                             'carbon', 'fairmoney', 'palmcredit', 'aella', 'branch', 'okash', 'credit card'],
+                    'income': ['income', 'salary', 'wages', 'wage', 'pay', 'payment', 'received', 'earned', 'made',
+                               'profit', 'profit from', 'revenue', 'earnings', 'freelance', 'gig', 'side hustle',
+                               'business', 'business income', 'sales', 'sold', 'client', 'customer', 'paid me',
+                               'transferred to me', 'alert', 'credit alert', 'bonus', 'commission', 'allowance',
+                               'stipend',
+                               'grant', 'dividend', 'interest', 'return on investment', 'rent income', 'rental income',
+                               'pension', 'remittance', 'money from', 'sent me', 'sent money', 'wire transfer',
+                               'direct deposit', 'cash', 'cash income'],
+                    'entertainment': ['entertainment', 'fun', 'leisure', 'movie', 'movies', 'cinema', 'film', 'show',
+                                      'concert', 'music', 'spotify', 'apple music', 'youtube', 'youtube premium',
+                                      'netflix',
+                                      'amazon prime', 'showmax', 'dstv', 'gotv', 'startimes', 'game', 'games',
+                                      'video game',
+                                      'playstation', 'ps4', 'ps5', 'xbox', 'nintendo', 'bet', 'betting', 'sport bet',
+                                      'sportybet', 'bet9ja', 'nairabet', 'lottery', 'gambling', 'pool', 'club', 'party',
+                                      'event', 'festival', 'carnival', 'outing', 'hanging out', 'chilling',
+                                      'recreation',
+                                      'subscription', 'subscriptions'],
+                    'clothing': ['clothing', 'cloth', 'clothes', 'clothings', 'fashion', 'wear', 'wears', 'dress',
+                                 'dresses', 'shirt', 'shirts', 'trouser', 'trousers', 'pant', 'pants', 'jeans',
+                                 'jacket',
+                                 'coat', 'blazer', 'suit', 'tie', 'shoe', 'shoes', 'sneakers', 'sandal', 'sandals',
+                                 'slippers', 'bag', 'bags', 'handbag', 'wallet', 'watch', 'jewelry', 'jewellery',
+                                 'necklace', 'bracelet', 'ring', 'earring', 'earrings', 'chain', 'anklet', 'cap', 'hat',
+                                 'scarf', 'glasses', 'sunglasses', 'belt', 'underwear', 'boxers', 'bra', 'panties',
+                                 'native', 'ankara', 'agbada', 'buba', 'iro', 'gele', 'tailor', 'sewing', 'fabric',
+                                 'material', 'lace', 'asoebi', 'guinea', 'brocade', 'satin', 'cotton', 'linen', 'wool',
+                                 'silk', 'polish', 'dry cleaning', 'laundry', 'wash'],
+                    'personal care': ['personal care', 'self care', 'grooming', 'salon', 'barbing', 'haircut', 'hair',
+                                      'hairstyle', 'braiding', 'weaving', 'weavon', 'wig', 'attachment', 'relaxer',
+                                      'shampoo', 'conditioner', 'cream', 'lotion', 'soap', 'body wash', 'deodorant',
+                                      'perfume', 'cologne', 'makeup', 'make up', 'powder', 'lipstick', 'eyeshadow',
+                                      'mascara', 'foundation', 'blush', 'nail', 'nails', 'manicure', 'pedicure', 'spa',
+                                      'massage', 'waxing', 'shaving', 'razor', 'toothpaste', 'toothbrush', 'mouthwash',
+                                      'floss', 'tissue', 'tissues', 'towel', 'sanitizer', 'sanitiser', 'hand wash'],
+                    'gift': ['gift', 'gifts', 'present', 'donation', 'offering', 'tithe', 'seed', 'sowing', 'blessing',
+                             'help', 'support', 'assistance', 'charity', 'alms', 'zakat', 'sadaqah', 'give away',
+                             'give out', 'gave', 'giving', 'sponsor', 'sponsorship'],
+                    'tax': ['tax', 'taxes', 'taxation', 'vat', 'withholding tax', 'company tax', 'income tax', 'paye',
+                            'firs', 'lirs', 'government', 'levy', 'duties', 'customs', 'excise', 'rate', 'rates',
+                            'assessment', 'filing', 'clearance', 'receipt', 'tax receipt', 'tin', 'tax identification',
+                            'business premises', 'development levy', 'waste management bill'],
+                    'insurance': ['insurance', 'insure', 'insured', 'policy', 'premium', 'life insurance',
+                                  'health insurance', 'car insurance', 'motor insurance', 'third party',
+                                  'comprehensive',
+                                  'travel insurance', 'hmo', 'hygeia', 'avon', 'leadway', 'aig', 'mutual benefit',
+                                  'aiico',
+                                  'coronation', 'nsurance', 'cover', 'coverage', 'plan', 'benefit', 'claim', 'renewal',
+                                  'broker', 'agent', 'underwriter'],
+                    'subscription': ['subscription', 'subscribe', 'membership', 'monthly', 'annual', 'yearly', 'plan',
+                                     'package', 'renewal', 'auto renew', 'recurring', 'charge', 'deduction', 'billed'],
+                    'other': ['other', 'miscellaneous', 'misc', 'others', 'unknown', 'general', 'various', 'different',
+                              'multiple', 'sundry', 'expenses', 'expense', 'items', 'item', 'stuff', 'things',
+                              'purchase',
+                              'purchases', 'buy', 'bought', 'spend', 'spent', 'paid', 'pay for', 'billed for']
                 }
-
-            })
-
-        elif state == "loan_confirm_supplier":
-            # If the user seems to be starting a new task, cancel the loan wizard
-            likely_other_task = any(word in reply.lower() for word in [
-                # Actions
-                'spent', 'bought', 'paid', 'earned', 'received', 'made',
-                'balance', 'net worth', 'credit score', 'statement', 'tax',
-                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
-                'search', 'find', 'who sells', 'i need', 'what', 'how',
-                # Questions / new intents
-                'list', 'show', 'register', 'link', 'connect',
-                # Explicit cancellation
-                'cancel', 'stop', 'never mind', 'forget',
-                # Loan re-trigger (start fresh)
-                'borrow', 'loan', 'lend'
-            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
-
-            if likely_other_task:
-                pending_transaction.pop(user_id, None)
-                return process_user_command(user_id, reply)
-            # We'll match the selected name from the options we stored.
-            selected_name = reply.strip()
-            options = p["data"].get("supplier_options", [])
-            selected = None
-            for opt in options:
-                if opt["name"].lower() == selected_name.lower():
-                    selected = opt
-                    break
-            if not selected:
-                return jsonify({
-                    "message": "Please tap one of the suppliers from the list I sent.",
-                    "tone": "warning"
-                })
-
-            p["data"]["supplier_user_id"] = selected["id"]
-            p["data"]["supplier_name"] = selected["name"]
-            p["state"] = "confirming_inventory_loan"  # reuse the existing confirmation state
-
-            amount = p["data"]["amount"]
-            flat_fee = amount * 0.05
-            total_repayable = amount + flat_fee
-            daily_amount = round(total_repayable / 14, 2)
-
-            p["data"]["flat_fee"] = flat_fee
-            p["data"]["total_repayable"] = total_repayable
-            p["data"]["daily_amount"] = daily_amount
-
-            return jsonify({
-                "message": (
-                    f"📦 **Loan Summary**\n\n"
-                    f"• Amount: ₦{amount:,.2f}\n"
-                    f"• Product: {p['data']['product']}\n"
-                    f"• Supplier: {selected['name']}\n"
-                    f"• Fee (5%): ₦{flat_fee:,.2f}\n"
-                    f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                    f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
-                    f"Reply **'yes'** to confirm and I'll pay the supplier directly."
-                ),
-                "tone": "neutral"
-            })
-
-
-
-        elif state == "ask_id_type":
-            id_type = reply.strip().lower()
-            if id_type not in ['bvn', 'nin']:
-                return jsonify({"message": "Please type either 'BVN' or 'NIN'.", "tone": "neutral"})
-            p["data"]["id_type"] = id_type
-            p["state"] = "ask_id_number"
-            return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
-
-        elif state == "loan_confirm_lower_amount":
-            if any(word in reply.lower() for word in ['yes', 'yeah', 'ok', 'okay']):
-                offered = p["data"]["offered_amount"]
-                pending_transaction[user_id] = {
-                    "state": "loan_ask_product",
-                    "data": {
-                        "amount": offered,
-                        "max_loan": p["data"]["max_loan"],
-                        "credit_score": p["data"]["credit_score"]
-                    },
-                    "category": None
-                }
-                return jsonify({
-                    "message": f"Okay! You want to borrow ₦{offered:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                    "tone": "neutral"
-                })
-            else:
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": "No problem. How can I help you instead?", "tone": "neutral"})
-
-
-        elif state == "collecting_loan_direction":
-            reply_lower = reply.lower()
-            if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
-                p["data"]["type"] = "loan"
-                p["data"]["category"] = "loan"
-                p["state"] = "collecting_category"
+                matched = False
+                for cat, words in cat_map.items():
+                    if any(w in reply_lower for w in words):
+                        p["data"]["category"] = cat
+                        p["category"] = cat
+                        matched = True
+                        break
+                if not matched:
+                    return jsonify({
+                        "message": f"I didn't recognise that category. Try one of these: food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, or other. What was this expense for?",
+                        "tone": "neutral"
+                    })
+                p["state"] = "collecting_category"  # let ask_next_question advance
                 return ask_next_question(user_id)
-            elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
-                p["data"]["type"] = "asset"
-                p["data"]["category"] = "loan_given"
-                p["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            else:
-                return jsonify({
-                    "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
-                    "tone": "neutral"
-                })
 
-        elif state == "confirming_funds":
-            if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
-                p["data"]["type"] = "managed_funds"
-                p["data"]["category"] = "investment_capital"
-                p["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            else:
-                p["state"] = "collecting_type"
-                return jsonify({
-                    "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",
-                    "tone": "neutral"
-                })
+            elif state == "collecting_quantity":
+                qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?',
+                                      reply.lower())
+                if qty_match:
+                    p["data"]["quantity"] = float(qty_match.group(1))
+                    p["data"]["unit"] = qty_match.group(2) or "unknown"
+                    p["state"] = "collecting_location"
+                    return ask_for_location(user_id)
+                else:
+                    return jsonify({
+                        "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
+                        "tone": "neutral"
+                    })
 
 
-        elif state == "collecting_category":
-            reply_lower = reply.lower()
-            cat_map = {
-                'food': ['food', 'foods', 'feeding', 'groceries', 'rice', 'beans', 'garri', 'yam', 'meat',
-                         'spaghetti',
-                         'noodle', 'indomie', 'bread', 'egg', 'eggs', 'milk', 'sugar', 'oil', 'tomato', 'tomatoes',
-                         'pepper', 'onion', 'fish', 'chicken', 'beef', 'snack', 'snacks', 'drink', 'drinks',
-                         'water',
-                         'juice', 'soda', 'coke', 'fanta', 'pepsi', 'chinchin', 'cake', 'biscuit', 'biscuits',
-                         'sweets',
-                         'ice cream', 'restaurant', 'eatery', 'bukka', 'mama put', 'chop', 'swallow', 'eba',
-                         'amala',
-                         'fufu', 'pounded yam', 'semo'],
-                'transport': ['transport', 'transportation', 'okada', 'bike', 'motorcycle', 'uber', 'bolt', 'taxi',
-                              'bus', 'buses', 'keke', 'napep', 'tricycle', 'fuel', 'petrol', 'diesel', 'gas',
-                              'parking',
-                              'parking fee', 'toll', 'toll gate', 'fare', 'transport fare'],
-                'housing': ['rent', 'house rent', 'house', 'room', 'accommodation', 'apartment', 'landlord',
-                            'rentage',
-                            'property', 'maintenance', 'repair', 'repairs', 'plumbing', 'electrician', 'painting',
-                            'renovation', 'furniture', 'bed', 'mattress', 'curtain', 'curtains', 'carpet', 'rug'],
-                'utilities': ['data', 'internet', 'net', 'subscription', 'subscriptions', 'airtime', 'recharge',
-                              'top up', 'topup', 'phone bill', 'phone', 'electricity', 'electric', 'power', 'neepa',
-                              'nepa', 'bill', 'bills', 'water', 'waste', 'sewage', 'sanitation', 'utility',
-                              'utilities',
-                              'mifi', 'router', 'wifi', 'broadband', 'cable', 'dstv', 'gotv', 'startimes',
-                              'tv subscription', 'netflix', 'prime video', 'showmax', 'domain', 'domain name',
-                              'hosting', 'website'],
-                'health': ['doctor', 'hospital', 'medicine', 'drug', 'drugs', 'pharmacy', 'chemist', 'health',
-                           'healthcare', 'medical', 'medicals', 'dental', 'dentist', 'eye', 'optician', 'glasses',
-                           'surgery', 'injection', 'vaccine', 'checkup', 'check up', 'lab', 'laboratory', 'test',
-                           'tests', 'scan', 'x-ray', 'xray', 'bandage', 'plaster', 'first aid', 'blood', 'malaria',
-                           'typhoid', 'fever', 'headache', 'pain', 'pills', 'tablets', 'capsules', 'syrup',
-                           'ointment',
-                           'cream', 'inhaler'],
-                'education': ['school', 'school fees', 'fees', 'tuition', 'book', 'books', 'textbook', 'course',
-                              'courses', 'online course', 'udemy', 'coursera', 'training', 'workshop', 'seminar',
-                              'certification', 'exam', 'examination', 'jamb', 'waec', 'neco', 'gce', 'post utme',
-                              'form', 'registration', 'admission', 'pen', 'pencil', 'notebook', 'stationery',
-                              'calculator', 'laptop', 'research', 'project', 'thesis', 'dissertation', 'library',
-                              'printing', 'photocopy', 'typing', 'assignment', 'lesson', 'tutor', 'coaching',
-                              'extra lessons', 'after school'],
-                'investment': ['invest', 'investment', 'investments', 'stocks', 'shares', 'stock', 'bond', 'bonds',
-                               'mutual fund', 'mutual funds', 'etf', 'etfs', 'crypto', 'cryptocurrency', 'bitcoin',
-                               'btc', 'ethereum', 'eth', 'usdt', 'usdc', 'bnb', 'binance', 'bamboo', 'chaka',
-                               'trove',
-                               'rise', 'piggyvest', 'cowrywise', 'wealth', 'wealth.ng', 'asset', 'assets',
-                               'portfolio',
-                               'dividend', 'interest', 'roi', 'return', 'capital', 'equity', 'real estate', 'land',
-                               'property', 'gold', 'silver', 'forex', 'fx', 'trading', 'trade', 'buying shares'],
-                'savings': ['save', 'saving', 'savings', 'saved', 'deposit', 'deposits', 'fixed deposit',
-                            'treasury bill', 'tbills', 'money market', 'vault', 'lock', 'locked', 'savings plan',
-                            'target', 'goal', 'goals', 'emergency fund', 'sinking fund', 'fund', 'contribution',
-                            'contributions', 'ajo', 'esusu', 'collect', 'thrift', 'cooperative', 'coop',
-                            'piggy bank',
-                            'piggyvest', 'cowrywise', 'kolo', 'wooden box', 'safe'],
-                'loan': ['loan', 'loans', 'borrow', 'borrowed', 'lend', 'lent', 'debt', 'debts', 'credit',
-                         'advance',
-                         'owe', 'owing', 'repay', 'repayment', 'repayments', 'repay loan', 'pay back', 'paid back',
-                         'refund', 'microfinance', 'lapo', 'access bank loan', 'gtbank loan', 'uba loan',
-                         'quick check',
-                         'carbon', 'fairmoney', 'palmcredit', 'aella', 'branch', 'okash', 'credit card'],
-                'income': ['income', 'salary', 'wages', 'wage', 'pay', 'payment', 'received', 'earned', 'made',
-                           'profit', 'profit from', 'revenue', 'earnings', 'freelance', 'gig', 'side hustle',
-                           'business', 'business income', 'sales', 'sold', 'client', 'customer', 'paid me',
-                           'transferred to me', 'alert', 'credit alert', 'bonus', 'commission', 'allowance',
-                           'stipend',
-                           'grant', 'dividend', 'interest', 'return on investment', 'rent income', 'rental income',
-                           'pension', 'remittance', 'money from', 'sent me', 'sent money', 'wire transfer',
-                           'direct deposit', 'cash', 'cash income'],
-                'entertainment': ['entertainment', 'fun', 'leisure', 'movie', 'movies', 'cinema', 'film', 'show',
-                                  'concert', 'music', 'spotify', 'apple music', 'youtube', 'youtube premium',
-                                  'netflix',
-                                  'amazon prime', 'showmax', 'dstv', 'gotv', 'startimes', 'game', 'games',
-                                  'video game',
-                                  'playstation', 'ps4', 'ps5', 'xbox', 'nintendo', 'bet', 'betting', 'sport bet',
-                                  'sportybet', 'bet9ja', 'nairabet', 'lottery', 'gambling', 'pool', 'club', 'party',
-                                  'event', 'festival', 'carnival', 'outing', 'hanging out', 'chilling',
-                                  'recreation',
-                                  'subscription', 'subscriptions'],
-                'clothing': ['clothing', 'cloth', 'clothes', 'clothings', 'fashion', 'wear', 'wears', 'dress',
-                             'dresses', 'shirt', 'shirts', 'trouser', 'trousers', 'pant', 'pants', 'jeans',
-                             'jacket',
-                             'coat', 'blazer', 'suit', 'tie', 'shoe', 'shoes', 'sneakers', 'sandal', 'sandals',
-                             'slippers', 'bag', 'bags', 'handbag', 'wallet', 'watch', 'jewelry', 'jewellery',
-                             'necklace', 'bracelet', 'ring', 'earring', 'earrings', 'chain', 'anklet', 'cap', 'hat',
-                             'scarf', 'glasses', 'sunglasses', 'belt', 'underwear', 'boxers', 'bra', 'panties',
-                             'native', 'ankara', 'agbada', 'buba', 'iro', 'gele', 'tailor', 'sewing', 'fabric',
-                             'material', 'lace', 'asoebi', 'guinea', 'brocade', 'satin', 'cotton', 'linen', 'wool',
-                             'silk', 'polish', 'dry cleaning', 'laundry', 'wash'],
-                'personal care': ['personal care', 'self care', 'grooming', 'salon', 'barbing', 'haircut', 'hair',
-                                  'hairstyle', 'braiding', 'weaving', 'weavon', 'wig', 'attachment', 'relaxer',
-                                  'shampoo', 'conditioner', 'cream', 'lotion', 'soap', 'body wash', 'deodorant',
-                                  'perfume', 'cologne', 'makeup', 'make up', 'powder', 'lipstick', 'eyeshadow',
-                                  'mascara', 'foundation', 'blush', 'nail', 'nails', 'manicure', 'pedicure', 'spa',
-                                  'massage', 'waxing', 'shaving', 'razor', 'toothpaste', 'toothbrush', 'mouthwash',
-                                  'floss', 'tissue', 'tissues', 'towel', 'sanitizer', 'sanitiser', 'hand wash'],
-                'gift': ['gift', 'gifts', 'present', 'donation', 'offering', 'tithe', 'seed', 'sowing', 'blessing',
-                         'help', 'support', 'assistance', 'charity', 'alms', 'zakat', 'sadaqah', 'give away',
-                         'give out', 'gave', 'giving', 'sponsor', 'sponsorship'],
-                'tax': ['tax', 'taxes', 'taxation', 'vat', 'withholding tax', 'company tax', 'income tax', 'paye',
-                        'firs', 'lirs', 'government', 'levy', 'duties', 'customs', 'excise', 'rate', 'rates',
-                        'assessment', 'filing', 'clearance', 'receipt', 'tax receipt', 'tin', 'tax identification',
-                        'business premises', 'development levy', 'waste management bill'],
-                'insurance': ['insurance', 'insure', 'insured', 'policy', 'premium', 'life insurance',
-                              'health insurance', 'car insurance', 'motor insurance', 'third party',
-                              'comprehensive',
-                              'travel insurance', 'hmo', 'hygeia', 'avon', 'leadway', 'aig', 'mutual benefit',
-                              'aiico',
-                              'coronation', 'nsurance', 'cover', 'coverage', 'plan', 'benefit', 'claim', 'renewal',
-                              'broker', 'agent', 'underwriter'],
-                'subscription': ['subscription', 'subscribe', 'membership', 'monthly', 'annual', 'yearly', 'plan',
-                                 'package', 'renewal', 'auto renew', 'recurring', 'charge', 'deduction', 'billed'],
-                'other': ['other', 'miscellaneous', 'misc', 'others', 'unknown', 'general', 'various', 'different',
-                          'multiple', 'sundry', 'expenses', 'expense', 'items', 'item', 'stuff', 'things',
-                          'purchase',
-                          'purchases', 'buy', 'bought', 'spend', 'spent', 'paid', 'pay for', 'billed for']
-            }
-            matched = False
-            for cat, words in cat_map.items():
-                if any(w in reply_lower for w in words):
-                    p["data"]["category"] = cat
-                    p["category"] = cat
-                    matched = True
-                    break
-            if not matched:
-                return jsonify({
-                    "message": f"I didn't recognise that category. Try one of these: food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, or other. What was this expense for?",
-                    "tone": "neutral"
-                })
-            p["state"] = "collecting_category"  # let ask_next_question advance
-            return ask_next_question(user_id)
+            elif state == "ask_id_number":
 
-        elif state == "collecting_quantity":
-            qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?',
-                                  reply.lower())
-            if qty_match:
-                p["data"]["quantity"] = float(qty_match.group(1))
-                p["data"]["unit"] = qty_match.group(2) or "unknown"
-                p["state"] = "collecting_location"
-                return ask_for_location(user_id)
-            else:
-                return jsonify({
-                    "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
-                    "tone": "neutral"
-                })
+                id_number = reply.strip()
+
+                if len(id_number) < 10:
+                    return jsonify(
+                        {"message": "That doesn't look like a valid number. Please enter at least 10 digits.",
+                         "tone": "neutral"})
+
+                id_type = p["data"]["id_type"]
+
+                # Simulate verification (replace with real API later)
+
+                verified = len(id_number) >= 10
+
+                if verified:
+
+                    store_user_fact(user_id, f'{id_type}_verified', True)
+
+                    store_user_fact(user_id, f'{id_type}_number', id_number)
+
+                    store_user_fact(user_id, id_type, id_number)  # generic key for wallet
+
+                    # Auto-create wallet
+
+                    try:
+
+                        wallet = ensure_wallet(user_id)
+
+                        wallet_msg = f"Your wallet is active! Account: {wallet['account_number']} ({wallet['bank_name']})."
+
+                    except Exception as e:
+
+                        wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
+
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({
+                        "message": f"Identity verified! {wallet_msg}",
+                        "tone": "income",
+                        "feedback_prompt": {
+                            "context": "after_wallet_activation",
+                            "question": "How was the verification process?",
+                            "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
+                        }
+                    })
+
+                else:
+
+                    return jsonify({"message": "Verification failed. Please check your number and try again."})
 
 
-        elif state == "ask_id_number":
+            elif state == "collecting_business_details":
+                # Parse the user's business description and price
+                reply_lower = reply.lower()
+                # Try to extract product, quantity/unit, and price
+                biz_match = re.search(
+                    r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)(?:,?\s*(\d+)\s*(mudu|derica|paint|kg|g|pieces?|heaps?|baskets?|bags?|litres?|liters?|units?))?\s*(?:for|at)\s*(?:₦|naira)?\s*(\d+\.?\d*)',
+                    reply, re.IGNORECASE)
+                if biz_match:
+                    product = biz_match.group(1).strip()
+                    quantity = biz_match.group(2)
+                    unit = biz_match.group(3)
+                    price = biz_match.group(4)
 
-            id_number = reply.strip()
-
-            if len(id_number) < 10:
-                return jsonify(
-                    {"message": "That doesn't look like a valid number. Please enter at least 10 digits.",
-                     "tone": "neutral"})
-
-            id_type = p["data"]["id_type"]
-
-            # Simulate verification (replace with real API later)
-
-            verified = len(id_number) >= 10
-
-            if verified:
-
-                store_user_fact(user_id, f'{id_type}_verified', True)
-
-                store_user_fact(user_id, f'{id_type}_number', id_number)
-
-                store_user_fact(user_id, id_type, id_number)  # generic key for wallet
-
-                # Auto-create wallet
-
-                try:
-
-                    wallet = ensure_wallet(user_id)
-
-                    wallet_msg = f"Your wallet is active! Account: {wallet['account_number']} ({wallet['bank_name']})."
-
-                except Exception as e:
-
-                    wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
-
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": f"Identity verified! {wallet_msg}",
-                    "tone": "income",
-                    "feedback_prompt": {
-                        "context": "after_wallet_activation",
-                        "question": "How was the verification process?",
-                        "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
-                    }
-                })
-
-            else:
-
-                return jsonify({"message": "Verification failed. Please check your number and try again."})
-
-
-        elif state == "collecting_business_details":
-            # Parse the user's business description and price
-            reply_lower = reply.lower()
-            # Try to extract product, quantity/unit, and price
-            biz_match = re.search(
-                r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)(?:,?\s*(\d+)\s*(mudu|derica|paint|kg|g|pieces?|heaps?|baskets?|bags?|litres?|liters?|units?))?\s*(?:for|at)\s*(?:₦|naira)?\s*(\d+\.?\d*)',
-                reply, re.IGNORECASE)
-            if biz_match:
-                product = biz_match.group(1).strip()
-                quantity = biz_match.group(2)
-                unit = biz_match.group(3)
-                price = biz_match.group(4)
-
-                store_user_fact(user_id, 'business', product)
-                if price:
-                    store_user_fact(user_id, f'product_price_{product}', price)
-                if quantity and unit:
-                    store_user_fact(user_id, f'product_unit_{product}', f'{quantity} {unit}')
-                store_user_fact(user_id, 'last_price_update', datetime.utcnow().isoformat())
-
-                # Also save location for marketplace
-                user_facts = get_user_facts(user_id)
-                city = user_facts.get('city', 'your area')
-                store_user_fact(user_id, 'business_city', city)
-
-                msg = f"I don record am! When someone dey find {product} for {city}, I go connect dem to you."
-                if price:
-                    msg += f" Your price of ₦{price}"
+                    store_user_fact(user_id, 'business', product)
+                    if price:
+                        store_user_fact(user_id, f'product_price_{product}', price)
                     if quantity and unit:
-                        msg += f" for {quantity} {unit}"
-                    msg += " don dey our system."
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": msg, "tone": "income"})
-            else:
-                # Couldn't parse – ask again more clearly
-                return jsonify({
-                    "message": "I no fit get the price well. Try tell me like this: 'I sell tomatoes, 5 mudu for ₦2,000'. Wetin you dey sell and how much?",
-                    "tone": "neutral"
-                })
+                        store_user_fact(user_id, f'product_unit_{product}', f'{quantity} {unit}')
+                    store_user_fact(user_id, 'last_price_update', datetime.utcnow().isoformat())
+
+                    # Also save location for marketplace
+                    user_facts = get_user_facts(user_id)
+                    city = user_facts.get('city', 'your area')
+                    store_user_fact(user_id, 'business_city', city)
+
+                    msg = f"I don record am! When someone dey find {product} for {city}, I go connect dem to you."
+                    if price:
+                        msg += f" Your price of ₦{price}"
+                        if quantity and unit:
+                            msg += f" for {quantity} {unit}"
+                        msg += " don dey our system."
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": msg, "tone": "income"})
+                else:
+                    # Couldn't parse – ask again more clearly
+                    return jsonify({
+                        "message": "I no fit get the price well. Try tell me like this: 'I sell tomatoes, 5 mudu for ₦2,000'. Wetin you dey sell and how much?",
+                        "tone": "neutral"
+                    })
 
 
-        elif state == "confirming_inventory_loan":
-            if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
-                data = p["data"]
-                amount = data["amount"]
-                supplier_user_id = data["supplier_user_id"]
+            elif state == "confirming_inventory_loan":
+                if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
+                    data = p["data"]
+                    amount = data["amount"]
+                    supplier_user_id = data["supplier_user_id"]
 
-                # Check user wallet has enough? No, Oyinda pays from its own pool.
-                # For simulation, we'll use a system pool wallet (Oyinda's own wallet).
-                # In production, you'd have a pre-funded Mono reserved account.
-                # We'll simulate by creating a system user with a wallet, or just assume Oyinda has infinite balance for now.
-                # We'll log a transfer from a system account to supplier.
-                # Actually, we'll just directly credit the supplier's wallet (simulate disbursement).
-                # In reality, you'd use MonoReservedAccount.payout() to send money from Oyinda's pool to supplier's virtual account.
-                # But since we are inside Oyinda's ledger, we can just update supplier's wallet balance directly
-                # because both are internal. We'll assume Oyinda's pool is represented by a special system user 'oyinda_treasury'.
-                # For sandbox, we'll just add the amount to supplier's wallet.
+                    # Check user wallet has enough? No, Oyinda pays from its own pool.
+                    # For simulation, we'll use a system pool wallet (Oyinda's own wallet).
+                    # In production, you'd have a pre-funded Mono reserved account.
+                    # We'll simulate by creating a system user with a wallet, or just assume Oyinda has infinite balance for now.
+                    # We'll log a transfer from a system account to supplier.
+                    # Actually, we'll just directly credit the supplier's wallet (simulate disbursement).
+                    # In reality, you'd use MonoReservedAccount.payout() to send money from Oyinda's pool to supplier's virtual account.
+                    # But since we are inside Oyinda's ledger, we can just update supplier's wallet balance directly
+                    # because both are internal. We'll assume Oyinda's pool is represented by a special system user 'oyinda_treasury'.
+                    # For sandbox, we'll just add the amount to supplier's wallet.
 
-                conn = get_conn()
-                cur = conn.cursor()
-                # Add funds to supplier wallet
-                cur.execute(
-                    "UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
-                    (amount, supplier_user_id))
-                # Also log a credit event for supplier
-                append_event(supplier_user_id, supplier_user_id, 'WalletCredited', {
-                    "amount": amount,
-                    "source": "oyinda_inventory_loan",
-                    "product": data["product"],
-                    "borrower": user_id
-                })
-                conn.commit()
-                conn.close()
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    # Add funds to supplier wallet
+                    cur.execute(
+                        "UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
+                        (amount, supplier_user_id))
+                    # Also log a credit event for supplier
+                    append_event(supplier_user_id, supplier_user_id, 'WalletCredited', {
+                        "amount": amount,
+                        "source": "oyinda_inventory_loan",
+                        "product": data["product"],
+                        "borrower": user_id
+                    })
+                    conn.commit()
+                    conn.close()
 
-                # Create loan record
-                start_date = datetime.utcnow().date()
-                end_date = start_date + timedelta(days=21)
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO inventory_loans
-                    (user_id, supplier_id, product, principal, flat_fee, total_repayable,
-                     daily_amount, remaining_balance, start_date, end_date, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-                """, (
-                    user_id, supplier_user_id, data["product"], amount,
-                    data["flat_fee"], data["total_repayable"], data["daily_amount"],
-                    data["total_repayable"], start_date, end_date
-                ))
-                conn.commit()
-                conn.close()
+                    # Create loan record
+                    start_date = datetime.utcnow().date()
+                    end_date = start_date + timedelta(days=21)
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO inventory_loans
+                        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+                         daily_amount, remaining_balance, start_date, end_date, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                    """, (
+                        user_id, supplier_user_id, data["product"], amount,
+                        data["flat_fee"], data["total_repayable"], data["daily_amount"],
+                        data["total_repayable"], start_date, end_date
+                    ))
+                    conn.commit()
+                    conn.close()
 
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                return jsonify({
-                    "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
-                               f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
-                    "tone": "income",
-                    "feedback_prompt": {
-                        "context": "after_loan",
-                        "question": "How was the loan process?",
-                        "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
-                    }
-                })
-            else:
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": "Loan cancelled."})
+                    pending_transaction.pop(user_id, None)
+                    name = get_user_name(user_id)
+                    pending_transaction.pop(user_id, None)
+                    name = get_user_name(user_id)
+                    return jsonify({
+                        "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
+                                   f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
+                        "tone": "income",
+                        "feedback_prompt": {
+                            "context": "after_loan",
+                            "question": "How was the loan process?",
+                            "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
+                        }
+                    })
+                else:
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "Loan cancelled."})
 
 
-        elif state == "collecting_location":
-            p["data"]["location"] = reply.strip()
+            elif state == "collecting_location":
+                p["data"]["location"] = reply.strip()
+                return finalise_transaction(user_id)
+
+            elif state == "collecting_emergency_hours":
+                hours_match = re.match(r'^(\d+)$', reply.strip())
+                if hours_match:
+                    hours = int(hours_match.group(1))
+                    if hours < 1 or hours > 72:
+                        return jsonify({"message": "Please choose between 1 and 72 hours."})
+                    store_user_fact(user_id, 'emergency_data_hours', hours)
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({
+                        "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
+                                   "I'll check every 30 minutes.",
+                        "tone": "income"
+                    })
+                else:
+                    return jsonify({
+                        "message": "Please tell me a number of hours, like 3, 6, or 12.",
+                        "tone": "neutral"
+                    })
+
+
+            elif state == "confirming_bulk":
+                reply_lower = reply.lower()
+                if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
+                    # Log each amount as a separate expense
+                    amounts = p["data"]["amounts"]
+                    for amt in amounts:
+                        append_event(user_id, user_id, 'ExpenseLogged', {
+                            "amount": amt,
+                            "currency": "NGN",
+                            "category": "other",
+                            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                            "description": p["data"].get("description", text)[:100]
+                        })
+                    # Remove the bulk transaction
+                    pending_transaction.pop(user_id, None)
+                    name = get_user_name(user_id)
+                    return jsonify({
+                        "message": f"Logged {len(amounts)} expenses totalling ₦{p['data']['total']:,.2f}.",
+                        "tone": "neutral"
+                    })
+                else:
+                    # User doesn't want bulk logging – remove and let fallback handle it
+                    pending_transaction.pop(user_id, None)
+
+            # If we didn't match any state, just finalise to avoid hanging
             return finalise_transaction(user_id)
 
-        elif state == "collecting_emergency_hours":
-            hours_match = re.match(r'^(\d+)$', reply.strip())
-            if hours_match:
-                hours = int(hours_match.group(1))
-                if hours < 1 or hours > 72:
-                    return jsonify({"message": "Please choose between 1 and 72 hours."})
-                store_user_fact(user_id, 'emergency_data_hours', hours)
-                pending_transaction.pop(user_id, None)
+
+        # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
+        past_borrowing = any(phrase in text_lower for phrase in [
+            'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
+            'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
+        ])
+
+        borrow_trigger = any(phrase in text_lower for phrase in [
+            'borrow', 'i want to borrow', 'i wan borrow', 'lend me', 'can i get','i need to borrow', 'lend me',
+            'can i get a loan', 'how much loan', 'i need loan', 'give me', 'can you borrow me',
+            'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
+            'get a loan', 'how can i borrow', 'can i borrow'
+        ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
+
+        # Only start the wizard if it's a genuine request (not a past report)
+        if borrow_trigger and not past_borrowing:
+            # If the user is already in a loan wizard, warn them
+            if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
                 return jsonify({
-                    "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
-                               "I'll check every 30 minutes.",
-                    "tone": "income"
-                })
-            else:
-                return jsonify({
-                    "message": "Please tell me a number of hours, like 3, 6, or 12.",
-                    "tone": "neutral"
-                })
-
-
-        elif state == "confirming_bulk":
-            reply_lower = reply.lower()
-            if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
-                # Log each amount as a separate expense
-                amounts = p["data"]["amounts"]
-                for amt in amounts:
-                    append_event(user_id, user_id, 'ExpenseLogged', {
-                        "amount": amt,
-                        "currency": "NGN",
-                        "category": "other",
-                        "date": datetime.utcnow().strftime("%Y-%m-%d"),
-                        "description": p["data"].get("description", text)[:100]
-                    })
-                # Remove the bulk transaction
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                return jsonify({
-                    "message": f"Logged {len(amounts)} expenses totalling ₦{p['data']['total']:,.2f}.",
-                    "tone": "neutral"
-                })
-            else:
-                # User doesn't want bulk logging – remove and let fallback handle it
-                pending_transaction.pop(user_id, None)
-
-        # If we didn't match any state, just finalise to avoid hanging
-        return finalise_transaction(user_id)
-
-
-    # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
-    past_borrowing = any(phrase in text_lower for phrase in [
-        'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
-        'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
-    ])
-
-    borrow_trigger = any(phrase in text_lower for phrase in [
-        'borrow', 'i want to borrow', 'i wan borrow', 'lend me', 'can i get','i need to borrow', 'lend me',
-        'can i get a loan', 'how much loan', 'i need loan', 'give me', 'can you borrow me',
-        'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
-        'get a loan', 'how can i borrow', 'can i borrow'
-    ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
-
-    # Only start the wizard if it's a genuine request (not a past report)
-    if borrow_trigger and not past_borrowing:
-        # If the user is already in a loan wizard, warn them
-        if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
-            return jsonify({
-                "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
-                "tone": "warning"
-            })
-
-        # ... rest of the existing loan entry logic (amount extraction, eligibility, etc.) ...
-        amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
-        amount = None
-        if amount_match:
-            amount_str = amount_match.group(1).replace(',', '')
-            amount = float(amount_str)
-            # If "k" or "thousand" is mentioned, multiply by 1000
-            if 'k' in text_lower or 'thousand' in text_lower:
-                amount *= 1000
-
-        credit = get_credit_score(user_id)
-        max_loan = get_max_loan_amount(credit['score'])
-
-        # Eligibility check
-        if max_loan == 0:
-            return jsonify({
-                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                "tone": "neutral"
-            })
-
-        # If an amount was given, validate it
-        if amount is not None:
-            if amount > max_loan:
-                # Store a pending intent to confirm the lower amount
-                pending_transaction[user_id] = {
-                    "state": "loan_confirm_lower_amount",
-                    "data": {
-                        "offered_amount": max_loan,
-                        "max_loan": max_loan,
-                        "credit_score": credit['score']
-                    },
-                    "category": None
-                }
-                return jsonify({
-                    "message": (
-                        f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                        f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
-                    ),
+                    "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
                     "tone": "warning"
                 })
-        else:
-            amount = None  # will be asked later if not provided
 
-        # Store loan intent in pending transaction
-        pending_transaction[user_id] = {
-            "state": "loan_ask_product",
-            "data": {
-                "amount": amount,
-                "max_loan": max_loan,
-                "credit_score": credit['score']
-            },
-            "category": None
-        }
+            # ... rest of the existing loan entry logic (amount extraction, eligibility, etc.) ...
+            amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
+            amount = None
+            if amount_match:
+                amount_str = amount_match.group(1).replace(',', '')
+                amount = float(amount_str)
+                # If "k" or "thousand" is mentioned, multiply by 1000
+                if 'k' in text_lower or 'thousand' in text_lower:
+                    amount *= 1000
 
-        if amount:
-            return jsonify({
-                "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                "tone": "neutral"
-            })
-        else:
-            return jsonify({
-                "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
-                "tone": "neutral"
-            })
+            credit = get_credit_score(user_id)
+            max_loan = get_max_loan_amount(credit['score'])
 
-    # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
-    search_triggers = [
-        'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
-        'who does', 'who dey do', 'i need a', 'i dey find',
-        'who supplies', 'where can i get', 'who get', 'who dey supply',
-        'which person dey', 'who fit', 'who sabi', 'who dey run'
-    ]
-    if any(phrase in text.lower() for phrase in search_triggers):
-        # Find the LONGEST matching trigger
-        matched_trigger = ''
-        for phrase in search_triggers:
-            if phrase in text.lower() and len(phrase) > len(matched_trigger):
-                matched_trigger = phrase
-
-        # Remove the trigger phrase from the text (case‑insensitive)
-        query = re.sub(re.escape(matched_trigger), '', text, flags=re.IGNORECASE).strip()
-
-        # Remove trailing location words
-        query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query, flags=re.IGNORECASE).strip()
-
-        if len(query) < 2:
-            query = 'crypto'
-
-        facts = get_user_facts(user_id)
-        my_city = facts.get('city', '')
-
-        return jsonify({
-            "action": "show_business_search",
-            "search_query": query,
-            "city": my_city,
-            "message": f"Searching for '{query}'…",
-            "tone": "neutral"
-        })
-
-    # --- Transfer confirmation (unchanged) ---
-    if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
-        pending = pending_transfers.get(user_id)
-        if pending:
-            append_event(user_id, user_id, 'TransferConfirmed', pending['payload'])
-            success, ref = mock_execute_transfer(pending['payload'])
-            if success:
-                append_event(user_id, user_id, 'TransferExecuted', {**pending['payload'], "reference": ref})
-                del pending_transfers[user_id]
-                save_conversation(user_id, 'user', text)
+            # Eligibility check
+            if max_loan == 0:
                 return jsonify({
-                    "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
-                    "tone": "income"})
+                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                    "tone": "neutral"
+                })
+
+            # If an amount was given, validate it
+            if amount is not None:
+                if amount > max_loan:
+                    # Store a pending intent to confirm the lower amount
+                    pending_transaction[user_id] = {
+                        "state": "loan_confirm_lower_amount",
+                        "data": {
+                            "offered_amount": max_loan,
+                            "max_loan": max_loan,
+                            "credit_score": credit['score']
+                        },
+                        "category": None
+                    }
+                    return jsonify({
+                        "message": (
+                            f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
+                            f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
+                        ),
+                        "tone": "warning"
+                    })
             else:
-                append_event(user_id, user_id, 'TransferFailed', {**pending['payload'], "error": ref})
-                del pending_transfers[user_id]
-                save_conversation(user_id, 'user', text)
-                return jsonify({"error": f"Transfer failed: {ref}"}), 500
+                amount = None  # will be asked later if not provided
 
-    # --- P2P confirmation (unchanged) ---
-    if text.strip().lower() in ['confirm', 'yes', 'ok'] and user_id in pending_p2p_trades:
-        trade = pending_p2p_trades.pop(user_id)
-        p2p_account_id = trade['account_id']
-        try:
-            from connectors.bybit_p2p import BybitP2PConnector
-            accounts = get_user_connected_accounts(user_id)
-            p2p_account = next((a for a in accounts if a['id'] == p2p_account_id), None)
-            if not p2p_account:
-                return jsonify({"error": "P2P account not found."}), 400
-            api_key = decrypt(p2p_account['api_key_encrypted'])
-            api_secret = decrypt(p2p_account['api_secret_encrypted'])
-            connector = BybitP2PConnector(api_key, api_secret)
-
-            if trade['action'] == 'sell':
-                result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
-                append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
-                    "amount": trade['amount'],
-                    "currency": trade['currency'],
-                    "ngn_equivalent": trade['ngn_amount'],
-                    "rate": trade['rate'],
-                    "order_id": result.get('result', {}).get('orderId')
-                })
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
-                    "tone": "income"})
-            elif trade['action'] == 'buy':
-                result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
-                append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
-                    "amount_ngn": trade['amount'],
-                    "crypto_amount": trade['crypto_amount'],
-                    "currency": trade['currency'],
-                    "rate": trade['rate'],
-                    "order_id": result.get('result', {}).get('orderId')
-                })
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
-                    "tone": "income"})
-        except Exception as e:
-            return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
-
-
-    # ---------- IDENTITY VERIFICATION ----------
-    if any(phrase in text.lower() for phrase in ['verify my identity', 'verify my account', 'activate wallet', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
-        pending_transaction[user_id] = {
-            "state": "ask_id_type",
-            "data": {},
-            "category": None
-        }
-        return jsonify({
-            "message": "I can help you verify your identity with your BVN or NIN. Which one would you like to use? (Type 'BVN' or 'NIN')",
-            "tone": "neutral"
-        })
-
-
-    # ---------- Rule‑based swap detector (fast path) ----------
-    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
-    if swap_match:
-        amount = float(swap_match.group(1))
-        token_in = swap_match.group(2).upper()
-        token_out = swap_match.group(3).upper()
-        wallet_name = swap_match.group(4).strip().lower() or 'metamask'
-
-        accounts = get_user_connected_accounts(user_id)
-        wallet_account = None
-        for acc in accounts:
-            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                wallet_account = acc
-                break
-        if not wallet_account:
-            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-        if not wallet_account:
-            return jsonify({"error": "No connected wallet found."}), 400
-
-        swap_payload = {
-            "token_in": token_in,
-            "token_out": token_out,
-            "amount": amount,
-            "wallet": wallet_account['id'],
-            "wallet_address": wallet_account['wallet_address'],
-            "network": wallet_account['network'],
-            "description": text
-        }
-        event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
-            "tone": "neutral",
-            "event_id": event['event_id'],
-            "requires_confirmation": True,
-            "swap_payload": swap_payload
-        })
-
-    # ========== RULE-BASED FALLBACK ==========
-    text_lower = text.lower().strip()
-
-    # 1. Questions starting with how/what/…
-    if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many', 'what is the')):
-        return handle_query(text, user_id)
-
-    # 2. Exact greetings
-    if text_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'help', 'what can you do']:
-        name = get_user_name(user_id)
-        return jsonify({"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
-
-    # 2b. Link bank command
-    if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
-        return jsonify({"open_mono": True, "message": "Opening bank connection…"})
-
-    # Set home currency
-    if text.lower().startswith('set my currency to ') or text.lower().startswith('change my currency to '):
-        parts = text.split()
-        new_currency = parts[-1].upper()
-        if len(new_currency) != 3:
-            return jsonify({"message": "Please use a 3‑letter currency code, like USD, GHS, NGN."})
-        store_user_fact(user_id, 'home_currency', new_currency)
-        return jsonify({"message": f"Your home currency is now {new_currency}. I'll convert future transactions to {new_currency}."})
-
-
-
-    # 3. Balance / budget / net worth / credit score / debt keywords
-    if any(w in text_lower for w in [
-        'balance', 'how much is in', 'how much in', 'budget',
-        'net worth', 'credit score', 'health score', 'debt', 'owe', 'liability',
-        'how much am i worth', 'what am i worth', 'how much i worth',
-        'my net worth', 'calculate my net worth'
-    ]):
-        return handle_query(text, user_id)
-
-    if 'open a bank account' in text_lower or 'open bank account' in text_lower:
-        return jsonify({
-            "message": "We are partnering with trusted banks to let you open an account right here in Oyinda. You won't need to visit a bank or fill paper forms. I'll let you know as soon as this is ready!",
-            "tone": "neutral"
-        })
-
-    # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
-    swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
-    if swap_match:
-        amount = float(swap_match.group(1))
-        token_in = swap_match.group(2).upper()
-        token_out = swap_match.group(3).upper()
-        wallet_name = swap_match.group(4).strip().lower() or 'metamask'
-
-        accounts = get_user_connected_accounts(user_id)
-        wallet_account = None
-        for acc in accounts:
-            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                wallet_account = acc
-                break
-        if not wallet_account:
-            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-        if not wallet_account:
-            return jsonify({"error": "No connected wallet found."}), 400
-
-        swap_payload = {
-            "token_in": token_in,
-            "token_out": token_out,
-            "amount": amount,
-            "wallet": wallet_account['id'],
-            "wallet_address": wallet_account['wallet_address'],
-            "network": wallet_account['network'],
-            "description": text
-        }
-        event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
-            "tone": "neutral",
-            "event_id": event['event_id'],
-            "requires_confirmation": True,
-            "swap_payload": swap_payload
-        })
-
-    # 5. Exchange trade
-    trade_match = re.match(
-        r'(?:i\s+(?:wan|want|want\s+to)\s+)?(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from|for)?\s*(\w+)',
-        text, re.IGNORECASE)
-    if trade_match:
-        action = trade_match.group(1).lower()
-        amount = float(trade_match.group(2))
-        symbol = trade_match.group(3).upper()
-        exchange_name = trade_match.group(4).lower()
-
-        common_assets = {'BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'LINK', 'DOT', 'LTC', 'BCH', 'ATOM', 'UNI',
-                         'ETC', 'FIL', 'APT', 'ARB', 'OP', 'NEAR', 'MATIC'}
-        if symbol in common_assets:
-            symbol += 'USDT'
-
-        accounts = get_user_connected_accounts(user_id)
-        ex_account = None
-        for acc in accounts:
-            if acc['type'] == 'exchange' and exchange_name in acc['label'].lower():
-                ex_account = acc
-                break
-        if not ex_account:
-            return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
-
-        try:
-            from connectors.exchange_factory import get_exchange_connector as factory_connector
-            connector = factory_connector(ex_account)
-            order = connector.place_order(symbol, action, amount)
-            payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
-            append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
-            save_conversation(user_id, 'user', text)
-            return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
-                            "tone": "income"})
-        except Exception as e:
-            err_msg = str(e)
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    err_data = e.response.json()
-                    err_msg = err_data.get('msg', err_msg)
-                except:
-                    pass
-            return jsonify({"error": f"Trade failed: {err_msg}"}), 500
-
-    # 6. Send token
-    send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text, re.IGNORECASE)
-    if send_match:
-        amount = float(send_match.group(1))
-        token = send_match.group(2).upper()
-        to_address = send_match.group(3)
-        wallet_name = send_match.group(4).strip().lower() or 'bsc wallet'
-
-        accounts = get_user_connected_accounts(user_id)
-        wallet_account = None
-        for acc in accounts:
-            if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                wallet_account = acc
-                break
-        if not wallet_account:
-            wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-        if not wallet_account:
-            return jsonify({"error": "No connected wallet found."}), 400
-
-        send_payload = {
-            "token": token,
-            "amount": amount,
-            "to_address": to_address,
-            "wallet": wallet_account['id'],
-            "wallet_address": wallet_account['wallet_address'],
-            "network": wallet_account['network'],
-            "description": text
-        }
-        event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
-            "tone": "neutral",
-            "event_id": event['event_id'],
-            "requires_confirmation": True,
-            "send_payload": send_payload
-        })
-
-    # 7. SELL USDT via MONICA
-    sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?', text, re.IGNORECASE)
-    if not sell_monica_match:
-        sell_monica_match = re.match(r'convert\s+(\d+\.?\d*)\s*(USDT|USDC)\s+to\s+(?:ngn|naira)', text, re.IGNORECASE)
-    if sell_monica_match:
-        amount = float(sell_monica_match.group(1))
-        currency = sell_monica_match.group(2).upper()
-        accounts = get_user_connected_accounts(user_id)
-        monica_account = next((a for a in accounts if a.get('provider', '').lower() == 'monica'), None)
-        if not monica_account:
-            return jsonify({"error": "No Monica account linked. Please link it under P2P."}), 400
-        try:
-            from connectors.monica import MonicaConnector
-            api_key = decrypt(monica_account['api_key_encrypted'])
-            connector = MonicaConnector(api_key)
-            deposit_address = connector.get_deposit_address("TRC20")
-            if not deposit_address:
-                return jsonify({"error": "Could not get Monica deposit address."}), 500
-        except Exception as e:
-            return jsonify({"error": f"Monica API error: {str(e)}"}), 500
-        wallet_accounts = [a for a in accounts if a['type'] == 'wallet']
-        if not wallet_accounts:
-            return jsonify({"error": "No connected crypto wallet."}), 400
-        wallet_account = wallet_accounts[0]
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "action": "monica_sell",
-            "message": f"Send {amount} {currency} to Monica's deposit address. Confirm in your wallet.",
-            "data": {
-                "amount": amount,
-                "token": currency,
-                "to_address": deposit_address,
-                "network": wallet_account['network'],
-                "wallet_address": wallet_account['wallet_address'],
-                "monica_account_id": monica_account['id']
-            },
-            "tone": "neutral"
-        })
-
-    # ---------- EMERGENCY DATA SETUP ----------
-    if any(phrase in text_lower for phrase in
-           ['emergency data', 'offline data', 'send me data after', 'send data after']):
-        # Check phone number
-        facts = get_user_facts(user_id)
-        phone = facts.get('phone')
-        if not phone:
-            return jsonify({
-                "message": "I need your phone number first so I know where to send the data. "
-                           "Please tell me your phone number, like 'my phone number is 080xxxxxxxx'.",
-                "tone": "neutral"
-            })
-
-        # Start the emergency‑data state machine
-        pending_transaction[user_id] = {
-            "state": "collecting_emergency_hours",
-            "data": {},
-            "category": None
-        }
-        return jsonify({
-            "message": "How many hours offline before I send you emergency data? (e.g., 3, 6, 12)\n\n"
-                       "I will send you 33 MB of **MTN** data automatically when you've been offline "
-                       "longer than that. Other networks coming soon!",
-            "tone": "neutral"
-        })
-
-    # ---------- BUSINESS REGISTRATION ----------
-    biz_reg_match = re.match(
-        r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)\s*(?:at|in|for)\s+([^,]+)'
-        r'(?:,?\s*(?:call\s*(?:me|on))?\s*(\d{11}))?',
-        text, re.IGNORECASE
-    )
-    if biz_reg_match:
-        product = biz_reg_match.group(1).strip()
-        market = biz_reg_match.group(2).strip()
-        phone = biz_reg_match.group(3) or ''
-
-        # Get user info
-        facts = get_user_facts(user_id)
-        city = facts.get('city', 'your city')
-        name = get_user_name(user_id)
-
-        # Determine category (goods vs services)
-        has_unit = any(re.search(r'\b' + unit + r'\b', product.lower()) for unit in GOODS_UNITS)
-        category = 'goods' if has_unit else 'services'
-
-        # Insert into business_listings table (delete old listing first)
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM business_listings WHERE user_id = %s", (user_id,))
-        cur.execute(
-            """INSERT INTO business_listings (user_id, name, product, category, market_name, city, phone)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (user_id, name, product, category, market, city, phone)
-        )
-        conn.commit()
-        conn.close()
-
-        phone_msg = f" Call me {phone}" if phone else ""
-        return jsonify({
-            "message": f"Your business is now listed! When someone searches for '{product}', they'll see: "
-                       f"{name}, {market}, {city}{phone_msg}. "
-                       f"Tap the 📞 button and they'll call you directly.",
-            "tone": "income"
-        })
-
-
-    # ---------- LOAN REPAYMENT ----------
-    repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
-    if repay_match:
-        amount = float(repay_match.group(1))
-        append_event(user_id, user_id, 'LoanRepaid', {
-            "amount": amount,
-            "currency": "NGN",
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": f"Repaid {amount} NGN of loan"
-        })
-        # Refresh credit score
-        conn = get_conn()
-        update_credit_score(conn, user_id)
-        conn.close()
-        name = get_user_name(user_id)
-        return jsonify({"message": f"Noted, {name}. You've repaid {amount} NGN of your loan. Your credit score has been updated.", "tone": "income"})
-
-    # 8. Expense logging
-    expense_patterns = [
-        r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
-        r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
-        r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
-        r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'
-    ]
-    expense_match = None
-    for pat in expense_patterns:
-        expense_match = re.match(pat, text, re.IGNORECASE)
-        if expense_match:
-            break
-
-    if expense_match:
-        amount = float(expense_match.group(1))
-        description = expense_match.group(2).strip().lower()
-        cat_map = {
-            'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',
-            'transport': 'transport', 'uber': 'transport', 'taxi': 'transport', 'okada': 'transport', 'fuel': 'transport',
-            'data': 'utilities', 'internet': 'utilities', 'net': 'utilities', 'electricity': 'utilities', 'bill': 'utilities',
-            'rent': 'housing', 'house': 'housing', 'accommodation': 'housing',
-            'cloth': 'clothing', 'shoe': 'clothing',
-            'doctor': 'health', 'medicine': 'health', 'hospital': 'health',
-            'school': 'education', 'book': 'education', 'course': 'education',
-            'movie': 'entertainment', 'game': 'entertainment', 'subscription': 'entertainment'
-        }
-        category = 'other'
-        for word, cat in cat_map.items():
-            if word in description:
-                category = cat
-                break
-        payload = {
-            "amount": amount,
-            "currency": "NGN",
-            "category": category,
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": description
-        }
-        event = append_event(user_id, user_id, 'ExpenseLogged', payload)
-        name = get_user_name(user_id)
-        response_text = f"Got it, {name}. You spent {amount} NGN on {category}."
-        budget = calculate_daily_budget(user_id)
-        if budget:
-            total_budget = sum(budget.values())
-            daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
-            tone = "warning" if amount > daily_limit else "good"
-        else:
-            tone = "neutral"
-        return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
-
-    # 9. Income logging
-    income_patterns = [
-        r'(?:i\s+)?made\s+(\d+\.?\d*)\s*(?:profit|income|from|of)?\s*(.*)',
-        r'(?:i\s+)?earned\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
-        r'(?:i\s+)?received\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
-        r'i\s+get\s+(\d+\.?\d*)\s+(?:from\s+)?(.+)'
-    ]
-    income_match = None
-    for pat in income_patterns:
-        income_match = re.match(pat, text, re.IGNORECASE)
-        if income_match:
-            break
-
-    if income_match:
-        amount = float(income_match.group(1))
-        description = income_match.group(2).strip().lower() or 'income'
-        payload = {
-            "amount": amount,
-            "currency": "NGN",
-            "category": "income",
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": description
-        }
-        event = append_event(user_id, user_id, 'IncomeReceived', payload)
-        name = get_user_name(user_id)
-        response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
-        save_conversation(user_id, 'user', text)
-        return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
-
-    # ---------- MULTI-EXPENSE DETECTION ----------
-    # Detect if the user listed multiple amounts (e.g., "data 2000, chinchin 200, milk 1000")
-    # This runs BEFORE the single-expense patterns, so it doesn't get hijacked.
-    # Detect amounts with optional currency prefixes (₦, $, €, £, R, etc.) and common 3‑letter codes (NGN, USD, GHS, KES, ZAR, etc.)
-    amounts = re.findall(
-        r'(?:'
-        r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)'
-        r'\s?'
-        r')?'
-        r'(\d[\d,]*\.?\d*)',
-        text
-    )
-    if len(amounts) >= 2:
-        # Convert all strings to floats
-        parsed_amounts = []
-        for a in amounts:
-            try:
-                parsed_amounts.append(float(a.replace(',', '')))
-            except ValueError:
-                continue
-        if len(parsed_amounts) >= 2:
-            total = sum(parsed_amounts)
-            # Ask user to confirm the bulk log
+            # Store loan intent in pending transaction
             pending_transaction[user_id] = {
-                "state": "confirming_bulk",
+                "state": "loan_ask_product",
                 "data": {
-                    "amounts": parsed_amounts,
-                    "total": total,
-                    "description": text,
-                    "currency": "NGN",
-                    "type": "expense",           # assume expense; user can correct later
-                    "category": "other"          # generic category
+                    "amount": amount,
+                    "max_loan": max_loan,
+                    "credit_score": credit['score']
                 },
                 "category": None
             }
-            return jsonify({
-                "message": f"I see you mentioned {', '.join(f'₦{a:,.2f}' for a in parsed_amounts)}. That's ₦{total:,.2f} in total. Did you spend all of these? Reply 'yes' to log them all, or tell me what they are one by one.",
-                "tone": "neutral"
-            })
 
-    # 10. Bank transfer
-    transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text, re.IGNORECASE)
-    if transfer_match:
-        amount = float(transfer_match.group(1))
-        dest_account = transfer_match.group(2)
-        bank_name = transfer_match.group(3).strip() if transfer_match.group(3) else 'bank'
-        accounts = get_user_connected_accounts(user_id)
-        if not accounts:
-            return jsonify({"error": "No connected accounts."}), 400
-        source_id = accounts[0]['id']
-        dest_id = accounts[0]['id']
-        payload = {
-            "amount": amount,
-            "currency": "NGN",
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "description": f"Transfer to {dest_account} ({bank_name})",
-            "source_account_id": source_id,
-            "destination_account_id": dest_id
-        }
-        event = append_event(user_id, user_id, 'TransferRequested', payload)
-        pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
-        src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
-        dst_label = f"{bank_name} {dest_account}"
-        msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
-        save_conversation(user_id, 'user', text)
-        return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
-
-    # ---------- DETECT PHONE NUMBER (avoid logging as amount) ----------
-    # Matches: "my phone number is 080xxx", "phone number: 080xxx", etc.
-    phone_match = re.search(r'(?:phone|number)\s*(?:number|is|be|:)?\s*(\d{11})', text, re.IGNORECASE)
-    if phone_match:
-        phone = phone_match.group(1)
-        if phone.startswith('0') and len(phone) == 11:
-            store_user_fact(user_id, 'phone', phone)
-            return jsonify({
-                "message": f"I don save your phone number: {phone}. I go send your daily data reward to this number when you tell me your expenses.",
-                "tone": "neutral"
-            })
-
-
-    # Set phone number
-    if text.lower().startswith('set my phone number to ') or text.lower().startswith('change my phone number to '):
-        parts = text.split()
-        phone = parts[-1]
-        # Basic validation
-        if not phone.startswith('0') or len(phone) != 11:
-            return jsonify({"message": "Please enter a valid 11‑digit Nigerian phone number starting with 0."})
-        store_user_fact(user_id, 'phone', phone)
-        return jsonify({"message": f"Your phone number has been saved as {phone}. I'll send your daily data reward to this number."})
-
-    # ---------- POWER AVAILABILITY LOG ----------
-    if any(phrase in text_lower for phrase in ['light don come', 'light come', 'power don come', 'nepa bring light']):
-        append_event(user_id, user_id, 'PowerStatusChanged', {
-            "status": "on",
-            "timestamp": datetime.utcnow().isoformat(),
-            "description": "Electricity came on"
-        })
-        return jsonify({
-            "message": "I don record am. Light come back. I dey track how many hours you get this month.",
-            "tone": "neutral"
-        })
-
-
-
-    # Internal transfer
-    send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
-    if send_match:
-        amount = float(send_match.group(1))
-        recipient_phone = send_match.group(2)
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
-        recip_row = cur.fetchone()
-        if not recip_row:
-            conn.close()
-            return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
-        recip_id = recip_row[0]
-        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
-        recip_wallet_row = cur.fetchone()
-        if not recip_wallet_row:
-            conn.close()
-            return jsonify(
-                {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity."})
-        sender_wallet = ensure_wallet(user_id)
-        if sender_wallet['balance'] < amount:
-            conn.close()
-            return jsonify({"message": "Insufficient wallet balance."})
-
-        new_sender_balance = sender_wallet['balance'] - amount
-        new_recip_balance = float(recip_wallet_row[0]) + amount
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_sender_balance, user_id))
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_recip_balance, recip_id))
-        conn.commit()
-        conn.close()
-
-        sender_phone = get_user_facts(user_id).get('phone', '')
-        append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
-        append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
-            "tone": "income"
-        })
-
-    # External withdrawal
-    withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
-    if withdraw_match:
-        amount = float(withdraw_match.group(1))
-        bank_code = withdraw_match.group(2)
-        account_number = withdraw_match.group(3)
-        wallet = ensure_wallet(user_id)
-        if wallet['balance'] < amount:
-            return jsonify({"message": "Insufficient wallet balance."})
-
-        mono = MonoReservedAccount()
-        try:
-            result = mono.payout(amount, bank_code, account_number, f"Oyinda withdrawal for {user_id}")
-            if result.get('status') == 'success':
-                new_balance = wallet['balance'] - amount
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                            (new_balance, user_id))
-                conn.commit()
-                conn.close()
-                append_event(user_id, user_id, 'WalletDebited',
-                             {"amount": amount, "bank_code": bank_code, "account_number": account_number,
-                              "type": "withdrawal"})
-                save_conversation(user_id, 'user', text)
+            if amount:
                 return jsonify({
-                    "message": f"🏦 Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. New balance: ₦{new_balance:,.2f}",
-                    "tone": "income"
+                    "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                    "tone": "neutral"
                 })
             else:
-                return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
-        except Exception as e:
-            return jsonify({"message": f"Withdrawal error: {str(e)}"})
-
-
-
-
-
-    if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
-        append_event(user_id, user_id, 'PowerStatusChanged', {
-            "status": "off",
-            "timestamp": datetime.utcnow().isoformat(),
-            "description": "Electricity went off"
-        })
-        return jsonify({
-            "message": "I don record am. Light don go. I dey track how many hours you get this month.",
-            "tone": "neutral"
-        })
-
-
-    send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
-    if send_match:
-        amount = float(send_match.group(1))
-        recipient_phone = send_match.group(2)
-        # Look up recipient by phone (they might not have a wallet yet)
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
-        recip_row = cur.fetchone()
-        if not recip_row:
-            conn.close()
-            return jsonify({"message": "User with phone number not found. Ask them to join Oyinda first."})
-        recip_id = recip_row[0]
-        # Check if recipient has a wallet
-        cur.execute("SELECT id, balance FROM user_wallets WHERE user_id = %s", (recip_id,))
-        recip_wallet = cur.fetchone()
-        if not recip_wallet:
-            conn.close()
-            return jsonify(
-                {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity first."})
-        # Perform internal transfer: debit sender, credit recipient (both ledger updates)
-        sender_wallet = ensure_wallet(user_id)
-        if sender_wallet['balance'] < amount:
-            conn.close()
-            return jsonify({"message": "Insufficient balance."})
-        # Debit sender
-        new_sender_balance = sender_wallet['balance'] - amount
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_sender_balance, user_id))
-        # Credit recipient
-        recip_new_balance = recip_wallet[1] + amount
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (recip_new_balance, recip_id))
-        conn.commit()
-        conn.close()
-        # Log events
-        append_event(user_id, user_id, 'WalletDebited',
-                     {"amount": amount, "recipient": recip_id, "description": f"Sent to {recipient_phone}"})
-        append_event(recip_id, recip_id, 'WalletCredited',
-                     {"amount": amount, "sender": user_id, "description": f"Received from {user_id}"})
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
-            "tone": "income"
-        })
-
-    withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
-    if withdraw_match:
-        amount = float(withdraw_match.group(1))
-        bank_code = withdraw_match.group(2)
-        account_number = withdraw_match.group(3)
-        wallet = ensure_wallet(user_id)
-        if wallet['balance'] < amount:
-            return jsonify({"message": "Insufficient wallet balance."})
-        mono = MonoReservedAccount()
-        try:
-            result = mono.payout(amount, bank_code, account_number, "Oyinda withdrawal")
-            if result.get('status') == 'success':
-                # Debit wallet
-                conn = get_conn()
-                cur = conn.cursor()
-                new_balance = wallet['balance'] - amount
-                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                            (new_balance, user_id))
-                conn.commit()
-                conn.close()
-                append_event(user_id, user_id, 'WalletDebited',
-                             {"amount": amount, "bank_code": bank_code, "account_number": account_number,
-                              "type": "withdrawal"})
-                save_conversation(user_id, 'user', text)
                 return jsonify({
-                    "message": f"Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. Your new balance: ₦{new_balance:,.2f}",
-                    "tone": "income"
+                    "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
+                    "tone": "neutral"
                 })
-            else:
-                return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
-        except Exception as e:
-            return jsonify({"message": f"Error: {str(e)}"})
 
-
-    # Manual loan repayment
-    manual_repay_match = re.match(r'repay\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan)?', text, re.IGNORECASE)
-    if manual_repay_match:
-        amount = float(manual_repay_match.group(1))
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id, remaining_balance FROM inventory_loans WHERE user_id = %s AND status = 'active'", (user_id,))
-        loan = cur.fetchone()
-        if not loan:
-            conn.close()
-            return jsonify({"message": "No active loan found."})
-        loan_id, remaining = loan[0], loan[1]
-        if amount > remaining:
-            conn.close()
-            return jsonify({"message": f"Amount exceeds remaining balance of ₦{remaining:,.2f}."})
-        # Check wallet balance
-        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
-        wallet_row = cur.fetchone()
-        if not wallet_row or wallet_row[0] < amount:
-            conn.close()
-            return jsonify({"message": "Insufficient wallet balance."})
-
-        # Deduct wallet
-        new_wallet_balance = wallet_row[0] - amount
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_wallet_balance, user_id))
-        # Update loan
-        new_remaining = remaining - amount
-        cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s", (new_remaining, loan_id))
-        cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'manual')",
-                    (loan_id, amount))
-        if new_remaining <= 0:
-            cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
-        conn.commit()
-        conn.close()
-        append_event(user_id, user_id, 'LoanRepaid', {"loan_id": str(loan_id), "amount": amount, "method": "manual"})
-        save_conversation(user_id, 'user', text)
-        return jsonify({
-            "message": f"✅ Repaid ₦{amount:,.2f}. Remaining: ₦{max(0, new_remaining):,.2f}.",
-            "tone": "income"
-        })
-
-
-    if any(phrase in text_lower for phrase in ['loan status', 'my loan', 'check my loan']):
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT il.product, il.principal, il.flat_fee, il.total_repayable, il.daily_amount,
-                   il.remaining_balance, il.start_date, il.end_date, il.status, u.name
-            FROM inventory_loans il
-            JOIN users u ON il.supplier_id = u.id
-            WHERE il.user_id = %s AND il.status = 'active'
-        """, (user_id,))
-        loan = cur.fetchone()
-        conn.close()
-        if loan:
-            return jsonify({
-                "message": f"📋 **Active Loan**\n"
-                           f"• Product: {loan[0]}\n"
-                           f"• Amount: ₦{loan[1]:,.2f}\n"
-                           f"• Fee (5%): ₦{loan[2]:,.2f}\n"
-                           f"• Total repayable: ₦{loan[3]:,.2f}\n"
-                           f"• Daily repayment: ₦{loan[4]:,.2f}\n"
-                           f"• Remaining: ₦{loan[5]:,.2f}\n"
-                           f"• Period: {loan[6]} to {loan[7]}\n"
-                           f"• Supplier: {loan[9]}"
-            })
-        else:
-            return jsonify({"message": "You have no active inventory loan."})
-
-
-
-    # ---- MINIMUM SCORE FOR A TARGET LOAN AMOUNT ----
-    score_for_amount_match = re.search(
-        r'(?:how\s+(?:many|much)\s+credit\s+score\s+(?:do|will)\s+I\s+(?:need|have)\s+to\s+borrow\s+)?(\d[\d,]*\.?\d*)',
-        text, re.IGNORECASE
-    )
-    if score_for_amount_match and any(phrase in text_lower for phrase in [
-        'how many credit score', 'how much credit score', 'credit score to borrow',
-        'score to borrow', 'score do i need', 'score will i have'
-    ]):
-        target_amount = float(score_for_amount_match.group(1).replace(',', ''))
-        # Find the minimum score tier that allows at least this amount
-        tiers = [
-            (50, 10_000),
-            (101, 20_000),
-            (151, 49_000),
-            (201, 100_000),
-            (351, 200_000),
-            (501, 500_000),
-            (701, 1_000_000),
-            (801, 1_100_000),
+        # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
+        search_triggers = [
+            'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
+            'who does', 'who dey do', 'i need a', 'i dey find',
+            'who supplies', 'where can i get', 'who get', 'who dey supply',
+            'which person dey', 'who fit', 'who sabi', 'who dey run'
         ]
-        min_score_needed = None
-        for score_threshold, max_loan in tiers:
-            if target_amount <= max_loan:
-                min_score_needed = score_threshold
-                break
-        if min_score_needed:
+        if any(phrase in text.lower() for phrase in search_triggers):
+            # Find the LONGEST matching trigger
+            matched_trigger = ''
+            for phrase in search_triggers:
+                if phrase in text.lower() and len(phrase) > len(matched_trigger):
+                    matched_trigger = phrase
+
+            # Remove the trigger phrase from the text (case‑insensitive)
+            query = re.sub(re.escape(matched_trigger), '', text, flags=re.IGNORECASE).strip()
+
+            # Remove trailing location words
+            query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query, flags=re.IGNORECASE).strip()
+
+            if len(query) < 2:
+                query = 'crypto'
+
+            facts = get_user_facts(user_id)
+            my_city = facts.get('city', '')
+
             return jsonify({
-                "message": (
-                    f"To borrow ₦{target_amount:,.0f}, you need a credit score of at least {min_score_needed}. "
-                    "Keep logging your daily expenses and income to grow your score!"
-                ),
+                "action": "show_business_search",
+                "search_query": query,
+                "city": my_city,
+                "message": f"Searching for '{query}'…",
                 "tone": "neutral"
             })
-        else:
+
+        # --- Transfer confirmation (unchanged) ---
+        if text.strip().lower() in ['yes', 'confirm', 'confirm transfer', 'ok', 'approve']:
+            pending = pending_transfers.get(user_id)
+            if pending:
+                append_event(user_id, user_id, 'TransferConfirmed', pending['payload'])
+                success, ref = mock_execute_transfer(pending['payload'])
+                if success:
+                    append_event(user_id, user_id, 'TransferExecuted', {**pending['payload'], "reference": ref})
+                    del pending_transfers[user_id]
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"Transfer of {pending['payload']['amount']} {pending['payload']['currency']} completed.",
+                        "tone": "income"})
+                else:
+                    append_event(user_id, user_id, 'TransferFailed', {**pending['payload'], "error": ref})
+                    del pending_transfers[user_id]
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({"error": f"Transfer failed: {ref}"}), 500
+
+        # --- P2P confirmation (unchanged) ---
+        if text.strip().lower() in ['confirm', 'yes', 'ok'] and user_id in pending_p2p_trades:
+            trade = pending_p2p_trades.pop(user_id)
+            p2p_account_id = trade['account_id']
+            try:
+                from connectors.bybit_p2p import BybitP2PConnector
+                accounts = get_user_connected_accounts(user_id)
+                p2p_account = next((a for a in accounts if a['id'] == p2p_account_id), None)
+                if not p2p_account:
+                    return jsonify({"error": "P2P account not found."}), 400
+                api_key = decrypt(p2p_account['api_key_encrypted'])
+                api_secret = decrypt(p2p_account['api_secret_encrypted'])
+                connector = BybitP2PConnector(api_key, api_secret)
+
+                if trade['action'] == 'sell':
+                    result = connector.place_sell_order(trade['amount'], trade['currency'], 'NGN', trade['ad_id'])
+                    append_event(user_id, p2p_account_id, 'P2PSellExecuted', {
+                        "amount": trade['amount'],
+                        "currency": trade['currency'],
+                        "ngn_equivalent": trade['ngn_amount'],
+                        "rate": trade['rate'],
+                        "order_id": result.get('result', {}).get('orderId')
+                    })
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"Sold {trade['amount']} {trade['currency']} for ₦{trade['ngn_amount']:,.2f}. P2P order created.",
+                        "tone": "income"})
+                elif trade['action'] == 'buy':
+                    result = connector.place_buy_order(trade['crypto_amount'], trade['currency'], 'NGN', trade['ad_id'])
+                    append_event(user_id, p2p_account_id, 'P2PBuyExecuted', {
+                        "amount_ngn": trade['amount'],
+                        "crypto_amount": trade['crypto_amount'],
+                        "currency": trade['currency'],
+                        "rate": trade['rate'],
+                        "order_id": result.get('result', {}).get('orderId')
+                    })
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"Bought {trade['crypto_amount']:.4f} {trade['currency']} for ₦{trade['amount']:,.2f}. P2P order created.",
+                        "tone": "income"})
+            except Exception as e:
+                return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
+
+
+        # ---------- IDENTITY VERIFICATION ----------
+        if any(phrase in text.lower() for phrase in ['verify my identity', 'verify my account', 'activate wallet', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
+            pending_transaction[user_id] = {
+                "state": "ask_id_type",
+                "data": {},
+                "category": None
+            }
             return jsonify({
-                "message": f"₦{target_amount:,.0f} is above our current maximum loan amount. Please try a smaller amount.",
-                "tone": "warning"
+                "message": "I can help you verify your identity with your BVN or NIN. Which one would you like to use? (Type 'BVN' or 'NIN')",
+                "tone": "neutral"
             })
-    # ---- LOAN AMOUNT FOR A GIVEN SCORE ----
-    hypothetical_score_match = re.search(
-        r'(?:if\s+(?:I\s+have|my)\s+credit\s+score\s+(?:is|of)\s+)?(\d{2,3})',
-        text, re.IGNORECASE
-    )
-    if hypothetical_score_match and any(phrase in text_lower for phrase in [
-        'if i have', 'if my credit score', 'credit score of', 'how much will i be able to borrow',
-        'how much can i borrow', 'how much will i get'
-    ]):
-        hypothetical_score = int(hypothetical_score_match.group(1))
-        if 50 <= hypothetical_score <= 850:
-            max_loan = get_max_loan_amount(hypothetical_score)
+
+
+        # ---------- Rule‑based swap detector (fast path) ----------
+        swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
+        if swap_match:
+            amount = float(swap_match.group(1))
+            token_in = swap_match.group(2).upper()
+            token_out = swap_match.group(3).upper()
+            wallet_name = swap_match.group(4).strip().lower() or 'metamask'
+
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+            if not wallet_account:
+                return jsonify({"error": "No connected wallet found."}), 400
+
+            swap_payload = {
+                "token_in": token_in,
+                "token_out": token_out,
+                "amount": amount,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "swap_payload": swap_payload
+            })
+
+        # ========== RULE-BASED FALLBACK ==========
+        text_lower = text.lower().strip()
+
+        # 1. Questions starting with how/what/…
+        if text_lower.startswith(('how much', 'what is my', 'whats my', 'what are my', 'how many', 'what is the')):
+            return handle_query(text, user_id)
+
+        # 2. Exact greetings
+        if text_lower in ['hello', 'hi', 'hey', 'good morning', 'good evening', 'help', 'what can you do']:
+            name = get_user_name(user_id)
+            return jsonify({"answer": f"Hi {name}! I'm Oyinda, your personal CFO. How can I help you today?", "tone": "neutral"})
+
+        # 2b. Link bank command
+        if text_lower in ['link bank', 'link my bank', 'connect bank', 'add bank account']:
+            return jsonify({"open_mono": True, "message": "Opening bank connection…"})
+
+        # Set home currency
+        if text.lower().startswith('set my currency to ') or text.lower().startswith('change my currency to '):
+            parts = text.split()
+            new_currency = parts[-1].upper()
+            if len(new_currency) != 3:
+                return jsonify({"message": "Please use a 3‑letter currency code, like USD, GHS, NGN."})
+            store_user_fact(user_id, 'home_currency', new_currency)
+            return jsonify({"message": f"Your home currency is now {new_currency}. I'll convert future transactions to {new_currency}."})
+
+
+
+        # 3. Balance / budget / net worth / credit score / debt keywords
+        if any(w in text_lower for w in [
+            'balance', 'how much is in', 'how much in', 'budget',
+            'net worth', 'credit score', 'health score', 'debt', 'owe', 'liability',
+            'how much am i worth', 'what am i worth', 'how much i worth',
+            'my net worth', 'calculate my net worth'
+        ]):
+            return handle_query(text, user_id)
+
+        if 'open a bank account' in text_lower or 'open bank account' in text_lower:
+            return jsonify({
+                "message": "We are partnering with trusted banks to let you open an account right here in Oyinda. You won't need to visit a bank or fill paper forms. I'll let you know as soon as this is ready!",
+                "tone": "neutral"
+            })
+
+        # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
+        swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
+        if swap_match:
+            amount = float(swap_match.group(1))
+            token_in = swap_match.group(2).upper()
+            token_out = swap_match.group(3).upper()
+            wallet_name = swap_match.group(4).strip().lower() or 'metamask'
+
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+            if not wallet_account:
+                return jsonify({"error": "No connected wallet found."}), 400
+
+            swap_payload = {
+                "token_in": token_in,
+                "token_out": token_out,
+                "amount": amount,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "swap_payload": swap_payload
+            })
+
+        # 5. Exchange trade
+        trade_match = re.match(
+            r'(?:i\s+(?:wan|want|want\s+to)\s+)?(buy|sell)\s+(\d+\.?\d*)\s*(\w+)\s+(?:on|using|with|from|for)?\s*(\w+)',
+            text, re.IGNORECASE)
+        if trade_match:
+            action = trade_match.group(1).lower()
+            amount = float(trade_match.group(2))
+            symbol = trade_match.group(3).upper()
+            exchange_name = trade_match.group(4).lower()
+
+            common_assets = {'BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'LINK', 'DOT', 'LTC', 'BCH', 'ATOM', 'UNI',
+                             'ETC', 'FIL', 'APT', 'ARB', 'OP', 'NEAR', 'MATIC'}
+            if symbol in common_assets:
+                symbol += 'USDT'
+
+            accounts = get_user_connected_accounts(user_id)
+            ex_account = None
+            for acc in accounts:
+                if acc['type'] == 'exchange' and exchange_name in acc['label'].lower():
+                    ex_account = acc
+                    break
+            if not ex_account:
+                return jsonify({"error": f"No exchange matching '{exchange_name}' found. Link it first."}), 400
+
+            try:
+                from connectors.exchange_factory import get_exchange_connector as factory_connector
+                connector = factory_connector(ex_account)
+                order = connector.place_order(symbol, action, amount)
+                payload = {"symbol": symbol, "side": action, "quantity": amount, "order_id": order.get('orderId')}
+                append_event(user_id, ex_account['id'], 'ExchangeOrderExecuted', payload)
+                save_conversation(user_id, 'user', text)
+                return jsonify({"message": f"{action.capitalize()} {amount} {symbol} on {ex_account['label']} submitted.",
+                                "tone": "income"})
+            except Exception as e:
+                err_msg = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        err_data = e.response.json()
+                        err_msg = err_data.get('msg', err_msg)
+                    except:
+                        pass
+                return jsonify({"error": f"Trade failed: {err_msg}"}), 500
+
+        # 6. Send token
+        send_match = re.match(r'send\s+(\d+\.?\d*)\s*(\w+)\s+to\s+(0x[a-fA-F0-9]+)\s+(?:from|using|on)?\s*(.*)', text, re.IGNORECASE)
+        if send_match:
+            amount = float(send_match.group(1))
+            token = send_match.group(2).upper()
+            to_address = send_match.group(3)
+            wallet_name = send_match.group(4).strip().lower() or 'bsc wallet'
+
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+            if not wallet_account:
+                return jsonify({"error": "No connected wallet found."}), 400
+
+            send_payload = {
+                "token": token,
+                "amount": amount,
+                "to_address": to_address,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'TokenTransferRequested', send_payload)
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"Sending {amount} {token} to {to_address} from {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "send_payload": send_payload
+            })
+
+        # 7. SELL USDT via MONICA
+        sell_monica_match = re.match(r'sell\s+(\d+\.?\d*)\s*(USDT|USDC)\s+(?:for|to)\s*(?:ngn|naira)(?:\s*via\s*monica)?', text, re.IGNORECASE)
+        if not sell_monica_match:
+            sell_monica_match = re.match(r'convert\s+(\d+\.?\d*)\s*(USDT|USDC)\s+to\s+(?:ngn|naira)', text, re.IGNORECASE)
+        if sell_monica_match:
+            amount = float(sell_monica_match.group(1))
+            currency = sell_monica_match.group(2).upper()
+            accounts = get_user_connected_accounts(user_id)
+            monica_account = next((a for a in accounts if a.get('provider', '').lower() == 'monica'), None)
+            if not monica_account:
+                return jsonify({"error": "No Monica account linked. Please link it under P2P."}), 400
+            try:
+                from connectors.monica import MonicaConnector
+                api_key = decrypt(monica_account['api_key_encrypted'])
+                connector = MonicaConnector(api_key)
+                deposit_address = connector.get_deposit_address("TRC20")
+                if not deposit_address:
+                    return jsonify({"error": "Could not get Monica deposit address."}), 500
+            except Exception as e:
+                return jsonify({"error": f"Monica API error: {str(e)}"}), 500
+            wallet_accounts = [a for a in accounts if a['type'] == 'wallet']
+            if not wallet_accounts:
+                return jsonify({"error": "No connected crypto wallet."}), 400
+            wallet_account = wallet_accounts[0]
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "action": "monica_sell",
+                "message": f"Send {amount} {currency} to Monica's deposit address. Confirm in your wallet.",
+                "data": {
+                    "amount": amount,
+                    "token": currency,
+                    "to_address": deposit_address,
+                    "network": wallet_account['network'],
+                    "wallet_address": wallet_account['wallet_address'],
+                    "monica_account_id": monica_account['id']
+                },
+                "tone": "neutral"
+            })
+
+        # ---------- EMERGENCY DATA SETUP ----------
+        if any(phrase in text_lower for phrase in
+               ['emergency data', 'offline data', 'send me data after', 'send data after']):
+            # Check phone number
+            facts = get_user_facts(user_id)
+            phone = facts.get('phone')
+            if not phone:
+                return jsonify({
+                    "message": "I need your phone number first so I know where to send the data. "
+                               "Please tell me your phone number, like 'my phone number is 080xxxxxxxx'.",
+                    "tone": "neutral"
+                })
+
+            # Start the emergency‑data state machine
+            pending_transaction[user_id] = {
+                "state": "collecting_emergency_hours",
+                "data": {},
+                "category": None
+            }
+            return jsonify({
+                "message": "How many hours offline before I send you emergency data? (e.g., 3, 6, 12)\n\n"
+                           "I will send you 33 MB of **MTN** data automatically when you've been offline "
+                           "longer than that. Other networks coming soon!",
+                "tone": "neutral"
+            })
+
+        # ---------- BUSINESS REGISTRATION ----------
+        biz_reg_match = re.match(
+            r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)\s*(?:at|in|for)\s+([^,]+)'
+            r'(?:,?\s*(?:call\s*(?:me|on))?\s*(\d{11}))?',
+            text, re.IGNORECASE
+        )
+        if biz_reg_match:
+            product = biz_reg_match.group(1).strip()
+            market = biz_reg_match.group(2).strip()
+            phone = biz_reg_match.group(3) or ''
+
+            # Get user info
+            facts = get_user_facts(user_id)
+            city = facts.get('city', 'your city')
+            name = get_user_name(user_id)
+
+            # Determine category (goods vs services)
+            has_unit = any(re.search(r'\b' + unit + r'\b', product.lower()) for unit in GOODS_UNITS)
+            category = 'goods' if has_unit else 'services'
+
+            # Insert into business_listings table (delete old listing first)
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM business_listings WHERE user_id = %s", (user_id,))
+            cur.execute(
+                """INSERT INTO business_listings (user_id, name, product, category, market_name, city, phone)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, name, product, category, market, city, phone)
+            )
+            conn.commit()
+            conn.close()
+
+            phone_msg = f" Call me {phone}" if phone else ""
+            return jsonify({
+                "message": f"Your business is now listed! When someone searches for '{product}', they'll see: "
+                           f"{name}, {market}, {city}{phone_msg}. "
+                           f"Tap the 📞 button and they'll call you directly.",
+                "tone": "income"
+            })
+
+
+        # ---------- LOAN REPAYMENT ----------
+        repay_match = re.match(r'(?:i\s+)?(?:repaid|paid\s+back|cleared)\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan|loan)?', text, re.IGNORECASE)
+        if repay_match:
+            amount = float(repay_match.group(1))
+            append_event(user_id, user_id, 'LoanRepaid', {
+                "amount": amount,
+                "currency": "NGN",
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": f"Repaid {amount} NGN of loan"
+            })
+            # Refresh credit score
+            conn = get_conn()
+            update_credit_score(conn, user_id)
+            conn.close()
+            name = get_user_name(user_id)
+            return jsonify({"message": f"Noted, {name}. You've repaid {amount} NGN of your loan. Your credit score has been updated.", "tone": "income"})
+
+        # 8. Expense logging
+        expense_patterns = [
+            r'(?:i\s+)?spent\s+(\d+\.?\d*)\s*(?:on\s+)?(.+)',
+            r'(?:i\s+)?bought\s+(\d+\.?\d*)\s*(?:of\s+)?(.+)',
+            r'(?:i\s+)?paid\s+(\d+\.?\d*)\s+(?:for\s+)?(.+)',
+            r'i\s+drop\s+(\d+\.?\d*)\s+(?:for\s+|on\s+)?(.+)'
+        ]
+        expense_match = None
+        for pat in expense_patterns:
+            expense_match = re.match(pat, text, re.IGNORECASE)
+            if expense_match:
+                break
+
+        if expense_match:
+            amount = float(expense_match.group(1))
+            description = expense_match.group(2).strip().lower()
+            cat_map = {
+                'food': 'food', 'rice': 'food', 'beans': 'food', 'spaghetti': 'food', 'maggi': 'food',
+                'transport': 'transport', 'uber': 'transport', 'taxi': 'transport', 'okada': 'transport', 'fuel': 'transport',
+                'data': 'utilities', 'internet': 'utilities', 'net': 'utilities', 'electricity': 'utilities', 'bill': 'utilities',
+                'rent': 'housing', 'house': 'housing', 'accommodation': 'housing',
+                'cloth': 'clothing', 'shoe': 'clothing',
+                'doctor': 'health', 'medicine': 'health', 'hospital': 'health',
+                'school': 'education', 'book': 'education', 'course': 'education',
+                'movie': 'entertainment', 'game': 'entertainment', 'subscription': 'entertainment'
+            }
+            category = 'other'
+            for word, cat in cat_map.items():
+                if word in description:
+                    category = cat
+                    break
+            payload = {
+                "amount": amount,
+                "currency": "NGN",
+                "category": category,
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": description
+            }
+            event = append_event(user_id, user_id, 'ExpenseLogged', payload)
+            name = get_user_name(user_id)
+            response_text = f"Got it, {name}. You spent {amount} NGN on {category}."
+            budget = calculate_daily_budget(user_id)
+            if budget:
+                total_budget = sum(budget.values())
+                daily_limit = total_budget / len(budget) if len(budget) > 0 else 0
+                tone = "warning" if amount > daily_limit else "good"
+            else:
+                tone = "neutral"
+            return jsonify({"message": response_text, "tone": tone, "event_id": event['event_id']})
+
+        # 9. Income logging
+        income_patterns = [
+            r'(?:i\s+)?made\s+(\d+\.?\d*)\s*(?:profit|income|from|of)?\s*(.*)',
+            r'(?:i\s+)?earned\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
+            r'(?:i\s+)?received\s+(\d+\.?\d*)\s*(?:from\s+)?(.+)',
+            r'i\s+get\s+(\d+\.?\d*)\s+(?:from\s+)?(.+)'
+        ]
+        income_match = None
+        for pat in income_patterns:
+            income_match = re.match(pat, text, re.IGNORECASE)
+            if income_match:
+                break
+
+        if income_match:
+            amount = float(income_match.group(1))
+            description = income_match.group(2).strip().lower() or 'income'
+            payload = {
+                "amount": amount,
+                "currency": "NGN",
+                "category": "income",
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": description
+            }
+            event = append_event(user_id, user_id, 'IncomeReceived', payload)
+            name = get_user_name(user_id)
+            response_text = f"Great, {name}! You received {amount} NGN. That's a step forward."
+            save_conversation(user_id, 'user', text)
+            return jsonify({"message": response_text, "tone": "income", "event_id": event['event_id']})
+
+        # ---------- MULTI-EXPENSE DETECTION ----------
+        # Detect if the user listed multiple amounts (e.g., "data 2000, chinchin 200, milk 1000")
+        # This runs BEFORE the single-expense patterns, so it doesn't get hijacked.
+        # Detect amounts with optional currency prefixes (₦, $, €, £, R, etc.) and common 3‑letter codes (NGN, USD, GHS, KES, ZAR, etc.)
+        amounts = re.findall(
+            r'(?:'
+            r'(?:[₦$€£¥₹]|R\$?|RM|Rp|₱|K|Sh|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ|BZD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD|ANG|AWG|BBD|BSD|BMD|KYD)'
+            r'\s?'
+            r')?'
+            r'(\d[\d,]*\.?\d*)',
+            text
+        )
+        if len(amounts) >= 2:
+            # Convert all strings to floats
+            parsed_amounts = []
+            for a in amounts:
+                try:
+                    parsed_amounts.append(float(a.replace(',', '')))
+                except ValueError:
+                    continue
+            if len(parsed_amounts) >= 2:
+                total = sum(parsed_amounts)
+                # Ask user to confirm the bulk log
+                pending_transaction[user_id] = {
+                    "state": "confirming_bulk",
+                    "data": {
+                        "amounts": parsed_amounts,
+                        "total": total,
+                        "description": text,
+                        "currency": "NGN",
+                        "type": "expense",           # assume expense; user can correct later
+                        "category": "other"          # generic category
+                    },
+                    "category": None
+                }
+                return jsonify({
+                    "message": f"I see you mentioned {', '.join(f'₦{a:,.2f}' for a in parsed_amounts)}. That's ₦{total:,.2f} in total. Did you spend all of these? Reply 'yes' to log them all, or tell me what they are one by one.",
+                    "tone": "neutral"
+                })
+
+        # 10. Bank transfer
+        transfer_match = re.match(r'(?:send|transfer)\s+(\d+\.?\d*)\s+to\s+(?:account\s+)?(\d+)\s*(?:,?\s*(\w+\s*bank))?', text, re.IGNORECASE)
+        if transfer_match:
+            amount = float(transfer_match.group(1))
+            dest_account = transfer_match.group(2)
+            bank_name = transfer_match.group(3).strip() if transfer_match.group(3) else 'bank'
+            accounts = get_user_connected_accounts(user_id)
+            if not accounts:
+                return jsonify({"error": "No connected accounts."}), 400
+            source_id = accounts[0]['id']
+            dest_id = accounts[0]['id']
+            payload = {
+                "amount": amount,
+                "currency": "NGN",
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "description": f"Transfer to {dest_account} ({bank_name})",
+                "source_account_id": source_id,
+                "destination_account_id": dest_id
+            }
+            event = append_event(user_id, user_id, 'TransferRequested', payload)
+            pending_transfers[user_id] = {"event_id": event['event_id'], "payload": payload}
+            src_label = next((a['label'] for a in accounts if a['id'] == source_id), "your account")
+            dst_label = f"{bank_name} {dest_account}"
+            msg = f"Okay, I'll send {amount} NGN from {src_label} to {dst_label}. Please confirm this transfer."
+            save_conversation(user_id, 'user', text)
+            return jsonify({"message": msg, "tone": "neutral", "event_id": event['event_id']})
+
+        # ---------- DETECT PHONE NUMBER (avoid logging as amount) ----------
+        # Matches: "my phone number is 080xxx", "phone number: 080xxx", etc.
+        phone_match = re.search(r'(?:phone|number)\s*(?:number|is|be|:)?\s*(\d{11})', text, re.IGNORECASE)
+        if phone_match:
+            phone = phone_match.group(1)
+            if phone.startswith('0') and len(phone) == 11:
+                store_user_fact(user_id, 'phone', phone)
+                return jsonify({
+                    "message": f"I don save your phone number: {phone}. I go send your daily data reward to this number when you tell me your expenses.",
+                    "tone": "neutral"
+                })
+
+
+        # Set phone number
+        if text.lower().startswith('set my phone number to ') or text.lower().startswith('change my phone number to '):
+            parts = text.split()
+            phone = parts[-1]
+            # Basic validation
+            if not phone.startswith('0') or len(phone) != 11:
+                return jsonify({"message": "Please enter a valid 11‑digit Nigerian phone number starting with 0."})
+            store_user_fact(user_id, 'phone', phone)
+            return jsonify({"message": f"Your phone number has been saved as {phone}. I'll send your daily data reward to this number."})
+
+        # ---------- POWER AVAILABILITY LOG ----------
+        if any(phrase in text_lower for phrase in ['light don come', 'light come', 'power don come', 'nepa bring light']):
+            append_event(user_id, user_id, 'PowerStatusChanged', {
+                "status": "on",
+                "timestamp": datetime.utcnow().isoformat(),
+                "description": "Electricity came on"
+            })
+            return jsonify({
+                "message": "I don record am. Light come back. I dey track how many hours you get this month.",
+                "tone": "neutral"
+            })
+
+
+
+        # Internal transfer
+        send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
+        if send_match:
+            amount = float(send_match.group(1))
+            recipient_phone = send_match.group(2)
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+            recip_row = cur.fetchone()
+            if not recip_row:
+                conn.close()
+                return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
+            recip_id = recip_row[0]
+            cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+            recip_wallet_row = cur.fetchone()
+            if not recip_wallet_row:
+                conn.close()
+                return jsonify(
+                    {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity."})
+            sender_wallet = ensure_wallet(user_id)
+            if sender_wallet['balance'] < amount:
+                conn.close()
+                return jsonify({"message": "Insufficient wallet balance."})
+
+            new_sender_balance = sender_wallet['balance'] - amount
+            new_recip_balance = float(recip_wallet_row[0]) + amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_sender_balance, user_id))
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_recip_balance, recip_id))
+            conn.commit()
+            conn.close()
+
+            sender_phone = get_user_facts(user_id).get('phone', '')
+            append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
+            append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+                "tone": "income"
+            })
+
+        # External withdrawal
+        withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
+        if withdraw_match:
+            amount = float(withdraw_match.group(1))
+            bank_code = withdraw_match.group(2)
+            account_number = withdraw_match.group(3)
+            wallet = ensure_wallet(user_id)
+            if wallet['balance'] < amount:
+                return jsonify({"message": "Insufficient wallet balance."})
+
+            mono = MonoReservedAccount()
+            try:
+                result = mono.payout(amount, bank_code, account_number, f"Oyinda withdrawal for {user_id}")
+                if result.get('status') == 'success':
+                    new_balance = wallet['balance'] - amount
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                                (new_balance, user_id))
+                    conn.commit()
+                    conn.close()
+                    append_event(user_id, user_id, 'WalletDebited',
+                                 {"amount": amount, "bank_code": bank_code, "account_number": account_number,
+                                  "type": "withdrawal"})
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"🏦 Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. New balance: ₦{new_balance:,.2f}",
+                        "tone": "income"
+                    })
+                else:
+                    return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
+            except Exception as e:
+                return jsonify({"message": f"Withdrawal error: {str(e)}"})
+
+
+
+
+
+        if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
+            append_event(user_id, user_id, 'PowerStatusChanged', {
+                "status": "off",
+                "timestamp": datetime.utcnow().isoformat(),
+                "description": "Electricity went off"
+            })
+            return jsonify({
+                "message": "I don record am. Light don go. I dey track how many hours you get this month.",
+                "tone": "neutral"
+            })
+
+
+        send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
+        if send_match:
+            amount = float(send_match.group(1))
+            recipient_phone = send_match.group(2)
+            # Look up recipient by phone (they might not have a wallet yet)
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+            recip_row = cur.fetchone()
+            if not recip_row:
+                conn.close()
+                return jsonify({"message": "User with phone number not found. Ask them to join Oyinda first."})
+            recip_id = recip_row[0]
+            # Check if recipient has a wallet
+            cur.execute("SELECT id, balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+            recip_wallet = cur.fetchone()
+            if not recip_wallet:
+                conn.close()
+                return jsonify(
+                    {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity first."})
+            # Perform internal transfer: debit sender, credit recipient (both ledger updates)
+            sender_wallet = ensure_wallet(user_id)
+            if sender_wallet['balance'] < amount:
+                conn.close()
+                return jsonify({"message": "Insufficient balance."})
+            # Debit sender
+            new_sender_balance = sender_wallet['balance'] - amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_sender_balance, user_id))
+            # Credit recipient
+            recip_new_balance = recip_wallet[1] + amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (recip_new_balance, recip_id))
+            conn.commit()
+            conn.close()
+            # Log events
+            append_event(user_id, user_id, 'WalletDebited',
+                         {"amount": amount, "recipient": recip_id, "description": f"Sent to {recipient_phone}"})
+            append_event(recip_id, recip_id, 'WalletCredited',
+                         {"amount": amount, "sender": user_id, "description": f"Received from {user_id}"})
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+                "tone": "income"
+            })
+
+        withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
+        if withdraw_match:
+            amount = float(withdraw_match.group(1))
+            bank_code = withdraw_match.group(2)
+            account_number = withdraw_match.group(3)
+            wallet = ensure_wallet(user_id)
+            if wallet['balance'] < amount:
+                return jsonify({"message": "Insufficient wallet balance."})
+            mono = MonoReservedAccount()
+            try:
+                result = mono.payout(amount, bank_code, account_number, "Oyinda withdrawal")
+                if result.get('status') == 'success':
+                    # Debit wallet
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    new_balance = wallet['balance'] - amount
+                    cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                                (new_balance, user_id))
+                    conn.commit()
+                    conn.close()
+                    append_event(user_id, user_id, 'WalletDebited',
+                                 {"amount": amount, "bank_code": bank_code, "account_number": account_number,
+                                  "type": "withdrawal"})
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. Your new balance: ₦{new_balance:,.2f}",
+                        "tone": "income"
+                    })
+                else:
+                    return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
+            except Exception as e:
+                return jsonify({"message": f"Error: {str(e)}"})
+
+
+        # Manual loan repayment
+        manual_repay_match = re.match(r'repay\s+(\d+\.?\d*)\s*(?:of\s+my\s+loan)?', text, re.IGNORECASE)
+        if manual_repay_match:
+            amount = float(manual_repay_match.group(1))
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id, remaining_balance FROM inventory_loans WHERE user_id = %s AND status = 'active'", (user_id,))
+            loan = cur.fetchone()
+            if not loan:
+                conn.close()
+                return jsonify({"message": "No active loan found."})
+            loan_id, remaining = loan[0], loan[1]
+            if amount > remaining:
+                conn.close()
+                return jsonify({"message": f"Amount exceeds remaining balance of ₦{remaining:,.2f}."})
+            # Check wallet balance
+            cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+            wallet_row = cur.fetchone()
+            if not wallet_row or wallet_row[0] < amount:
+                conn.close()
+                return jsonify({"message": "Insufficient wallet balance."})
+
+            # Deduct wallet
+            new_wallet_balance = wallet_row[0] - amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_wallet_balance, user_id))
+            # Update loan
+            new_remaining = remaining - amount
+            cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s", (new_remaining, loan_id))
+            cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'manual')",
+                        (loan_id, amount))
+            if new_remaining <= 0:
+                cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
+            conn.commit()
+            conn.close()
+            append_event(user_id, user_id, 'LoanRepaid', {"loan_id": str(loan_id), "amount": amount, "method": "manual"})
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"✅ Repaid ₦{amount:,.2f}. Remaining: ₦{max(0, new_remaining):,.2f}.",
+                "tone": "income"
+            })
+
+
+        if any(phrase in text_lower for phrase in ['loan status', 'my loan', 'check my loan']):
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT il.product, il.principal, il.flat_fee, il.total_repayable, il.daily_amount,
+                       il.remaining_balance, il.start_date, il.end_date, il.status, u.name
+                FROM inventory_loans il
+                JOIN users u ON il.supplier_id = u.id
+                WHERE il.user_id = %s AND il.status = 'active'
+            """, (user_id,))
+            loan = cur.fetchone()
+            conn.close()
+            if loan:
+                return jsonify({
+                    "message": f"📋 **Active Loan**\n"
+                               f"• Product: {loan[0]}\n"
+                               f"• Amount: ₦{loan[1]:,.2f}\n"
+                               f"• Fee (5%): ₦{loan[2]:,.2f}\n"
+                               f"• Total repayable: ₦{loan[3]:,.2f}\n"
+                               f"• Daily repayment: ₦{loan[4]:,.2f}\n"
+                               f"• Remaining: ₦{loan[5]:,.2f}\n"
+                               f"• Period: {loan[6]} to {loan[7]}\n"
+                               f"• Supplier: {loan[9]}"
+                })
+            else:
+                return jsonify({"message": "You have no active inventory loan."})
+
+
+
+        # ---- MINIMUM SCORE FOR A TARGET LOAN AMOUNT ----
+        score_for_amount_match = re.search(
+            r'(?:how\s+(?:many|much)\s+credit\s+score\s+(?:do|will)\s+I\s+(?:need|have)\s+to\s+borrow\s+)?(\d[\d,]*\.?\d*)',
+            text, re.IGNORECASE
+        )
+        if score_for_amount_match and any(phrase in text_lower for phrase in [
+            'how many credit score', 'how much credit score', 'credit score to borrow',
+            'score to borrow', 'score do i need', 'score will i have'
+        ]):
+            target_amount = float(score_for_amount_match.group(1).replace(',', ''))
+            # Find the minimum score tier that allows at least this amount
+            tiers = [
+                (50, 10_000),
+                (101, 20_000),
+                (151, 49_000),
+                (201, 100_000),
+                (351, 200_000),
+                (501, 500_000),
+                (701, 1_000_000),
+                (801, 1_100_000),
+            ]
+            min_score_needed = None
+            for score_threshold, max_loan in tiers:
+                if target_amount <= max_loan:
+                    min_score_needed = score_threshold
+                    break
+            if min_score_needed:
+                return jsonify({
+                    "message": (
+                        f"To borrow ₦{target_amount:,.0f}, you need a credit score of at least {min_score_needed}. "
+                        "Keep logging your daily expenses and income to grow your score!"
+                    ),
+                    "tone": "neutral"
+                })
+            else:
+                return jsonify({
+                    "message": f"₦{target_amount:,.0f} is above our current maximum loan amount. Please try a smaller amount.",
+                    "tone": "warning"
+                })
+        # ---- LOAN AMOUNT FOR A GIVEN SCORE ----
+        hypothetical_score_match = re.search(
+            r'(?:if\s+(?:I\s+have|my)\s+credit\s+score\s+(?:is|of)\s+)?(\d{2,3})',
+            text, re.IGNORECASE
+        )
+        if hypothetical_score_match and any(phrase in text_lower for phrase in [
+            'if i have', 'if my credit score', 'credit score of', 'how much will i be able to borrow',
+            'how much can i borrow', 'how much will i get'
+        ]):
+            hypothetical_score = int(hypothetical_score_match.group(1))
+            if 50 <= hypothetical_score <= 850:
+                max_loan = get_max_loan_amount(hypothetical_score)
+                if max_loan == 0:
+                    return jsonify({
+                        "message": f"With a score of {hypothetical_score}, you won't qualify for a loan yet. Keep logging transactions to reach 50.",
+                        "tone": "neutral"
+                    })
+                else:
+                    return jsonify({
+                        "message": (
+                            f"If your credit score is {hypothetical_score}, you can borrow up to ₦{max_loan:,}.\n"
+                            "Your current score is {}/850. Keep logging expenses to reach that target!"
+                        ).format(get_credit_score(user_id)['score']),
+                        "tone": "neutral"
+                    })
+            else:
+                return jsonify({"message": "Credit score must be between 50 and 850.", "tone": "warning"})
+
+        # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
+        if re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
+            # Treat it exactly like "can I get a loan"
+            credit = get_credit_score(user_id)
+            max_loan = get_max_loan_amount(credit['score'])
             if max_loan == 0:
                 return jsonify({
-                    "message": f"With a score of {hypothetical_score}, you won't qualify for a loan yet. Keep logging transactions to reach 50.",
+                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
                     "tone": "neutral"
                 })
             else:
                 return jsonify({
                     "message": (
-                        f"If your credit score is {hypothetical_score}, you can borrow up to ₦{max_loan:,}.\n"
-                        "Your current score is {}/850. Keep logging expenses to reach that target!"
-                    ).format(get_credit_score(user_id)['score']),
+                        f"Your credit score is {credit['score']}/850. "
+                        f"You can borrow up to ₦{max_loan:,}.\n"
+                        "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
+                        "I'll pay the supplier directly and you repay in 14 days."
+                    ),
+                    "tone": "income"
+                })
+
+        # ---------- GENERIC LOAN INQUIRY (before fallback) ----------
+        if any(phrase in text_lower for phrase in [
+            'can i get a loan', 'how to get loan', 'i need loan',
+            'loan eligibility', 'how much loan can i get'
+        ]):
+            credit = get_credit_score(user_id)
+            max_loan = get_max_loan_amount(credit['score'])
+            if max_loan == 0:
+                return jsonify({
+                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
                     "tone": "neutral"
                 })
-        else:
-            return jsonify({"message": "Credit score must be between 50 and 850.", "tone": "warning"})
-
-    # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
-    if re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
-        # Treat it exactly like "can I get a loan"
-        credit = get_credit_score(user_id)
-        max_loan = get_max_loan_amount(credit['score'])
-        if max_loan == 0:
-            return jsonify({
-                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                "tone": "neutral"
-            })
-        else:
-            return jsonify({
-                "message": (
-                    f"Your credit score is {credit['score']}/850. "
-                    f"You can borrow up to ₦{max_loan:,}.\n"
-                    "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
-                    "I'll pay the supplier directly and you repay in 14 days."
-                ),
-                "tone": "income"
-            })
-
-    # ---------- GENERIC LOAN INQUIRY (before fallback) ----------
-    if any(phrase in text_lower for phrase in [
-        'can i get a loan', 'how to get loan', 'i need loan',
-        'loan eligibility', 'how much loan can i get'
-    ]):
-        credit = get_credit_score(user_id)
-        max_loan = get_max_loan_amount(credit['score'])
-        if max_loan == 0:
-            return jsonify({
-                "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                "tone": "neutral"
-            })
-        else:
-            return jsonify({
-                "message": (
-                    f"Your credit score is {credit['score']}/850. "
-                    f"You can borrow up to ₦{max_loan:,}.\n"
-                    "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
-                    "I'll pay the supplier directly and you repay in 14 days."
-                ),
-                "tone": "income"
-            })
+            else:
+                return jsonify({
+                    "message": (
+                        f"Your credit score is {credit['score']}/850. "
+                        f"You can borrow up to ₦{max_loan:,}.\n"
+                        "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
+                        "I'll pay the supplier directly and you repay in 14 days."
+                    ),
+                    "tone": "income"
+                })
 
 
-    # ---------- SMART FALLBACK with user‑aware currency conversion ----------
-    # Step 1: Look for a price‑indicating word followed by a number
-    price_match = re.search(
-        r'(?:for|at|cost|costs|sold\s*at|price\s*of)\s*'
-        r'(?:₦|naira|\$|usd|€|£|GH₵|R)?\s*'
-        r'(\d[\d,]*\.?\d*)\s*(k|K)?',
-        text, re.IGNORECASE
-    )
-    if price_match:
-        amount_str = price_match.group(1).replace(',', '')
-        amount_original = float(amount_str)
-        if price_match.group(2):  # 'k' or 'K' → multiply by 1000
-            amount_original *= 1000
-        currency_symbol = '₦'  # default if no symbol captured in this branch
-    else:
-        # Step 2: Try a currency‑prefixed number anywhere in the text
-        currency_match = re.search(
-            r'([₦$€£¥]|R\$?|RM|Rp|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ)\s*'
+        # ---------- SMART FALLBACK with user‑aware currency conversion ----------
+        # Step 1: Look for a price‑indicating word followed by a number
+        price_match = re.search(
+            r'(?:for|at|cost|costs|sold\s*at|price\s*of)\s*'
+            r'(?:₦|naira|\$|usd|€|£|GH₵|R)?\s*'
             r'(\d[\d,]*\.?\d*)\s*(k|K)?',
             text, re.IGNORECASE
         )
-        if currency_match:
-            amount_str = currency_match.group(2).replace(',', '')
+        if price_match:
+            amount_str = price_match.group(1).replace(',', '')
             amount_original = float(amount_str)
-            if currency_match.group(3):
+            if price_match.group(2):  # 'k' or 'K' → multiply by 1000
                 amount_original *= 1000
-            currency_symbol = currency_match.group(1) or '₦'
+            currency_symbol = '₦'  # default if no symbol captured in this branch
         else:
-            # Step 3: Fall back to the largest number, ignoring quantity‑like numbers
-            all_numbers = re.findall(r'(\d[\d,]*\.?\d*)\s*(k|K)?', text)
-            if all_numbers:
-                candidates = []
-                for num_str, suffix in all_numbers:
-                    val = float(num_str.replace(',', ''))
-                    if suffix:
-                        val *= 1000
-                    # If a goods unit follows, it's probably a quantity → ignore
-                    after_num = text[text.find(num_str) + len(num_str):].strip()
-                    is_quantity = any(re.match(r'\b' + unit + r'\b', after_num) for unit in GOODS_UNITS)
-                    if not is_quantity:
-                        candidates.append(val)
-                if candidates:
-                    amount_original = max(candidates)
-                else:
-                    # All numbers looked like quantities – use the largest one anyway
-                    all_values = [float(n.replace(',', '')) * (1000 if s else 1) for n, s in all_numbers]
-                    amount_original = max(all_values)
-                currency_symbol = '₦'  # assume Naira if no symbol detected
+            # Step 2: Try a currency‑prefixed number anywhere in the text
+            currency_match = re.search(
+                r'([₦$€£¥]|R\$?|RM|Rp|GH₵|DA|Dhs?|TSh|FCFA|Br|CFA|BIF|FRW|UGX|ZMW|AOA|MZN|MAD|LRD|SLL|GMD|CDF|STN|SCR|SZL|LSL|NAD|MWK|BWP|ETB|SDG|SSP|DJF|SOS|ERN|TND|LYD|EGP|MGA|MUR|SCR|KMF|XAF|XOF|XPF|CVE|GNF|SHP|FKP|BMD|KYD|ANG|AWG|BSD|BBD|BZD|BMD|BND|SGD|XCD|JMD|TTD|PAB|SVC|HTG|DOP|COP|VES|PEN|BOB|PYG|UYU|CLP|CRC|NIO|HNL|GTQ)\s*'
+                r'(\d[\d,]*\.?\d*)\s*(k|K)?',
+                text, re.IGNORECASE
+            )
+            if currency_match:
+                amount_str = currency_match.group(2).replace(',', '')
+                amount_original = float(amount_str)
+                if currency_match.group(3):
+                    amount_original *= 1000
+                currency_symbol = currency_match.group(1) or '₦'
             else:
-                # No number found at all – fall through to conversational LLM
-                reply = conversational_reply(user_id, text)
-                if reply:
-                    save_conversation(user_id, 'cfo', reply)
-                    return jsonify({"message": reply, "tone": "neutral"})
-                return jsonify({
-                    "message": "I didn't catch an amount. Could you say something like 'I spent 500 on food'?",
-                    "tone": "neutral"
-                })
+                # Step 3: Fall back to the largest number, ignoring quantity‑like numbers
+                all_numbers = re.findall(r'(\d[\d,]*\.?\d*)\s*(k|K)?', text)
+                if all_numbers:
+                    candidates = []
+                    for num_str, suffix in all_numbers:
+                        val = float(num_str.replace(',', ''))
+                        if suffix:
+                            val *= 1000
+                        # If a goods unit follows, it's probably a quantity → ignore
+                        after_num = text[text.find(num_str) + len(num_str):].strip()
+                        is_quantity = any(re.match(r'\b' + unit + r'\b', after_num) for unit in GOODS_UNITS)
+                        if not is_quantity:
+                            candidates.append(val)
+                    if candidates:
+                        amount_original = max(candidates)
+                    else:
+                        # All numbers looked like quantities – use the largest one anyway
+                        all_values = [float(n.replace(',', '')) * (1000 if s else 1) for n, s in all_numbers]
+                        amount_original = max(all_values)
+                    currency_symbol = '₦'  # assume Naira if no symbol detected
+                else:
+                    # No number found at all – fall through to conversational LLM
+                    reply = conversational_reply(user_id, text)
+                    if reply:
+                        save_conversation(user_id, 'cfo', reply)
+                        return jsonify({"message": reply, "tone": "neutral"})
+                    return jsonify({
+                        "message": "I didn't catch an amount. Could you say something like 'I spent 500 on food'?",
+                        "tone": "neutral"
+                    })
 
-    # ---------- CURRENCY DETECTION ----------
-    symbol_to_code = {
-        '$': 'USD', '₦': 'NGN', '€': 'EUR', '£': 'GBP',
-        '¥': 'JPY', 'R': 'ZAR', 'R$': 'ZAR', 'GH₵': 'GHS', 'DA': 'DZD',
-        'DH': 'MAD', 'Dhs': 'AED', 'TSh': 'TZS', 'FCFA': 'XAF', 'Br': 'ETB',
-        'CFA': 'XAF', 'RM': 'MYR', 'Rp': 'IDR', 'K': 'KES', 'Sh': 'KES',
-    }
-    currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
+        # ---------- CURRENCY DETECTION ----------
+        symbol_to_code = {
+            '$': 'USD', '₦': 'NGN', '€': 'EUR', '£': 'GBP',
+            '¥': 'JPY', 'R': 'ZAR', 'R$': 'ZAR', 'GH₵': 'GHS', 'DA': 'DZD',
+            'DH': 'MAD', 'Dhs': 'AED', 'TSh': 'TZS', 'FCFA': 'XAF', 'Br': 'ETB',
+            'CFA': 'XAF', 'RM': 'MYR', 'Rp': 'IDR', 'K': 'KES', 'Sh': 'KES',
+        }
+        currency_code = symbol_to_code.get(currency_symbol.strip(), 'NGN')
 
-    # ---------- USER‑AWARE CONVERSION ----------
+        # ---------- USER‑AWARE CONVERSION ----------
 
-    facts = get_user_facts(user_id)
-    home_currency = facts.get('home_currency', 'NGN') or 'NGN'
-    amount_converted = convert_currency(amount_original, currency_code,
-                                        home_currency) if currency_code != home_currency else amount_original
+        facts = get_user_facts(user_id)
+        home_currency = facts.get('home_currency', 'NGN') or 'NGN'
+        amount_converted = convert_currency(amount_original, currency_code,
+                                            home_currency) if currency_code != home_currency else amount_original
 
-    # ---------- CREATE PENDING TRANSACTION ----------
-    pending_transaction[user_id] = {
-        "state": "collecting_type",
-        "data": {
-            "amount": amount_converted,  # logged in home currency
-            "original_amount": amount_original,
-            "original_currency": currency_code,
-            "home_currency": home_currency,
-            "description": text,
-            "currency": home_currency,
+        # ---------- CREATE PENDING TRANSACTION ----------
+        pending_transaction[user_id] = {
+            "state": "collecting_type",
+            "data": {
+                "amount": amount_converted,  # logged in home currency
+                "original_amount": amount_original,
+                "original_currency": currency_code,
+                "home_currency": home_currency,
+                "description": text,
+                "currency": home_currency,
+                "category": None
+            },
             "category": None
-        },
-        "category": None
-    }
+        }
 
-    # ---------- GOODS vs SERVICES DETECTION ----------
-    has_unit = any(re.search(r'\b' + unit + r'\b', text.lower()) for unit in GOODS_UNITS)
-    pending_transaction[user_id]["data"]["transaction_type"] = "goods" if has_unit else "services"
+        # ---------- GOODS vs SERVICES DETECTION ----------
+        has_unit = any(re.search(r'\b' + unit + r'\b', text.lower()) for unit in GOODS_UNITS)
+        pending_transaction[user_id]["data"]["transaction_type"] = "goods" if has_unit else "services"
 
-    # ---------- TYPE DETECTION (unchanged keyword checks) ----------
-    if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
-        pending_transaction[user_id]["data"]["type"] = "expense"
-        pending_transaction[user_id]["state"] = "collecting_category"
-        return ask_next_question(user_id)
-    elif any(word in text.lower() for word in ['earned', 'made', 'profit', 'income', 'received']):
-        pending_transaction[user_id]["data"]["type"] = "income"
-        pending_transaction[user_id]["state"] = "collecting_category"
-        return ask_next_question(user_id)
-    elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
-        pending_transaction[user_id]["data"]["type"] = "investment"
-        pending_transaction[user_id]["data"]["category"] = "investment"
-        pending_transaction[user_id]["category"] = "investment"
-        return ask_for_location(user_id)
-    elif any(phrase in text.lower() for phrase in [
-        'investor gave', 'partner gave', 'capital to trade',
-        'manage this money', 'investment capital', 'to invest',
-        'for investment', 'fund me', 'funds to trade',
-        'money to run business', 'money for business',
-        'investment for', 'capital for', 'received investment',
-        'received capital', 'gave me capital', 'gave me to invest',
-        'money to invest', 'trading capital', 'business capital'
-    ]):
-        pending_transaction[user_id]["data"]["type"] = "managed_funds"
-        pending_transaction[user_id]["state"] = "confirming_funds"
-        return jsonify({
-            "message": f"I understand someone gave you {amount_converted:,.2f} {home_currency} as investment capital. Is that correct? (reply 'yes' or 'no')",
-            "tone": "neutral"
-        })
-    elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
-        pending_transaction[user_id]["data"]["type"] = "loan"
-        pending_transaction[user_id]["state"] = "collecting_category"
-        return ask_next_question(user_id)
-    else:
-        return jsonify({
-            "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
-            "tone": "neutral"
-        })
+        # ---------- TYPE DETECTION (unchanged keyword checks) ----------
+        if any(word in text.lower() for word in ['spent', 'bought', 'paid', 'expense', 'drop']):
+            pending_transaction[user_id]["data"]["type"] = "expense"
+            pending_transaction[user_id]["state"] = "collecting_category"
+            return ask_next_question(user_id)
+        elif any(word in text.lower() for word in ['earned', 'made', 'profit', 'income', 'received']):
+            pending_transaction[user_id]["data"]["type"] = "income"
+            pending_transaction[user_id]["state"] = "collecting_category"
+            return ask_next_question(user_id)
+        elif any(word in text.lower() for word in ['saved', 'invested', 'save', 'invest', 'savings']):
+            pending_transaction[user_id]["data"]["type"] = "investment"
+            pending_transaction[user_id]["data"]["category"] = "investment"
+            pending_transaction[user_id]["category"] = "investment"
+            return ask_for_location(user_id)
+        elif any(phrase in text.lower() for phrase in [
+            'investor gave', 'partner gave', 'capital to trade',
+            'manage this money', 'investment capital', 'to invest',
+            'for investment', 'fund me', 'funds to trade',
+            'money to run business', 'money for business',
+            'investment for', 'capital for', 'received investment',
+            'received capital', 'gave me capital', 'gave me to invest',
+            'money to invest', 'trading capital', 'business capital'
+        ]):
+            pending_transaction[user_id]["data"]["type"] = "managed_funds"
+            pending_transaction[user_id]["state"] = "confirming_funds"
+            return jsonify({
+                "message": f"I understand someone gave you {amount_converted:,.2f} {home_currency} as investment capital. Is that correct? (reply 'yes' or 'no')",
+                "tone": "neutral"
+            })
+        elif any(word in text.lower() for word in ['borrow', 'loan', 'lend']):
+            pending_transaction[user_id]["data"]["type"] = "loan"
+            pending_transaction[user_id]["state"] = "collecting_category"
+            return ask_next_question(user_id)
+        else:
+            return jsonify({
+                "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
+                "tone": "neutral"
+            })
 
-    # ---------- ENHANCED SMALL‑TALK FALLBACK (avoids LLM loop) ----------
-    small_talk = {
-        'what can you do': "I'm your CFO, Gbenga! I track expenses & income, build your credit score, give cheap inventory loans, connect you with suppliers, and even pay your taxes. Just tell me like 'spent 500 on food' or 'earned 2000 from sales'.",
-        'what can unida do': "You mean Oyinda! 😊 I track your money, build your credit score, give loans for stock, and connect you with suppliers. Tell me something you spent or earned today.",
-        'what is my next word': "Your next word can be anything – like 'spent 2000 on fuel' or 'earned 5000 from my shop'. Tell me what happened with your money today!",
-        'how much i do': "I need a little more detail. Did you spend or receive money? For example, 'spent 1500 on transport' or 'earned 3000 from sales'.",
-        'hello': None,  # already handled earlier
-        'hi': None,
-        'help': "I can help you track money, get loans, find suppliers, and more. Just tell me an expense like 'spent 500 on data', or ask 'what is my balance'.",
-    }
-    # Clean the text for matching
-    clean_text = text_lower.strip().rstrip('?.!')
-    if clean_text in small_talk:
-        reply = small_talk[clean_text]
+        # ---------- ENHANCED SMALL‑TALK FALLBACK (avoids LLM loop) ----------
+        small_talk = {
+            'what can you do': "I'm your CFO, Gbenga! I track expenses & income, build your credit score, give cheap inventory loans, connect you with suppliers, and even pay your taxes. Just tell me like 'spent 500 on food' or 'earned 2000 from sales'.",
+            'what can unida do': "You mean Oyinda! 😊 I track your money, build your credit score, give loans for stock, and connect you with suppliers. Tell me something you spent or earned today.",
+            'what is my next word': "Your next word can be anything – like 'spent 2000 on fuel' or 'earned 5000 from my shop'. Tell me what happened with your money today!",
+            'how much i do': "I need a little more detail. Did you spend or receive money? For example, 'spent 1500 on transport' or 'earned 3000 from sales'.",
+            'hello': None,  # already handled earlier
+            'hi': None,
+            'help': "I can help you track money, get loans, find suppliers, and more. Just tell me an expense like 'spent 500 on data', or ask 'what is my balance'.",
+        }
+        # Clean the text for matching
+        clean_text = text_lower.strip().rstrip('?.!')
+        if clean_text in small_talk:
+            reply = small_talk[clean_text]
+            if reply:
+                save_conversation(user_id, 'user', text)
+                return jsonify({"message": reply, "tone": "neutral"})
+
+
+        # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
+        reply = conversational_reply(user_id, text)
         if reply:
-            save_conversation(user_id, 'user', text)
+            save_conversation(user_id, 'cfo', reply)
             return jsonify({"message": reply, "tone": "neutral"})
 
+        # If LLM fails, give your new static helpful prompt
+        return jsonify({
+            "message": "I understand you. And i have taken note. You could also tell me everything about your finances, like how much you make today, what you spent money on or what loan or asset you want to track. I will help you track everything. get you a credit score for loan application, a tax receipt for your business or a broader Transaction statement for travel purposes or any other official use. So tell me how much have you spent today?",
+            "tone": "neutral"
+        })
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        return jsonify({"message": f"❌ Error: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
 
-    # ---------- CONVERSATIONAL FALLBACK (LLM) ----------
-    reply = conversational_reply(user_id, text)
-    if reply:
-        save_conversation(user_id, 'cfo', reply)
-        return jsonify({"message": reply, "tone": "neutral"})
 
-    # If LLM fails, give your new static helpful prompt
-    return jsonify({
-        "message": "I understand you. And i have taken note. You could also tell me everything about your finances, like how much you make today, what you spent money on or what loan or asset you want to track. I will help you track everything. get you a credit score for loan application, a tax receipt for your business or a broader Transaction statement for travel purposes or any other official use. So tell me how much have you spent today?",
-        "tone": "neutral"
-    })
 
 @app.route('/command', methods=['POST'])
 @jwt_required()

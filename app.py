@@ -800,6 +800,24 @@ def process_user_command(user_id, text):
 
 
         elif state == "loan_ask_product":
+            # If the user seems to be starting a new task, cancel the loan wizard
+            likely_other_task = any(word in reply.lower() for word in [
+                # Actions
+                'spent', 'bought', 'paid', 'earned', 'received', 'made',
+                'balance', 'net worth', 'credit score', 'statement', 'tax',
+                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
+                'search', 'find', 'who sells', 'i need', 'what', 'how',
+                # Questions / new intents
+                'list', 'show', 'register', 'link', 'connect',
+                # Explicit cancellation
+                'cancel', 'stop', 'never mind', 'forget',
+                # Loan re-trigger (start fresh)
+                'borrow', 'loan', 'lend'
+            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
+
+            if likely_other_task:
+                pending_transaction.pop(user_id, None)
+                return process_user_command(user_id, reply)
             # User might provide amount + product in one go, or just product
             text_clean = reply.strip()
             # Check if they also gave an amount now (if we didn't have one)
@@ -834,6 +852,25 @@ def process_user_command(user_id, text):
             })
 
         elif state == "loan_ask_supplier":
+            # If the user seems to be starting a new task, cancel the loan wizard
+            likely_other_task = any(word in reply.lower() for word in [
+                # Actions
+                'spent', 'bought', 'paid', 'earned', 'received', 'made',
+                'balance', 'net worth', 'credit score', 'statement', 'tax',
+                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
+                'search', 'find', 'who sells', 'i need', 'what', 'how',
+                # Questions / new intents
+                'list', 'show', 'register', 'link', 'connect',
+                # Explicit cancellation
+                'cancel', 'stop', 'never mind', 'forget',
+                # Loan re-trigger (start fresh)
+                'borrow', 'loan', 'lend'
+            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
+
+            if likely_other_task:
+                pending_transaction.pop(user_id, None)
+                return process_user_command(user_id, reply)
+
             supplier_query = reply.strip()
             if not supplier_query:
                 return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
@@ -877,22 +914,34 @@ def process_user_command(user_id, text):
 
             p["data"]["supplier_options"] = results
             p["state"] = "loan_confirm_supplier"
+            # Return the list with a dedicated action so the frontend doesn't fetch
             return jsonify({
-                "action": "show_business_search",
+                "action": "loan_supplier_selection",
                 "search_query": supplier_query,
-                "city": get_user_facts(user_id).get('city', ''),
                 "message": f"I found {len(results)} supplier(s) matching '{supplier_query}'. Tap the correct one to continue.",
                 "tone": "neutral",
-                "component": "BusinessList",
-                "props": {
-                    "data": results,
-                    "query": supplier_query,
-                    "emptyMessage": "No suppliers found."
-                }
+                "suppliers": results
             })
 
         elif state == "loan_confirm_supplier":
-            # The frontend will send back the selected supplier's name (or ID) as text.
+            # If the user seems to be starting a new task, cancel the loan wizard
+            likely_other_task = any(word in reply.lower() for word in [
+                # Actions
+                'spent', 'bought', 'paid', 'earned', 'received', 'made',
+                'balance', 'net worth', 'credit score', 'statement', 'tax',
+                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
+                'search', 'find', 'who sells', 'i need', 'what', 'how',
+                # Questions / new intents
+                'list', 'show', 'register', 'link', 'connect',
+                # Explicit cancellation
+                'cancel', 'stop', 'never mind', 'forget',
+                # Loan re-trigger (start fresh)
+                'borrow', 'loan', 'lend'
+            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
+
+            if likely_other_task:
+                pending_transaction.pop(user_id, None)
+                return process_user_command(user_id, reply)
             # We'll match the selected name from the options we stored.
             selected_name = reply.strip()
             options = p["data"].get("supplier_options", [])

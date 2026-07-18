@@ -758,6 +758,586 @@ def process_user_command(user_id, text):
         except Exception as e:
             return jsonify({"message": str(e), "tone": "warning"})
 
+    # ---------- CONTINUE PENDING CONVERSATION ---
+    if user_id in pending_transaction:
+        p = pending_transaction[user_id]
+        state = p["state"]
+        reply = text.strip()
+
+        # Allow user to abort any pending wizard
+        if state.startswith('loan_') and reply.strip().lower() == 'cancel':
+            pending_transaction.pop(user_id, None)
+            return jsonify({"message": "Loan request cancelled. How can I help you?", "tone": "neutral"})
+
+        if state == "collecting_type":
+            reply_lower = reply.lower()
+            if any(w in reply_lower for w in ['spent', 'expense', 'spend', 'bought', 'paid']):
+                p["data"]["type"] = "expense"
+            elif any(w in reply_lower for w in ['income', 'earned', 'profit']):
+                p["data"]["type"] = "income"
+            elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
+                p["data"]["type"] = "investment"
+                p["data"]["category"] = "investment"
+                p["category"] = "investment"
+                return ask_for_location(user_id)
+            elif any(w in reply_lower for w in ['loan', 'borrow']):
+                p["data"]["type"] = "loan"
+            elif any(w in reply_lower for w in
+                     ['managed', 'capital', 'funds', 'manage', 'managed funds', 'investment capital']):
+                p["data"]["type"] = "managed_funds"
+                p["data"]["category"] = "investment_capital"
+                p["category"] = "investment_capital"
+                # Skip category question, go to location
+                return ask_for_location(user_id)
+            else:
+                return jsonify({
+                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, managed funds, or a loan?",
+                    "tone": "neutral"
+                })
+            p["state"] = "collecting_category"
+            return ask_next_question(user_id)
+
+
+        elif state == "loan_ask_product":
+            # User might provide amount + product in one go, or just product
+            text_clean = reply.strip()
+            # Check if they also gave an amount now (if we didn't have one)
+            if p["data"]["amount"] is None:
+                amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
+                if amount_match:
+                    amount_str = amount_match.group(1).replace(',', '')
+                    p["data"]["amount"] = float(amount_str)
+                    if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
+                        p["data"]["amount"] *= 1000
+                    # Remove the amount from the product description
+                    text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean,
+                                        flags=re.IGNORECASE).strip()
+                else:
+                    return jsonify({
+                        "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
+                        "tone": "neutral"
+                    })
+
+            # Remove common filler words from the product description
+            text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
+            text_clean = re.sub(r'\s+', ' ', text_clean).strip()
+            if not text_clean:
+                return jsonify(
+                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
+            p["data"]["product"] = text_clean
+            p["state"] = "loan_ask_supplier"
+            return jsonify({
+                "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
+                "tone": "neutral"
+            })
+
+        elif state == "loan_ask_supplier":
+            supplier_query = reply.strip()
+            if not supplier_query:
+                return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
+
+            # Search the business directory
+            conn = get_conn()
+            cur = conn.cursor()
+            like_query = f'%{supplier_query}%'
+            cur.execute("""
+                SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
+                FROM business_listings bl
+                JOIN user_wallets uw ON bl.user_id = uw.user_id
+                WHERE LOWER(bl.name) ILIKE %s
+                ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
+                LIMIT 5
+            """, (like_query,))
+            suppliers = cur.fetchall()
+            conn.close()
+
+            if not suppliers:
+                return jsonify({
+                    "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
+                    "tone": "warning"
+                })
+
+            # Build the same kind of business list we use for search
+            results = []
+            for s in suppliers:
+                results.append({
+                    "id": s[0],  # user_id (supplier)
+                    "name": s[1],
+                    "product": s[2],
+                    "market_name": s[3] or '',
+                    "city": s[4] or '',
+                    "phone": s[5] or '',
+                    "rating": s[6] or 0,
+                    "total_ratings": s[7] or 0,
+                    "is_verified": s[8] or False,
+                    "listing_type": "user"
+                })
+
+            p["data"]["supplier_options"] = results
+            p["state"] = "loan_confirm_supplier"
+            return jsonify({
+                "action": "show_business_search",
+                "search_query": supplier_query,
+                "city": get_user_facts(user_id).get('city', ''),
+                "message": f"I found {len(results)} supplier(s) matching '{supplier_query}'. Tap the correct one to continue.",
+                "tone": "neutral",
+                "component": "BusinessList",
+                "props": {
+                    "data": results,
+                    "query": supplier_query,
+                    "emptyMessage": "No suppliers found."
+                }
+            })
+
+        elif state == "loan_confirm_supplier":
+            # The frontend will send back the selected supplier's name (or ID) as text.
+            # We'll match the selected name from the options we stored.
+            selected_name = reply.strip()
+            options = p["data"].get("supplier_options", [])
+            selected = None
+            for opt in options:
+                if opt["name"].lower() == selected_name.lower():
+                    selected = opt
+                    break
+            if not selected:
+                return jsonify({
+                    "message": "Please tap one of the suppliers from the list I sent.",
+                    "tone": "warning"
+                })
+
+            p["data"]["supplier_user_id"] = selected["id"]
+            p["data"]["supplier_name"] = selected["name"]
+            p["state"] = "confirming_inventory_loan"  # reuse the existing confirmation state
+
+            amount = p["data"]["amount"]
+            flat_fee = amount * 0.05
+            total_repayable = amount + flat_fee
+            daily_amount = round(total_repayable / 14, 2)
+
+            p["data"]["flat_fee"] = flat_fee
+            p["data"]["total_repayable"] = total_repayable
+            p["data"]["daily_amount"] = daily_amount
+
+            return jsonify({
+                "message": (
+                    f"📦 **Loan Summary**\n\n"
+                    f"• Amount: ₦{amount:,.2f}\n"
+                    f"• Product: {p['data']['product']}\n"
+                    f"• Supplier: {selected['name']}\n"
+                    f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+                    f"• Total to repay: ₦{total_repayable:,.2f}\n"
+                    f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+                    f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+                ),
+                "tone": "neutral"
+            })
+
+
+
+        elif state == "ask_id_type":
+            id_type = reply.strip().lower()
+            if id_type not in ['bvn', 'nin']:
+                return jsonify({"message": "Please type either 'BVN' or 'NIN'.", "tone": "neutral"})
+            p["data"]["id_type"] = id_type
+            p["state"] = "ask_id_number"
+            return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
+
+
+        elif state == "collecting_loan_direction":
+            reply_lower = reply.lower()
+            if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
+                p["data"]["type"] = "loan"
+                p["data"]["category"] = "loan"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
+                p["data"]["type"] = "asset"
+                p["data"]["category"] = "loan_given"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            else:
+                return jsonify({
+                    "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
+                    "tone": "neutral"
+                })
+
+        elif state == "confirming_funds":
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
+                p["data"]["type"] = "managed_funds"
+                p["data"]["category"] = "investment_capital"
+                p["state"] = "collecting_category"
+                return ask_next_question(user_id)
+            else:
+                p["state"] = "collecting_type"
+                return jsonify({
+                    "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",
+                    "tone": "neutral"
+                })
+
+
+        elif state == "collecting_category":
+            reply_lower = reply.lower()
+            cat_map = {
+                'food': ['food', 'foods', 'feeding', 'groceries', 'rice', 'beans', 'garri', 'yam', 'meat',
+                         'spaghetti',
+                         'noodle', 'indomie', 'bread', 'egg', 'eggs', 'milk', 'sugar', 'oil', 'tomato', 'tomatoes',
+                         'pepper', 'onion', 'fish', 'chicken', 'beef', 'snack', 'snacks', 'drink', 'drinks',
+                         'water',
+                         'juice', 'soda', 'coke', 'fanta', 'pepsi', 'chinchin', 'cake', 'biscuit', 'biscuits',
+                         'sweets',
+                         'ice cream', 'restaurant', 'eatery', 'bukka', 'mama put', 'chop', 'swallow', 'eba',
+                         'amala',
+                         'fufu', 'pounded yam', 'semo'],
+                'transport': ['transport', 'transportation', 'okada', 'bike', 'motorcycle', 'uber', 'bolt', 'taxi',
+                              'bus', 'buses', 'keke', 'napep', 'tricycle', 'fuel', 'petrol', 'diesel', 'gas',
+                              'parking',
+                              'parking fee', 'toll', 'toll gate', 'fare', 'transport fare'],
+                'housing': ['rent', 'house rent', 'house', 'room', 'accommodation', 'apartment', 'landlord',
+                            'rentage',
+                            'property', 'maintenance', 'repair', 'repairs', 'plumbing', 'electrician', 'painting',
+                            'renovation', 'furniture', 'bed', 'mattress', 'curtain', 'curtains', 'carpet', 'rug'],
+                'utilities': ['data', 'internet', 'net', 'subscription', 'subscriptions', 'airtime', 'recharge',
+                              'top up', 'topup', 'phone bill', 'phone', 'electricity', 'electric', 'power', 'neepa',
+                              'nepa', 'bill', 'bills', 'water', 'waste', 'sewage', 'sanitation', 'utility',
+                              'utilities',
+                              'mifi', 'router', 'wifi', 'broadband', 'cable', 'dstv', 'gotv', 'startimes',
+                              'tv subscription', 'netflix', 'prime video', 'showmax', 'domain', 'domain name',
+                              'hosting', 'website'],
+                'health': ['doctor', 'hospital', 'medicine', 'drug', 'drugs', 'pharmacy', 'chemist', 'health',
+                           'healthcare', 'medical', 'medicals', 'dental', 'dentist', 'eye', 'optician', 'glasses',
+                           'surgery', 'injection', 'vaccine', 'checkup', 'check up', 'lab', 'laboratory', 'test',
+                           'tests', 'scan', 'x-ray', 'xray', 'bandage', 'plaster', 'first aid', 'blood', 'malaria',
+                           'typhoid', 'fever', 'headache', 'pain', 'pills', 'tablets', 'capsules', 'syrup',
+                           'ointment',
+                           'cream', 'inhaler'],
+                'education': ['school', 'school fees', 'fees', 'tuition', 'book', 'books', 'textbook', 'course',
+                              'courses', 'online course', 'udemy', 'coursera', 'training', 'workshop', 'seminar',
+                              'certification', 'exam', 'examination', 'jamb', 'waec', 'neco', 'gce', 'post utme',
+                              'form', 'registration', 'admission', 'pen', 'pencil', 'notebook', 'stationery',
+                              'calculator', 'laptop', 'research', 'project', 'thesis', 'dissertation', 'library',
+                              'printing', 'photocopy', 'typing', 'assignment', 'lesson', 'tutor', 'coaching',
+                              'extra lessons', 'after school'],
+                'investment': ['invest', 'investment', 'investments', 'stocks', 'shares', 'stock', 'bond', 'bonds',
+                               'mutual fund', 'mutual funds', 'etf', 'etfs', 'crypto', 'cryptocurrency', 'bitcoin',
+                               'btc', 'ethereum', 'eth', 'usdt', 'usdc', 'bnb', 'binance', 'bamboo', 'chaka',
+                               'trove',
+                               'rise', 'piggyvest', 'cowrywise', 'wealth', 'wealth.ng', 'asset', 'assets',
+                               'portfolio',
+                               'dividend', 'interest', 'roi', 'return', 'capital', 'equity', 'real estate', 'land',
+                               'property', 'gold', 'silver', 'forex', 'fx', 'trading', 'trade', 'buying shares'],
+                'savings': ['save', 'saving', 'savings', 'saved', 'deposit', 'deposits', 'fixed deposit',
+                            'treasury bill', 'tbills', 'money market', 'vault', 'lock', 'locked', 'savings plan',
+                            'target', 'goal', 'goals', 'emergency fund', 'sinking fund', 'fund', 'contribution',
+                            'contributions', 'ajo', 'esusu', 'collect', 'thrift', 'cooperative', 'coop',
+                            'piggy bank',
+                            'piggyvest', 'cowrywise', 'kolo', 'wooden box', 'safe'],
+                'loan': ['loan', 'loans', 'borrow', 'borrowed', 'lend', 'lent', 'debt', 'debts', 'credit',
+                         'advance',
+                         'owe', 'owing', 'repay', 'repayment', 'repayments', 'repay loan', 'pay back', 'paid back',
+                         'refund', 'microfinance', 'lapo', 'access bank loan', 'gtbank loan', 'uba loan',
+                         'quick check',
+                         'carbon', 'fairmoney', 'palmcredit', 'aella', 'branch', 'okash', 'credit card'],
+                'income': ['income', 'salary', 'wages', 'wage', 'pay', 'payment', 'received', 'earned', 'made',
+                           'profit', 'profit from', 'revenue', 'earnings', 'freelance', 'gig', 'side hustle',
+                           'business', 'business income', 'sales', 'sold', 'client', 'customer', 'paid me',
+                           'transferred to me', 'alert', 'credit alert', 'bonus', 'commission', 'allowance',
+                           'stipend',
+                           'grant', 'dividend', 'interest', 'return on investment', 'rent income', 'rental income',
+                           'pension', 'remittance', 'money from', 'sent me', 'sent money', 'wire transfer',
+                           'direct deposit', 'cash', 'cash income'],
+                'entertainment': ['entertainment', 'fun', 'leisure', 'movie', 'movies', 'cinema', 'film', 'show',
+                                  'concert', 'music', 'spotify', 'apple music', 'youtube', 'youtube premium',
+                                  'netflix',
+                                  'amazon prime', 'showmax', 'dstv', 'gotv', 'startimes', 'game', 'games',
+                                  'video game',
+                                  'playstation', 'ps4', 'ps5', 'xbox', 'nintendo', 'bet', 'betting', 'sport bet',
+                                  'sportybet', 'bet9ja', 'nairabet', 'lottery', 'gambling', 'pool', 'club', 'party',
+                                  'event', 'festival', 'carnival', 'outing', 'hanging out', 'chilling',
+                                  'recreation',
+                                  'subscription', 'subscriptions'],
+                'clothing': ['clothing', 'cloth', 'clothes', 'clothings', 'fashion', 'wear', 'wears', 'dress',
+                             'dresses', 'shirt', 'shirts', 'trouser', 'trousers', 'pant', 'pants', 'jeans',
+                             'jacket',
+                             'coat', 'blazer', 'suit', 'tie', 'shoe', 'shoes', 'sneakers', 'sandal', 'sandals',
+                             'slippers', 'bag', 'bags', 'handbag', 'wallet', 'watch', 'jewelry', 'jewellery',
+                             'necklace', 'bracelet', 'ring', 'earring', 'earrings', 'chain', 'anklet', 'cap', 'hat',
+                             'scarf', 'glasses', 'sunglasses', 'belt', 'underwear', 'boxers', 'bra', 'panties',
+                             'native', 'ankara', 'agbada', 'buba', 'iro', 'gele', 'tailor', 'sewing', 'fabric',
+                             'material', 'lace', 'asoebi', 'guinea', 'brocade', 'satin', 'cotton', 'linen', 'wool',
+                             'silk', 'polish', 'dry cleaning', 'laundry', 'wash'],
+                'personal care': ['personal care', 'self care', 'grooming', 'salon', 'barbing', 'haircut', 'hair',
+                                  'hairstyle', 'braiding', 'weaving', 'weavon', 'wig', 'attachment', 'relaxer',
+                                  'shampoo', 'conditioner', 'cream', 'lotion', 'soap', 'body wash', 'deodorant',
+                                  'perfume', 'cologne', 'makeup', 'make up', 'powder', 'lipstick', 'eyeshadow',
+                                  'mascara', 'foundation', 'blush', 'nail', 'nails', 'manicure', 'pedicure', 'spa',
+                                  'massage', 'waxing', 'shaving', 'razor', 'toothpaste', 'toothbrush', 'mouthwash',
+                                  'floss', 'tissue', 'tissues', 'towel', 'sanitizer', 'sanitiser', 'hand wash'],
+                'gift': ['gift', 'gifts', 'present', 'donation', 'offering', 'tithe', 'seed', 'sowing', 'blessing',
+                         'help', 'support', 'assistance', 'charity', 'alms', 'zakat', 'sadaqah', 'give away',
+                         'give out', 'gave', 'giving', 'sponsor', 'sponsorship'],
+                'tax': ['tax', 'taxes', 'taxation', 'vat', 'withholding tax', 'company tax', 'income tax', 'paye',
+                        'firs', 'lirs', 'government', 'levy', 'duties', 'customs', 'excise', 'rate', 'rates',
+                        'assessment', 'filing', 'clearance', 'receipt', 'tax receipt', 'tin', 'tax identification',
+                        'business premises', 'development levy', 'waste management bill'],
+                'insurance': ['insurance', 'insure', 'insured', 'policy', 'premium', 'life insurance',
+                              'health insurance', 'car insurance', 'motor insurance', 'third party',
+                              'comprehensive',
+                              'travel insurance', 'hmo', 'hygeia', 'avon', 'leadway', 'aig', 'mutual benefit',
+                              'aiico',
+                              'coronation', 'nsurance', 'cover', 'coverage', 'plan', 'benefit', 'claim', 'renewal',
+                              'broker', 'agent', 'underwriter'],
+                'subscription': ['subscription', 'subscribe', 'membership', 'monthly', 'annual', 'yearly', 'plan',
+                                 'package', 'renewal', 'auto renew', 'recurring', 'charge', 'deduction', 'billed'],
+                'other': ['other', 'miscellaneous', 'misc', 'others', 'unknown', 'general', 'various', 'different',
+                          'multiple', 'sundry', 'expenses', 'expense', 'items', 'item', 'stuff', 'things',
+                          'purchase',
+                          'purchases', 'buy', 'bought', 'spend', 'spent', 'paid', 'pay for', 'billed for']
+            }
+            matched = False
+            for cat, words in cat_map.items():
+                if any(w in reply_lower for w in words):
+                    p["data"]["category"] = cat
+                    p["category"] = cat
+                    matched = True
+                    break
+            if not matched:
+                return jsonify({
+                    "message": f"I didn't recognise that category. Try one of these: food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, or other. What was this expense for?",
+                    "tone": "neutral"
+                })
+            p["state"] = "collecting_category"  # let ask_next_question advance
+            return ask_next_question(user_id)
+
+        elif state == "collecting_quantity":
+            qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?',
+                                  reply.lower())
+            if qty_match:
+                p["data"]["quantity"] = float(qty_match.group(1))
+                p["data"]["unit"] = qty_match.group(2) or "unknown"
+                p["state"] = "collecting_location"
+                return ask_for_location(user_id)
+            else:
+                return jsonify({
+                    "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
+                    "tone": "neutral"
+                })
+
+
+        elif state == "ask_id_number":
+
+            id_number = reply.strip()
+
+            if len(id_number) < 10:
+                return jsonify(
+                    {"message": "That doesn't look like a valid number. Please enter at least 10 digits.",
+                     "tone": "neutral"})
+
+            id_type = p["data"]["id_type"]
+
+            # Simulate verification (replace with real API later)
+
+            verified = len(id_number) >= 10
+
+            if verified:
+
+                store_user_fact(user_id, f'{id_type}_verified', True)
+
+                store_user_fact(user_id, f'{id_type}_number', id_number)
+
+                store_user_fact(user_id, id_type, id_number)  # generic key for wallet
+
+                # Auto-create wallet
+
+                try:
+
+                    wallet = ensure_wallet(user_id)
+
+                    wallet_msg = f"Your wallet is active! Account: {wallet['account_number']} ({wallet['bank_name']})."
+
+                except Exception as e:
+
+                    wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
+
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"Identity verified! {wallet_msg}",
+                    "tone": "income",
+                    "feedback_prompt": {
+                        "context": "after_wallet_activation",
+                        "question": "How was the verification process?",
+                        "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
+                    }
+                })
+
+            else:
+
+                return jsonify({"message": "Verification failed. Please check your number and try again."})
+
+
+        elif state == "collecting_business_details":
+            # Parse the user's business description and price
+            reply_lower = reply.lower()
+            # Try to extract product, quantity/unit, and price
+            biz_match = re.search(
+                r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)(?:,?\s*(\d+)\s*(mudu|derica|paint|kg|g|pieces?|heaps?|baskets?|bags?|litres?|liters?|units?))?\s*(?:for|at)\s*(?:₦|naira)?\s*(\d+\.?\d*)',
+                reply, re.IGNORECASE)
+            if biz_match:
+                product = biz_match.group(1).strip()
+                quantity = biz_match.group(2)
+                unit = biz_match.group(3)
+                price = biz_match.group(4)
+
+                store_user_fact(user_id, 'business', product)
+                if price:
+                    store_user_fact(user_id, f'product_price_{product}', price)
+                if quantity and unit:
+                    store_user_fact(user_id, f'product_unit_{product}', f'{quantity} {unit}')
+                store_user_fact(user_id, 'last_price_update', datetime.utcnow().isoformat())
+
+                # Also save location for marketplace
+                user_facts = get_user_facts(user_id)
+                city = user_facts.get('city', 'your area')
+                store_user_fact(user_id, 'business_city', city)
+
+                msg = f"I don record am! When someone dey find {product} for {city}, I go connect dem to you."
+                if price:
+                    msg += f" Your price of ₦{price}"
+                    if quantity and unit:
+                        msg += f" for {quantity} {unit}"
+                    msg += " don dey our system."
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": msg, "tone": "income"})
+            else:
+                # Couldn't parse – ask again more clearly
+                return jsonify({
+                    "message": "I no fit get the price well. Try tell me like this: 'I sell tomatoes, 5 mudu for ₦2,000'. Wetin you dey sell and how much?",
+                    "tone": "neutral"
+                })
+
+
+        elif state == "confirming_inventory_loan":
+            if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
+                data = p["data"]
+                amount = data["amount"]
+                supplier_user_id = data["supplier_user_id"]
+
+                # Check user wallet has enough? No, Oyinda pays from its own pool.
+                # For simulation, we'll use a system pool wallet (Oyinda's own wallet).
+                # In production, you'd have a pre-funded Mono reserved account.
+                # We'll simulate by creating a system user with a wallet, or just assume Oyinda has infinite balance for now.
+                # We'll log a transfer from a system account to supplier.
+                # Actually, we'll just directly credit the supplier's wallet (simulate disbursement).
+                # In reality, you'd use MonoReservedAccount.payout() to send money from Oyinda's pool to supplier's virtual account.
+                # But since we are inside Oyinda's ledger, we can just update supplier's wallet balance directly
+                # because both are internal. We'll assume Oyinda's pool is represented by a special system user 'oyinda_treasury'.
+                # For sandbox, we'll just add the amount to supplier's wallet.
+
+                conn = get_conn()
+                cur = conn.cursor()
+                # Add funds to supplier wallet
+                cur.execute(
+                    "UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
+                    (amount, supplier_user_id))
+                # Also log a credit event for supplier
+                append_event(supplier_user_id, supplier_user_id, 'WalletCredited', {
+                    "amount": amount,
+                    "source": "oyinda_inventory_loan",
+                    "product": data["product"],
+                    "borrower": user_id
+                })
+                conn.commit()
+                conn.close()
+
+                # Create loan record
+                start_date = datetime.utcnow().date()
+                end_date = start_date + timedelta(days=21)
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO inventory_loans
+                    (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+                     daily_amount, remaining_balance, start_date, end_date, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                """, (
+                    user_id, supplier_user_id, data["product"], amount,
+                    data["flat_fee"], data["total_repayable"], data["daily_amount"],
+                    data["total_repayable"], start_date, end_date
+                ))
+                conn.commit()
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+                return jsonify({
+                    "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
+                               f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
+                    "tone": "income",
+                    "feedback_prompt": {
+                        "context": "after_loan",
+                        "question": "How was the loan process?",
+                        "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
+                    }
+                })
+            else:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "Loan cancelled."})
+
+
+        elif state == "collecting_location":
+            p["data"]["location"] = reply.strip()
+            return finalise_transaction(user_id)
+
+        elif state == "collecting_emergency_hours":
+            hours_match = re.match(r'^(\d+)$', reply.strip())
+            if hours_match:
+                hours = int(hours_match.group(1))
+                if hours < 1 or hours > 72:
+                    return jsonify({"message": "Please choose between 1 and 72 hours."})
+                store_user_fact(user_id, 'emergency_data_hours', hours)
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
+                               "I'll check every 30 minutes.",
+                    "tone": "income"
+                })
+            else:
+                return jsonify({
+                    "message": "Please tell me a number of hours, like 3, 6, or 12.",
+                    "tone": "neutral"
+                })
+
+
+        elif state == "confirming_bulk":
+            reply_lower = reply.lower()
+            if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
+                # Log each amount as a separate expense
+                amounts = p["data"]["amounts"]
+                for amt in amounts:
+                    append_event(user_id, user_id, 'ExpenseLogged', {
+                        "amount": amt,
+                        "currency": "NGN",
+                        "category": "other",
+                        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                        "description": p["data"].get("description", text)[:100]
+                    })
+                # Remove the bulk transaction
+                pending_transaction.pop(user_id, None)
+                name = get_user_name(user_id)
+                return jsonify({
+                    "message": f"Logged {len(amounts)} expenses totalling ₦{p['data']['total']:,.2f}.",
+                    "tone": "neutral"
+                })
+            else:
+                # User doesn't want bulk logging – remove and let fallback handle it
+                pending_transaction.pop(user_id, None)
+
+        # If we didn't match any state, just finalise to avoid hanging
+        return finalise_transaction(user_id)
+
+
     # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
     past_borrowing = any(phrase in text_lower for phrase in [
         'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
@@ -765,15 +1345,22 @@ def process_user_command(user_id, text):
     ])
 
     borrow_trigger = any(phrase in text_lower for phrase in [
-        'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
-        'can i get a loan', 'how much loan', 'i need loan',
+        'borrow', 'i want to borrow', 'i wan borrow', 'lend me', 'can i get','i need to borrow', 'lend me',
+        'can i get a loan', 'how much loan', 'i need loan', 'give me', 'can you borrow me',
         'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
         'get a loan', 'how can i borrow', 'can i borrow'
     ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
     # Only start the wizard if it's a genuine request (not a past report)
     if borrow_trigger and not past_borrowing:
-        # Try to extract an amount from the message
+        # If the user is already in a loan wizard, warn them
+        if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
+            return jsonify({
+                "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
+                "tone": "warning"
+            })
+
+        # ... rest of the existing loan entry logic (amount extraction, eligibility, etc.) ...
         amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
         amount = None
         if amount_match:
@@ -937,551 +1524,6 @@ def process_user_command(user_id, text):
             "tone": "neutral"
         })
 
-
-    # ---------- CONTINUE PENDING CONVERSATION ---
-    if user_id in pending_transaction:
-        p = pending_transaction[user_id]
-        state = p["state"]
-        reply = text.strip()
-
-        if state == "collecting_type":
-            reply_lower = reply.lower()
-            if any(w in reply_lower for w in ['spent', 'expense', 'spend', 'bought', 'paid']):
-                p["data"]["type"] = "expense"
-            elif any(w in reply_lower for w in ['income', 'earned', 'profit']):
-                p["data"]["type"] = "income"
-            elif any(w in reply_lower for w in ['invest', 'investment', 'save', 'savings', 'invested']):
-                p["data"]["type"] = "investment"
-                p["data"]["category"] = "investment"
-                p["category"] = "investment"
-                return ask_for_location(user_id)
-            elif any(w in reply_lower for w in ['loan', 'borrow']):
-                p["data"]["type"] = "loan"
-            elif any(w in reply_lower for w in
-                     ['managed', 'capital', 'funds', 'manage', 'managed funds', 'investment capital']):
-                p["data"]["type"] = "managed_funds"
-                p["data"]["category"] = "investment_capital"
-                p["category"] = "investment_capital"
-                # Skip category question, go to location
-                return ask_for_location(user_id)
-            else:
-                return jsonify({
-                    "message": f"Sorry, was {p['data']['amount']} NGN spent, earned, invested, managed funds, or a loan?",
-                    "tone": "neutral"
-                })
-            p["state"] = "collecting_category"
-            return ask_next_question(user_id)
-
-        elif state == "collecting_loan_direction":
-            reply_lower = reply.lower()
-            if any(w in reply_lower for w in ['borrow', 'from', 'i go pay back', 'i will pay back']):
-                p["data"]["type"] = "loan"
-                p["data"]["category"] = "loan"
-                p["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            elif any(w in reply_lower for w in ['lend', 'lent', 'to', 'they go pay me', 'they will pay me']):
-                p["data"]["type"] = "asset"
-                p["data"]["category"] = "loan_given"
-                p["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            else:
-                return jsonify({
-                    "message": "Sorry, I didn’t understand. Did you borrow from someone, or did you lend to someone?",
-                    "tone": "neutral"
-                })
-
-        elif state == "confirming_funds":
-            if any(word in reply.lower() for word in ['yes', 'yeah', 'correct']):
-                p["data"]["type"] = "managed_funds"
-                p["data"]["category"] = "investment_capital"
-                p["state"] = "collecting_category"
-                return ask_next_question(user_id)
-            else:
-                p["state"] = "collecting_type"
-                return jsonify({
-                    "message": f"Okay, what kind of transaction is this? (spent, earned, invested, savings, loan, or managed funds?)",
-                    "tone": "neutral"
-                })
-
-
-        elif state == "collecting_category":
-            reply_lower = reply.lower()
-            cat_map = {
-                'food': ['food', 'foods', 'feeding', 'groceries', 'rice', 'beans', 'garri', 'yam', 'meat', 'spaghetti',
-                         'noodle', 'indomie', 'bread', 'egg', 'eggs', 'milk', 'sugar', 'oil', 'tomato', 'tomatoes',
-                         'pepper', 'onion', 'fish', 'chicken', 'beef', 'snack', 'snacks', 'drink', 'drinks', 'water',
-                         'juice', 'soda', 'coke', 'fanta', 'pepsi', 'chinchin', 'cake', 'biscuit', 'biscuits', 'sweets',
-                         'ice cream', 'restaurant', 'eatery', 'bukka', 'mama put', 'chop', 'swallow', 'eba', 'amala',
-                         'fufu', 'pounded yam', 'semo'],
-                'transport': ['transport', 'transportation', 'okada', 'bike', 'motorcycle', 'uber', 'bolt', 'taxi',
-                              'bus', 'buses', 'keke', 'napep', 'tricycle', 'fuel', 'petrol', 'diesel', 'gas', 'parking',
-                              'parking fee', 'toll', 'toll gate', 'fare', 'transport fare'],
-                'housing': ['rent', 'house rent', 'house', 'room', 'accommodation', 'apartment', 'landlord', 'rentage',
-                            'property', 'maintenance', 'repair', 'repairs', 'plumbing', 'electrician', 'painting',
-                            'renovation', 'furniture', 'bed', 'mattress', 'curtain', 'curtains', 'carpet', 'rug'],
-                'utilities': ['data', 'internet', 'net', 'subscription', 'subscriptions', 'airtime', 'recharge',
-                              'top up', 'topup', 'phone bill', 'phone', 'electricity', 'electric', 'power', 'neepa',
-                              'nepa', 'bill', 'bills', 'water', 'waste', 'sewage', 'sanitation', 'utility', 'utilities',
-                              'mifi', 'router', 'wifi', 'broadband', 'cable', 'dstv', 'gotv', 'startimes',
-                              'tv subscription', 'netflix', 'prime video', 'showmax', 'domain', 'domain name',
-                              'hosting', 'website'],
-                'health': ['doctor', 'hospital', 'medicine', 'drug', 'drugs', 'pharmacy', 'chemist', 'health',
-                           'healthcare', 'medical', 'medicals', 'dental', 'dentist', 'eye', 'optician', 'glasses',
-                           'surgery', 'injection', 'vaccine', 'checkup', 'check up', 'lab', 'laboratory', 'test',
-                           'tests', 'scan', 'x-ray', 'xray', 'bandage', 'plaster', 'first aid', 'blood', 'malaria',
-                           'typhoid', 'fever', 'headache', 'pain', 'pills', 'tablets', 'capsules', 'syrup', 'ointment',
-                           'cream', 'inhaler'],
-                'education': ['school', 'school fees', 'fees', 'tuition', 'book', 'books', 'textbook', 'course',
-                              'courses', 'online course', 'udemy', 'coursera', 'training', 'workshop', 'seminar',
-                              'certification', 'exam', 'examination', 'jamb', 'waec', 'neco', 'gce', 'post utme',
-                              'form', 'registration', 'admission', 'pen', 'pencil', 'notebook', 'stationery',
-                              'calculator', 'laptop', 'research', 'project', 'thesis', 'dissertation', 'library',
-                              'printing', 'photocopy', 'typing', 'assignment', 'lesson', 'tutor', 'coaching',
-                              'extra lessons', 'after school'],
-                'investment': ['invest', 'investment', 'investments', 'stocks', 'shares', 'stock', 'bond', 'bonds',
-                               'mutual fund', 'mutual funds', 'etf', 'etfs', 'crypto', 'cryptocurrency', 'bitcoin',
-                               'btc', 'ethereum', 'eth', 'usdt', 'usdc', 'bnb', 'binance', 'bamboo', 'chaka', 'trove',
-                               'rise', 'piggyvest', 'cowrywise', 'wealth', 'wealth.ng', 'asset', 'assets', 'portfolio',
-                               'dividend', 'interest', 'roi', 'return', 'capital', 'equity', 'real estate', 'land',
-                               'property', 'gold', 'silver', 'forex', 'fx', 'trading', 'trade', 'buying shares'],
-                'savings': ['save', 'saving', 'savings', 'saved', 'deposit', 'deposits', 'fixed deposit',
-                            'treasury bill', 'tbills', 'money market', 'vault', 'lock', 'locked', 'savings plan',
-                            'target', 'goal', 'goals', 'emergency fund', 'sinking fund', 'fund', 'contribution',
-                            'contributions', 'ajo', 'esusu', 'collect', 'thrift', 'cooperative', 'coop', 'piggy bank',
-                            'piggyvest', 'cowrywise', 'kolo', 'wooden box', 'safe'],
-                'loan': ['loan', 'loans', 'borrow', 'borrowed', 'lend', 'lent', 'debt', 'debts', 'credit', 'advance',
-                         'owe', 'owing', 'repay', 'repayment', 'repayments', 'repay loan', 'pay back', 'paid back',
-                         'refund', 'microfinance', 'lapo', 'access bank loan', 'gtbank loan', 'uba loan', 'quick check',
-                         'carbon', 'fairmoney', 'palmcredit', 'aella', 'branch', 'okash', 'credit card'],
-                'income': ['income', 'salary', 'wages', 'wage', 'pay', 'payment', 'received', 'earned', 'made',
-                           'profit', 'profit from', 'revenue', 'earnings', 'freelance', 'gig', 'side hustle',
-                           'business', 'business income', 'sales', 'sold', 'client', 'customer', 'paid me',
-                           'transferred to me', 'alert', 'credit alert', 'bonus', 'commission', 'allowance', 'stipend',
-                           'grant', 'dividend', 'interest', 'return on investment', 'rent income', 'rental income',
-                           'pension', 'remittance', 'money from', 'sent me', 'sent money', 'wire transfer',
-                           'direct deposit', 'cash', 'cash income'],
-                'entertainment': ['entertainment', 'fun', 'leisure', 'movie', 'movies', 'cinema', 'film', 'show',
-                                  'concert', 'music', 'spotify', 'apple music', 'youtube', 'youtube premium', 'netflix',
-                                  'amazon prime', 'showmax', 'dstv', 'gotv', 'startimes', 'game', 'games', 'video game',
-                                  'playstation', 'ps4', 'ps5', 'xbox', 'nintendo', 'bet', 'betting', 'sport bet',
-                                  'sportybet', 'bet9ja', 'nairabet', 'lottery', 'gambling', 'pool', 'club', 'party',
-                                  'event', 'festival', 'carnival', 'outing', 'hanging out', 'chilling', 'recreation',
-                                  'subscription', 'subscriptions'],
-                'clothing': ['clothing', 'cloth', 'clothes', 'clothings', 'fashion', 'wear', 'wears', 'dress',
-                             'dresses', 'shirt', 'shirts', 'trouser', 'trousers', 'pant', 'pants', 'jeans', 'jacket',
-                             'coat', 'blazer', 'suit', 'tie', 'shoe', 'shoes', 'sneakers', 'sandal', 'sandals',
-                             'slippers', 'bag', 'bags', 'handbag', 'wallet', 'watch', 'jewelry', 'jewellery',
-                             'necklace', 'bracelet', 'ring', 'earring', 'earrings', 'chain', 'anklet', 'cap', 'hat',
-                             'scarf', 'glasses', 'sunglasses', 'belt', 'underwear', 'boxers', 'bra', 'panties',
-                             'native', 'ankara', 'agbada', 'buba', 'iro', 'gele', 'tailor', 'sewing', 'fabric',
-                             'material', 'lace', 'asoebi', 'guinea', 'brocade', 'satin', 'cotton', 'linen', 'wool',
-                             'silk', 'polish', 'dry cleaning', 'laundry', 'wash'],
-                'personal care': ['personal care', 'self care', 'grooming', 'salon', 'barbing', 'haircut', 'hair',
-                                  'hairstyle', 'braiding', 'weaving', 'weavon', 'wig', 'attachment', 'relaxer',
-                                  'shampoo', 'conditioner', 'cream', 'lotion', 'soap', 'body wash', 'deodorant',
-                                  'perfume', 'cologne', 'makeup', 'make up', 'powder', 'lipstick', 'eyeshadow',
-                                  'mascara', 'foundation', 'blush', 'nail', 'nails', 'manicure', 'pedicure', 'spa',
-                                  'massage', 'waxing', 'shaving', 'razor', 'toothpaste', 'toothbrush', 'mouthwash',
-                                  'floss', 'tissue', 'tissues', 'towel', 'sanitizer', 'sanitiser', 'hand wash'],
-                'gift': ['gift', 'gifts', 'present', 'donation', 'offering', 'tithe', 'seed', 'sowing', 'blessing',
-                         'help', 'support', 'assistance', 'charity', 'alms', 'zakat', 'sadaqah', 'give away',
-                         'give out', 'gave', 'giving', 'sponsor', 'sponsorship'],
-                'tax': ['tax', 'taxes', 'taxation', 'vat', 'withholding tax', 'company tax', 'income tax', 'paye',
-                        'firs', 'lirs', 'government', 'levy', 'duties', 'customs', 'excise', 'rate', 'rates',
-                        'assessment', 'filing', 'clearance', 'receipt', 'tax receipt', 'tin', 'tax identification',
-                        'business premises', 'development levy', 'waste management bill'],
-                'insurance': ['insurance', 'insure', 'insured', 'policy', 'premium', 'life insurance',
-                              'health insurance', 'car insurance', 'motor insurance', 'third party', 'comprehensive',
-                              'travel insurance', 'hmo', 'hygeia', 'avon', 'leadway', 'aig', 'mutual benefit', 'aiico',
-                              'coronation', 'nsurance', 'cover', 'coverage', 'plan', 'benefit', 'claim', 'renewal',
-                              'broker', 'agent', 'underwriter'],
-                'subscription': ['subscription', 'subscribe', 'membership', 'monthly', 'annual', 'yearly', 'plan',
-                                 'package', 'renewal', 'auto renew', 'recurring', 'charge', 'deduction', 'billed'],
-                'other': ['other', 'miscellaneous', 'misc', 'others', 'unknown', 'general', 'various', 'different',
-                          'multiple', 'sundry', 'expenses', 'expense', 'items', 'item', 'stuff', 'things', 'purchase',
-                          'purchases', 'buy', 'bought', 'spend', 'spent', 'paid', 'pay for', 'billed for']
-            }
-            matched = False
-            for cat, words in cat_map.items():
-                if any(w in reply_lower for w in words):
-                    p["data"]["category"] = cat
-                    p["category"] = cat
-                    matched = True
-                    break
-            if not matched:
-                return jsonify({
-                    "message": f"I didn't recognise that category. Try one of these: food, transport, housing, utilities, health, education, investment, savings, loan, income, entertainment, clothing, personal care, gift, tax, insurance, subscription, or other. What was this expense for?",
-                    "tone": "neutral"
-                })
-            p["state"] = "collecting_category"   # let ask_next_question advance
-            return ask_next_question(user_id)
-
-        elif state == "collecting_quantity":
-            qty_match = re.search(r'(\d+)\s*(mudu|derica|paint|kg|g|pieces|heap|basket|bag|litre|liter)?', reply.lower())
-            if qty_match:
-                p["data"]["quantity"] = float(qty_match.group(1))
-                p["data"]["unit"] = qty_match.group(2) or "unknown"
-                p["state"] = "collecting_location"
-                return ask_for_location(user_id)
-            else:
-                return jsonify({
-                    "message": "I need the quantity. Please tell me like '2 mudu' or '1 paint'.",
-                    "tone": "neutral"
-                })
-
-        elif state == "ask_id_type":
-            id_type = reply.strip().lower()
-            if id_type not in ['bvn', 'nin']:
-                return jsonify({"message": "Please type either 'BVN' or 'NIN'.", "tone": "neutral"})
-            p["data"]["id_type"] = id_type
-            p["state"] = "ask_id_number"
-            return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
-
-
-
-        elif state == "ask_id_number":
-
-            id_number = reply.strip()
-
-            if len(id_number) < 10:
-                return jsonify({"message": "That doesn't look like a valid number. Please enter at least 10 digits.",
-                                "tone": "neutral"})
-
-            id_type = p["data"]["id_type"]
-
-            # Simulate verification (replace with real API later)
-
-            verified = len(id_number) >= 10
-
-            if verified:
-
-                store_user_fact(user_id, f'{id_type}_verified', True)
-
-                store_user_fact(user_id, f'{id_type}_number', id_number)
-
-                store_user_fact(user_id, id_type, id_number)  # generic key for wallet
-
-                # Auto-create wallet
-
-                try:
-
-                    wallet = ensure_wallet(user_id)
-
-                    wallet_msg = f"Your wallet is active! Account: {wallet['account_number']} ({wallet['bank_name']})."
-
-                except Exception as e:
-
-                    wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
-
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": f"Identity verified! {wallet_msg}",
-                    "tone": "income",
-                    "feedback_prompt": {
-                        "context": "after_wallet_activation",
-                        "question": "How was the verification process?",
-                        "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
-                    }
-                })
-
-            else:
-
-                return jsonify({"message": "Verification failed. Please check your number and try again."})
-
-
-        elif state == "collecting_business_details":
-            # Parse the user's business description and price
-            reply_lower = reply.lower()
-            # Try to extract product, quantity/unit, and price
-            biz_match = re.search(r'(?:i\s+)?(?:sell|supply|make|do)\s+(.+?)(?:,?\s*(\d+)\s*(mudu|derica|paint|kg|g|pieces?|heaps?|baskets?|bags?|litres?|liters?|units?))?\s*(?:for|at)\s*(?:₦|naira)?\s*(\d+\.?\d*)', reply, re.IGNORECASE)
-            if biz_match:
-                product = biz_match.group(1).strip()
-                quantity = biz_match.group(2)
-                unit = biz_match.group(3)
-                price = biz_match.group(4)
-
-                store_user_fact(user_id, 'business', product)
-                if price:
-                    store_user_fact(user_id, f'product_price_{product}', price)
-                if quantity and unit:
-                    store_user_fact(user_id, f'product_unit_{product}', f'{quantity} {unit}')
-                store_user_fact(user_id, 'last_price_update', datetime.utcnow().isoformat())
-
-                # Also save location for marketplace
-                user_facts = get_user_facts(user_id)
-                city = user_facts.get('city', 'your area')
-                store_user_fact(user_id, 'business_city', city)
-
-                msg = f"I don record am! When someone dey find {product} for {city}, I go connect dem to you."
-                if price:
-                    msg += f" Your price of ₦{price}"
-                    if quantity and unit:
-                        msg += f" for {quantity} {unit}"
-                    msg += " don dey our system."
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": msg, "tone": "income"})
-            else:
-                # Couldn't parse – ask again more clearly
-                return jsonify({
-                    "message": "I no fit get the price well. Try tell me like this: 'I sell tomatoes, 5 mudu for ₦2,000'. Wetin you dey sell and how much?",
-                    "tone": "neutral"
-                })
-
-        elif state == "loan_ask_product":
-            # User might provide amount + product in one go, or just product
-            text_clean = reply.strip()
-            # Check if they also gave an amount now (if we didn't have one)
-            if p["data"]["amount"] is None:
-                amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
-                if amount_match:
-                    amount_str = amount_match.group(1).replace(',', '')
-                    p["data"]["amount"] = float(amount_str)
-                    if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
-                        p["data"]["amount"] *= 1000
-                    # Remove the amount from the product description
-                    text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean, flags=re.IGNORECASE).strip()
-                else:
-                    return jsonify({
-                        "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
-                        "tone": "neutral"
-                    })
-
-            # Remove common filler words from the product description
-            text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
-            text_clean = re.sub(r'\s+', ' ', text_clean).strip()
-            if not text_clean:
-                return jsonify(
-                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
-
-            p["data"]["product"] = text_clean
-            p["state"] = "loan_ask_supplier"
-            return jsonify({
-                "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
-                "tone": "neutral"
-            })
-
-        elif state == "loan_ask_supplier":
-            supplier_query = reply.strip()
-            if not supplier_query:
-                return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
-
-            # Search the business directory
-            conn = get_conn()
-            cur = conn.cursor()
-            like_query = f'%{supplier_query}%'
-            cur.execute("""
-                SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
-                FROM business_listings bl
-                JOIN user_wallets uw ON bl.user_id = uw.user_id
-                WHERE LOWER(bl.name) ILIKE %s
-                ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
-                LIMIT 5
-            """, (like_query,))
-            suppliers = cur.fetchall()
-            conn.close()
-
-            if not suppliers:
-                return jsonify({
-                    "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
-                    "tone": "warning"
-                })
-
-            # Build the same kind of business list we use for search
-            results = []
-            for s in suppliers:
-                results.append({
-                    "id": s[0],          # user_id (supplier)
-                    "name": s[1],
-                    "product": s[2],
-                    "market_name": s[3] or '',
-                    "city": s[4] or '',
-                    "phone": s[5] or '',
-                    "rating": s[6] or 0,
-                    "total_ratings": s[7] or 0,
-                    "is_verified": s[8] or False,
-                    "listing_type": "user"
-                })
-
-            p["data"]["supplier_options"] = results
-            p["state"] = "loan_confirm_supplier"
-            return jsonify({
-                "action": "show_business_search",
-                "search_query": supplier_query,
-                "city": get_user_facts(user_id).get('city', ''),
-                "message": f"I found {len(results)} supplier(s) matching '{supplier_query}'. Tap the correct one to continue.",
-                "tone": "neutral",
-                "component": "BusinessList",
-                "props": {
-                    "data": results,
-                    "query": supplier_query,
-                    "emptyMessage": "No suppliers found."
-                }
-            })
-
-        elif state == "loan_confirm_supplier":
-            # The frontend will send back the selected supplier's name (or ID) as text.
-            # We'll match the selected name from the options we stored.
-            selected_name = reply.strip()
-            options = p["data"].get("supplier_options", [])
-            selected = None
-            for opt in options:
-                if opt["name"].lower() == selected_name.lower():
-                    selected = opt
-                    break
-            if not selected:
-                return jsonify({
-                    "message": "Please tap one of the suppliers from the list I sent.",
-                    "tone": "warning"
-                })
-
-            p["data"]["supplier_user_id"] = selected["id"]
-            p["data"]["supplier_name"] = selected["name"]
-            p["state"] = "confirming_inventory_loan"   # reuse the existing confirmation state
-
-            amount = p["data"]["amount"]
-            flat_fee = amount * 0.05
-            total_repayable = amount + flat_fee
-            daily_amount = round(total_repayable / 14, 2)
-
-            p["data"]["flat_fee"] = flat_fee
-            p["data"]["total_repayable"] = total_repayable
-            p["data"]["daily_amount"] = daily_amount
-
-            return jsonify({
-                "message": (
-                    f"📦 **Loan Summary**\n\n"
-                    f"• Amount: ₦{amount:,.2f}\n"
-                    f"• Product: {p['data']['product']}\n"
-                    f"• Supplier: {selected['name']}\n"
-                    f"• Fee (5%): ₦{flat_fee:,.2f}\n"
-                    f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                    f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
-                    f"Reply **'yes'** to confirm and I'll pay the supplier directly."
-                ),
-                "tone": "neutral"
-            })
-
-
-        elif state == "confirming_inventory_loan":
-            if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
-                data = p["data"]
-                amount = data["amount"]
-                supplier_user_id = data["supplier_user_id"]
-
-                # Check user wallet has enough? No, Oyinda pays from its own pool.
-                # For simulation, we'll use a system pool wallet (Oyinda's own wallet).
-                # In production, you'd have a pre-funded Mono reserved account.
-                # We'll simulate by creating a system user with a wallet, or just assume Oyinda has infinite balance for now.
-                # We'll log a transfer from a system account to supplier.
-                # Actually, we'll just directly credit the supplier's wallet (simulate disbursement).
-                # In reality, you'd use MonoReservedAccount.payout() to send money from Oyinda's pool to supplier's virtual account.
-                # But since we are inside Oyinda's ledger, we can just update supplier's wallet balance directly
-                # because both are internal. We'll assume Oyinda's pool is represented by a special system user 'oyinda_treasury'.
-                # For sandbox, we'll just add the amount to supplier's wallet.
-
-                conn = get_conn()
-                cur = conn.cursor()
-                # Add funds to supplier wallet
-                cur.execute("UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
-                            (amount, supplier_user_id))
-                # Also log a credit event for supplier
-                append_event(supplier_user_id, supplier_user_id, 'WalletCredited', {
-                    "amount": amount,
-                    "source": "oyinda_inventory_loan",
-                    "product": data["product"],
-                    "borrower": user_id
-                })
-                conn.commit()
-                conn.close()
-
-                # Create loan record
-                start_date = datetime.utcnow().date()
-                end_date = start_date + timedelta(days=21)
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO inventory_loans
-                    (user_id, supplier_id, product, principal, flat_fee, total_repayable,
-                     daily_amount, remaining_balance, start_date, end_date, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-                """, (
-                    user_id, supplier_user_id, data["product"], amount,
-                    data["flat_fee"], data["total_repayable"], data["daily_amount"],
-                    data["total_repayable"], start_date, end_date
-                ))
-                conn.commit()
-                conn.close()
-
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                return jsonify({
-                    "message": f"✅ Done! ₦{amount:,.2f} paid to {data['supplier_name']} for {data['product']}.\n"
-                               f"Your daily repayment is ₦{data['daily_amount']:,.2f}. I'll deduct it from your wallet automatically.",
-                    "tone": "income",
-                    "feedback_prompt": {
-                        "context": "after_loan",
-                        "question": "How was the loan process?",
-                        "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
-                    }
-                })
-            else:
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": "Loan cancelled."})
-
-
-        elif state == "collecting_location":
-            p["data"]["location"] = reply.strip()
-            return finalise_transaction(user_id)
-
-        elif state == "collecting_emergency_hours":
-            hours_match = re.match(r'^(\d+)$', reply.strip())
-            if hours_match:
-                hours = int(hours_match.group(1))
-                if hours < 1 or hours > 72:
-                    return jsonify({"message": "Please choose between 1 and 72 hours."})
-                store_user_fact(user_id, 'emergency_data_hours', hours)
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": f"Got it! I'll send you 33 MB of **MTN** data after you've been offline for {hours} hours. "
-                               "I'll check every 30 minutes.",
-                    "tone": "income"
-                })
-            else:
-                return jsonify({
-                    "message": "Please tell me a number of hours, like 3, 6, or 12.",
-                    "tone": "neutral"
-                })
-
-
-        elif state == "confirming_bulk":
-            reply_lower = reply.lower()
-            if any(word in reply_lower for word in ['yes', 'yeah', 'confirm', 'log them', 'all', 'spent']):
-                # Log each amount as a separate expense
-                amounts = p["data"]["amounts"]
-                for amt in amounts:
-                    append_event(user_id, user_id, 'ExpenseLogged', {
-                        "amount": amt,
-                        "currency": "NGN",
-                        "category": "other",
-                        "date": datetime.utcnow().strftime("%Y-%m-%d"),
-                        "description": p["data"].get("description", text)[:100]
-                    })
-                # Remove the bulk transaction
-                pending_transaction.pop(user_id, None)
-                name = get_user_name(user_id)
-                return jsonify({
-                    "message": f"Logged {len(amounts)} expenses totalling ₦{p['data']['total']:,.2f}.",
-                    "tone": "neutral"
-                })
-            else:
-                # User doesn't want bulk logging – remove and let fallback handle it
-                pending_transaction.pop(user_id, None)
-
-
-        # If we didn't match any state, just finalise to avoid hanging
-        return finalise_transaction(user_id)
 
     # ---------- Rule‑based swap detector (fast path) ----------
     swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
@@ -5254,10 +5296,12 @@ def search_business():
     cur = conn.cursor()
     # Fuzzy search on product, name, market_name; filter by city if provided, but include listings with empty city (system)
     query = """
-    SELECT id, name, product, category, market_name, city, phone, avatar_url, rating, total_ratings, is_verified, listing_type
+    SELECT id, name, product, category, market_name, city, phone,
+           avatar_url, rating, total_ratings, is_verified, listing_type
     FROM business_listings
-    WHERE (LOWER(product) LIKE %s OR LOWER(name) LIKE %s OR LOWER(market_name) LIKE %s)
-    AND (LOWER(city) = %s OR city = '' OR city IS NULL)
+    WHERE LOWER(product) LIKE %s
+       OR LOWER(name) LIKE %s
+       OR LOWER(market_name) LIKE %s
     ORDER BY rating DESC NULLS LAST, created_at DESC
     LIMIT 20
     """

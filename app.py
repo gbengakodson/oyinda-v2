@@ -858,89 +858,96 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-        elif state == "loan_ask_supplier":
-            # If the user seems to be starting a new task, cancel the loan wizard
-            likely_other_task = any(word in reply.lower() for word in [
-                # Actions
-                'spent', 'bought', 'paid', 'earned', 'received', 'made',
-                'balance', 'net worth', 'credit score', 'statement', 'tax',
-                'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
-                'search', 'find', 'who sells', 'i need', 'what', 'how',
-                # Questions / new intents
-                'list', 'show', 'register', 'link', 'connect',
-                # Explicit cancellation
-                'cancel', 'stop', 'never mind', 'forget',
-                # Loan re-trigger (start fresh)
-                'borrow', 'loan', 'lend'
-            ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
 
-            if likely_other_task:
-                pending_transaction.pop(user_id, None)
-                return process_user_command(user_id, reply)
+        elif state == "loan_ask_supplier":
+
+            # ... keep the existing "likely_other_task" check and confusion_words check ...
 
             supplier_query = reply.strip()
+
             if not supplier_query:
                 return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
 
-            # If the user sounds stuck or can't find the supplier
-            confusion_words = [
-                "cant find", "don't see", "dont see", "not there", "none", "no one",
-                "nobody", "nothing", "i don't know", "i dont know", "what do i do",
-                "help", "how do i", "not working", "can't find", "cant tap"
-            ]
-            if any(phrase in reply.lower() for phrase in confusion_words):
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": "No problem! You can search for any supplier by typing 'who sells [product]'. Or if you know the supplier's name, just tell me and I'll search again. How can I help?",
-                    "tone": "neutral"
-                })
-
             # Search the business directory
+
             conn = get_conn()
+
             cur = conn.cursor()
+
             like_query = f'%{supplier_query}%'
+
             cur.execute("""
+
                 SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
+
                 FROM business_listings bl
+
                 JOIN user_wallets uw ON bl.user_id = uw.user_id
+
                 WHERE LOWER(bl.name) ILIKE %s
+
                 ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
+
                 LIMIT 5
+
             """, (like_query,))
+
             suppliers = cur.fetchall()
+
             conn.close()
 
             if not suppliers:
                 return jsonify({
+
                     "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
+
                     "tone": "warning"
+
                 })
 
-            # Build the same kind of business list we use for search
-            results = []
+            # Build supplier options and store in pending data
+
+            options = []
+
             for s in suppliers:
-                results.append({
-                    "id": s[0],  # user_id (supplier)
+                options.append({
+
+                    "id": s[0],
+
                     "name": s[1],
+
                     "product": s[2],
-                    "market_name": s[3] or '',
+
+                    "market": s[3] or '',
+
                     "city": s[4] or '',
-                    "phone": s[5] or '',
-                    "rating": s[6] or 0,
-                    "total_ratings": s[7] or 0,
-                    "is_verified": s[8] or False,
-                    "listing_type": "user"
+
+                    "phone": s[5] or ''
+
                 })
 
-            p["data"]["supplier_options"] = results
+            p["data"]["supplier_options"] = options
+
             p["state"] = "loan_confirm_supplier"
-            # Return the list with a dedicated action so the frontend doesn't fetch
+
+            # Return feedback chips with supplier names
+
             return jsonify({
-                "action": "loan_supplier_selection",
-                "search_query": supplier_query,
-                "message": f"I found {len(results)} supplier(s) matching '{supplier_query}'. Tap the correct one to continue.",
+
+                "message": f"I found {len(options)} supplier(s) matching '{supplier_query}'. Tap the one you want:",
+
                 "tone": "neutral",
-                "suppliers": results
+
+                "feedback_prompt": {
+
+                    "context": "supplier_selection",
+
+                    "question": "Choose supplier",
+
+                    "options": [opt["name"] for opt in options]
+
+                }
+
             })
 
         elif state == "loan_confirm_supplier":

@@ -729,16 +729,41 @@ def register():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
-    email = data.get('email', '').strip()
-    password = data.get('password', '')
-    if not email or not password:
-        return jsonify({"error": "Email and password required."}), 400
-    user = authenticate_user(email, password)
-    if not user:
-        return jsonify({"error": "Invalid email or password."}), 401
-    token = create_access_token(identity=user['id'])
-    return jsonify({"message": f"Welcome back, {user['name']}! Ready to take control of your finances?", "user": user, "token": token})
+    phone = (data.get('phone') or '').strip()
+    pin = (data.get('pin') or data.get('password') or '').strip()
 
+    # If no phone, fall back to email/username for old accounts
+    if not phone:
+        email = data.get('email', '').strip()
+        password = data.get('password', '')
+        if not email or not password:
+            return jsonify({"error": "Phone and PIN required."}), 400
+        user = authenticate_user(email, password)
+        if not user:
+            return jsonify({"error": "Invalid credentials."}), 401
+        token = create_access_token(identity=user['id'])
+        return jsonify({"message": f"Welcome back, {user['name']}!", "user": user, "token": token})
+
+    # Lookup by phone number (stored in user facts)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s", (phone,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"error": "Phone number not found."}), 401
+
+    user_id, name, email, password_hash, account_type = row
+    if not check_password(pin, password_hash):
+        return jsonify({"error": "Incorrect PIN."}), 401
+
+    token = create_access_token(identity=str(user_id))
+    return jsonify({
+        "message": f"Welcome back, {name}!",
+        "user": {"id": user_id, "name": name},
+        "token": token
+    })
 
 
 def process_user_command(user_id, text):
@@ -3452,20 +3477,21 @@ def onboard():
     if step == 'ask_name':
         user_data['name'] = text.strip()
         cur.execute(
-            "UPDATE onboarding_sessions SET step = 'ask_password', data = %s WHERE token = %s",
+            "UPDATE onboarding_sessions SET step = 'ask_pin', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
         )
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": f"Nice to meet you, {user_data['name']}! Create a password (minimum 6 characters):", "tone": "neutral"})
+        return jsonify({"message": f"Nice to meet you, {user_data['name']}! Create a 6‑digit PIN for quick login:",
+                        "tone": "neutral"})
 
-    if step == 'ask_password':
-        if len(text) < 6:
+    if step == 'ask_pin':
+        if not re.fullmatch(r'\d{6}', text):
             cur.close()
             conn.close()
-            return jsonify({"message": "Password must be at least 6 characters. Try again:", "tone": "neutral"})
-        user_data['password'] = text
+            return jsonify({"message": "PIN must be exactly 6 digits. Please try again:", "tone": "neutral"})
+        user_data['password'] = text  # store PIN as password
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_type', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
@@ -3473,28 +3499,33 @@ def onboard():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
+        return jsonify({
+                           "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
+                           "tone": "neutral"})
 
-    if step == 'ask_type':
-        user_type = text.strip().lower()
-        if user_type not in ['individual', 'business', 'company']:
-            cur.close()
-            conn.close()
-            return jsonify({"message": "Please choose one: individual, business, or company.", "tone": "neutral"})
-        user_data['account_type'] = user_type
-        if user_type in ['business', 'company']:
-            cur.execute(
-                "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
-                (json.dumps(user_data), token)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({"message": "What is the name of your business? (or type 'skip' to skip)", "tone": "neutral"})
-        else:
-            cur.close()
-            conn.close()
-            return finalize_registration(token)
+    if step == 'ask_what_they_sell':
+        product = text.strip()
+        if product.lower() != 'skip':
+            user_data['product'] = product
+        # Move to finalization
+        cur.close()
+        conn.close()
+        return finalize_registration(token)
+
+
+    if user_type in ['business', 'company']:
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_what_they_sell', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+                           "message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')",
+                           "tone": "neutral"})
+
+
 
     if step == 'ask_business_name':
         if text.strip().lower() != 'skip':
@@ -3508,12 +3539,18 @@ def onboard():
         conn.close()
         return jsonify({"message": "Business address? (or type 'skip')", "tone": "neutral"})
 
-    if step == 'ask_business_address':
-        if text.strip().lower() != 'skip':
-            user_data['business_address'] = text.strip()
+    if step == 'ask_what_they_sell':
+        product = text.strip()
+        if product.lower() != 'skip':
+            user_data['product'] = product
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
         cur.close()
         conn.close()
-        return finalize_registration(token)
+        return jsonify({"message": "What is the name of your business? (or type 'skip')", "tone": "neutral"})
 
     # Fallback
     cur.close()
@@ -5760,6 +5797,26 @@ def finalize_registration(token):
         store_user_fact(user_id, 'language', user_data.get('language', 'english'))
 
     store_user_fact(user_id, "username", username)
+
+    # If the user specified a product during onboarding, auto‑list them
+    product = user_data.get('product', '').strip()
+    if product:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            city = user_data.get('business_address', '') or ''
+            phone = user_data.get('phone', '') or ''
+            name = user_data.get('name', '')
+            cur.execute(
+                """INSERT INTO business_listings
+                   (user_id, name, product, category, market_name, city, phone, listing_type)
+                   VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
+                (user_id, name, product, '', city, phone)
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass   # don't block registration if listing fails
 
     cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
     conn.commit()

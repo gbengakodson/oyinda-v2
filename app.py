@@ -744,6 +744,13 @@ def login():
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
 
+    # ===== ABSOLUTE CANCEL – abort any pending flow immediately =====
+    if text.strip().lower() == '!cancel':
+        if user_id in pending_transaction:
+            pending_transaction.pop(user_id, None)
+        save_conversation(user_id, 'user', text)
+        return jsonify({"message": "Cancelled. How can I help you?", "tone": "neutral"})
+
     # ---------- WALLET COMMANDS ----------
     text_lower_wallet = text.lower()
     if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):

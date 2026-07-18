@@ -743,7 +743,7 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
-    data = request.get_json()  # temporary – restore old request variable
+    data = request.get_json(silent=True) or {}
 
     # ===== ABSOLUTE CANCEL – abort any pending flow immediately =====
     if text.strip().lower() == '!cancel':

@@ -3578,8 +3578,6 @@ def onboard():
             conn.close()
             return finalize_registration(token)
 
-
-
     if step == 'ask_business_name':
         if text.strip().lower() != 'skip':
             user_data['business_name'] = text.strip()
@@ -3604,6 +3602,13 @@ def onboard():
         cur.close()
         conn.close()
         return jsonify({"message": "What is the name of your business? (or type 'skip')", "tone": "neutral"})
+
+    if step == 'ask_business_address':
+        if text.strip().lower() != 'skip':
+            user_data['business_address'] = text.strip()
+        cur.close()
+        conn.close()
+        return finalize_registration(token)
 
     # Fallback
     cur.close()

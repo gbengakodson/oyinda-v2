@@ -5811,84 +5811,81 @@ def admin_summary():
 
 
 def finalize_registration(token):
+    # Open a fresh connection – never trust the caller's cursor
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT data FROM onboarding_sessions WHERE token = %s", (token,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return jsonify({"message": "Session expired. Please start again."})
+    try:
+        cur.execute("SELECT data FROM onboarding_sessions WHERE token = %s", (token,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"message": "Session expired. Please start again."})
 
-    user_data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        user_data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
-    # Generate a unique username from the name
-    base_username = re.sub(r'[^a-z0-9]', '', user_data["name"].lower())[:15]
-    username = base_username
-    cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-    counter = 1
-    while cur.fetchone():
-        username = f"{base_username}{counter}"
+        # Generate a unique username from the name
+        base_username = re.sub(r'[^a-z0-9]', '', user_data["name"].lower())[:15]
+        username = base_username
         cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-        counter += 1
+        counter = 1
+        while cur.fetchone():
+            username = f"{base_username}{counter}"
+            cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+            counter += 1
 
-    # Internal email – not asked from user
-    internal_email = f"{username}@oyinda.local"
+        internal_email = f"{username}@oyinda.local"
 
-    from core import create_user
-    user_id = create_user(
-        name=user_data["name"],
-        email=internal_email,
-        password=user_data["password"],
-        account_type=user_data.get("account_type", "personal"),
-        address=user_data.get("business_address", "")
-    )
+        from core import create_user, store_user_fact
+        user_id = create_user(
+            name=user_data["name"],
+            email=internal_email,
+            password=user_data["password"],
+            account_type=user_data.get("account_type", "personal"),
+            address=user_data.get("business_address", "")
+        )
 
-    if not user_id:
+        if not user_id:
+            return jsonify({"message": "Registration failed. Please try again."})
+
+        store_user_fact(user_id, "username", username)
+        store_user_fact(user_id, "language", user_data.get("language", "english"))
+
+        # Auto‑list business if product was given
+        product = user_data.get("product", "").strip()
+        if product:
+            try:
+                conn2 = get_conn()
+                cur2 = conn2.cursor()
+                city = user_data.get("business_address", "") or ""
+                phone = user_data.get("phone", "") or ""
+                name = user_data.get("name", "")
+                cur2.execute(
+                    """INSERT INTO business_listings
+                       (user_id, name, product, category, market_name, city, phone, listing_type)
+                       VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
+                    (user_id, name, product, "", city, phone)
+                )
+                conn2.commit()
+                conn2.close()
+            except Exception:
+                pass
+
+        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+        conn.commit()
+
+        access_token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
+        return jsonify({
+            "jwt": access_token,
+            "user": {"id": user_id, "name": user_data["name"]},
+            "message": f"All set, {user_data['name']}! Your username is {username}. You're now registered.",
+            "tone": "income",
+            "redirect": "/dashboard"
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"message": f"Registration error: {str(e)}"}), 500
+    finally:
         cur.close()
         conn.close()
-        return jsonify({"message": "That username is taken. Please try a different name."})
-
-    if user_data.get("account_type") in ['business', 'company']:
-        store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
-        store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
-        store_user_fact(user_id, 'language', user_data.get('language', 'english'))
-
-    store_user_fact(user_id, "username", username)
-
-    # If the user specified a product during onboarding, auto‑list them
-    product = user_data.get('product', '').strip()
-    if product:
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            city = user_data.get('business_address', '') or ''
-            phone = user_data.get('phone', '') or ''
-            name = user_data.get('name', '')
-            cur.execute(
-                """INSERT INTO business_listings
-                   (user_id, name, product, category, market_name, city, phone, listing_type)
-                   VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
-                (user_id, name, product, '', city, phone)
-            )
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass   # don't block registration if listing fails
-
-    cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
-    return jsonify({
-        "jwt": access_token,
-        "user": {"id": user_id, "name": user_data["name"]},
-        "message": f"All set, {user_data['name']}! Your username is {username}. You're now registered.",
-        "tone": "income",
-        "redirect": "/dashboard"
-    })
 
 
 if __name__ == '__main__':

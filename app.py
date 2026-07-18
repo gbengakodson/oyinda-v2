@@ -3555,7 +3555,6 @@ def onboard():
                            "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
                            "tone": "neutral"})
 
-
     if step == 'ask_type':
         user_type = text.strip().lower()
         if user_type not in ['individual', 'business', 'company']:
@@ -3571,7 +3570,9 @@ def onboard():
             conn.commit()
             cur.close()
             conn.close()
-            return jsonify({"message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')", "tone": "neutral"})
+            return jsonify({
+                               "message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')",
+                               "tone": "neutral"})
         else:
             cur.close()
             conn.close()

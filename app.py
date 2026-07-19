@@ -846,6 +846,68 @@ def process_user_command(user_id, text):
                 p["state"] = "collecting_category"
                 return ask_next_question(user_id)
 
+            elif state == "direct_loan_amount":
+                # Validate amount
+                amount = float(reply.strip().replace(',', ''))
+                # Check eligibility, max loan, etc. (reuse existing checks)
+                p["data"]["amount"] = amount
+                p["state"] = "direct_loan_product"
+                return jsonify(
+                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
+            elif state == "direct_loan_product":
+                p["data"]["product"] = reply.strip()
+                amount = p["data"]["amount"]
+                supplier_name = p["data"]["supplier_name"]
+                supplier_id = p["data"]["supplier_id"]
+
+                # Calculate loan terms
+                flat_fee = amount * 0.05
+                total_repayable = amount + flat_fee
+                daily_amount = round(total_repayable / 14, 2)
+
+                p["data"]["flat_fee"] = flat_fee
+                p["data"]["total_repayable"] = total_repayable
+                p["data"]["daily_amount"] = daily_amount
+                p["state"] = "confirming_direct_loan"
+
+                return jsonify({
+                    "message": (
+                        f"📦 **Loan Summary**\n\n"
+                        f"• Amount: ₦{amount:,.2f}\n"
+                        f"• Product: {p['data']['product']}\n"
+                        f"• Supplier: {supplier_name}\n"
+                        f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+                        f"• Total to repay: ₦{total_repayable:,.2f}\n"
+                        f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+                        f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+                    ),
+                    "tone": "neutral"
+                })
+
+            elif state == "confirming_direct_loan":
+                if any(word in reply.lower() for word in ['yes', 'yeah', 'confirm']):
+                    # Disburse the loan (same as confirming_inventory_loan logic)
+                    supplier_id = p["data"]["supplier_id"]
+                    amount = p["data"]["amount"]
+                    # Credit supplier wallet
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s",
+                                (amount, supplier_id))
+                    conn.commit()
+                    conn.close()
+                    append_event(user_id, user_id, 'LoanTaken', {...})
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({
+                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! Your daily repayment is ₦{p['data']['daily_amount']:,.2f}.",
+                        "tone": "income",
+                        "feedback_prompt": {...}
+                    })
+                else:
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "Loan cancelled."})
+
 
             elif state == "loan_ask_product":
                 # If the user seems to be starting a new task, cancel the loan wizard
@@ -1389,6 +1451,7 @@ def process_user_command(user_id, text):
                     })
 
 
+
             elif state == "confirming_inventory_loan":
                 if any(word in reply.lower() for word in ['yes', 'yeah', 'accept', 'ok']):
                     data = p["data"]
@@ -1509,6 +1572,45 @@ def process_user_command(user_id, text):
 
             # If we didn't match any state, just finalise to avoid hanging
             return finalise_transaction(user_id)
+
+
+        # ---- DIRECT LOAN FROM MARKETPLACE (tapped "Pay with Loan" on a business card) ----
+        loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
+        if loan_from_match:
+            supplier_id = loan_from_match.group(1)
+            # Fetch supplier details
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, name, product FROM business_listings WHERE user_id = %s", (supplier_id,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                return jsonify({"message": "Supplier not found.", "tone": "warning"})
+            supplier_name = row[1]
+            supplier_product = row[2] or 'goods'
+
+            # Check user eligibility (same as before)
+            credit = get_credit_score(user_id)
+            max_loan = get_max_loan_amount(credit['score'])
+            if max_loan == 0:
+                return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
+                                "tone": "warning"})
+
+            # Store in pending transaction
+            pending_transaction[user_id] = {
+                "state": "direct_loan_amount",
+                "data": {
+                    "supplier_id": supplier_id,
+                    "supplier_name": supplier_name,
+                    "product_hint": supplier_product,
+                    "max_loan": max_loan
+                },
+                "category": None
+            }
+            return jsonify({
+                "message": f"How much do you want to borrow to pay {supplier_name}? (e.g., 5000)",
+                "tone": "neutral"
+            })
 
 
         # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
@@ -1847,6 +1949,37 @@ def process_user_command(user_id, text):
                 "requires_confirmation": True,
                 "swap_payload": swap_payload
             })
+
+        # ---- DIRECT LOAN FROM SUPPLIER (triggered by marketplace button) ----
+        loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
+        if loan_from_match:
+            supplier_id = loan_from_match.group(1)
+            # Fetch supplier details
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, name, product FROM business_listings WHERE user_id = %s", (supplier_id,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                return jsonify({"message": "Supplier not found.", "tone": "warning"})
+            supplier_name = row[1]
+            supplier_product = row[2] or 'goods'
+
+            # Store intent
+            pending_transaction[user_id] = {
+                "state": "direct_loan_amount",
+                "data": {
+                    "supplier_id": supplier_id,
+                    "supplier_name": supplier_name,
+                    "product_hint": supplier_product
+                },
+                "category": None
+            }
+            return jsonify({
+                "message": f"How much do you want to borrow to pay {supplier_name}? (e.g., 5000)",
+                "tone": "neutral"
+            })
+
 
         # 5. Exchange trade
         trade_match = re.match(

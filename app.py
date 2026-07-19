@@ -1599,39 +1599,45 @@ def process_user_command(user_id, text):
 
         # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
         search_triggers = [
-            'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
-            'who does', 'who dey do', 'i need a', 'i dey find',
-            'who supplies', 'where can i get', 'who get', 'who dey supply',
-            'which person dey', 'who fit', 'who sabi', 'who dey run'
+            'who sell', 'who sells', 'who dey sell', 'find supplier', 'find',
+            'who does', 'who dey do', 'i need a', 'i dey find', 'search', 'look for',
+            'who supplies', 'where can i get', 'who get', 'who dey supply', 'am looking for'
+            'which person dey', 'who fit', 'who sabi', 'who dey run', 'serch for',
         ]
-        if any(phrase in text.lower() for phrase in search_triggers):
-            # Find the LONGEST matching trigger
-            matched_trigger = ''
+        if any(phrase in text_lower for phrase in search_triggers):
+            # Extract the search term by taking everything after the FIRST matched trigger
+            matched = None
             for phrase in search_triggers:
-                if phrase in text.lower() and len(phrase) > len(matched_trigger):
-                    matched_trigger = phrase
-
-            # Remove the trigger phrase from the text (case‑insensitive)
-            query = re.sub(re.escape(matched_trigger), '', text, flags=re.IGNORECASE).strip()
-
-            # Remove trailing location words
-            query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query, flags=re.IGNORECASE).strip()
-
-            if len(query) < 2:
-                # The search term was too short; let the user know
+                idx = text_lower.find(phrase)
+                if idx != -1:
+                    # Take the part after the trigger
+                    candidate = text_lower[idx + len(phrase):].strip()
+                    # Remove leading question marks or commas
+                    candidate = candidate.lstrip('?,.- ')
+                    if len(candidate) >= 2:
+                        matched = candidate
+                        break
+            if not matched:
+                # Fallback: use the last word of the input if nothing captured
+                words = text_lower.split()
+                matched = words[-1] if words else ''
+            if len(matched) < 2:
                 return jsonify({
                     "message": "Please be more specific. What are you looking for?",
                     "tone": "neutral"
                 })
+
+            # Remove any trailing location phrases
+            matched = re.sub(r'\s+(in|for|at|near|around|wey\s+dey)\s+.*$', '', matched, flags=re.IGNORECASE).strip()
 
             facts = get_user_facts(user_id)
             my_city = facts.get('city', '')
 
             return jsonify({
                 "action": "show_business_search",
-                "search_query": query,
+                "search_query": matched,
                 "city": my_city,
-                "message": f"Searching for '{query}'…",
+                "message": f"Searching for '{matched}'…",
                 "tone": "neutral"
             })
 
@@ -2767,7 +2773,12 @@ def handle_command():
     save_conversation(user_id, 'user', text)
     if not text:
         return jsonify({"error": "No text provided"}), 400
-    return process_user_command(user_id, text)
+    try:
+        return process_user_command(user_id, text)
+    except NameError as e:
+        import traceback
+        tb = traceback.format_exc()
+        return jsonify({"message": f"❌ NameError: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
 
 
 # --------------- QUERY HANDLER (with voice-friendly responses) ---------------
@@ -5791,7 +5802,12 @@ def handle_voice():
 
         save_conversation(user_id, 'user', text)
 
-        resp = process_user_command(user_id, text)
+        try:
+            resp = process_user_command(user_id, text)
+        except NameError as e:
+            import traceback
+            tb = traceback.format_exc()
+            resp = jsonify({"message": f"❌ NameError: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
         resp_json = resp.get_json()
         resp_json['transcription'] = text
         return jsonify(resp_json)

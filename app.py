@@ -779,6 +779,7 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
+    data = request.get_json()
 
 
     try:

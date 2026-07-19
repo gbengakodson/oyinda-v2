@@ -550,7 +550,7 @@ def create_user(name, email, password, account_type="personal", address=""):
         return user_id
     except Exception:
         conn.rollback()
-        return None
+        return f"error: {str(e)}"
     finally:
         conn.close()
 

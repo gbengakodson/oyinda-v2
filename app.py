@@ -5788,8 +5788,8 @@ def finalize_registration(token):
                 account_type=user_data.get("account_type", "personal"),
                 address=user_data.get("business_address", "")
             )
-            if not user_id:
-                return jsonify({"message": "Registration failed – create_user returned None."})
+            if not user_id or (isinstance(user_id, str) and user_id.startswith("error:")):
+                return jsonify({"message": f"Registration failed: {user_id}"})
         except Exception as e:
             return jsonify({"message": f"Registration error: {str(e)}"})
 

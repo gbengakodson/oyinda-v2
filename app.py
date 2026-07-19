@@ -26,6 +26,8 @@ try:
 except ImportError:
     socketio = None
 
+data = {}
+
 
 
 SYSTEM_PROMPT = (

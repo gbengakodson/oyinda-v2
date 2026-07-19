@@ -5526,7 +5526,7 @@ def search_business():
     LIMIT 20
     """
     like_q = f'%{q}%'
-    cur.execute(query, (like_q, like_q, like_q, city))
+    cur.execute(query, (like_q, like_q, like_q))
     rows = cur.fetchall()
     conn.close()
 

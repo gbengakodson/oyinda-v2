@@ -1597,6 +1597,17 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
+        # ---- LIST ALL BUSINESSES ----
+        if any(phrase in text_lower for phrase in [
+            'list all businesses', 'show all suppliers', 'all businesses',
+            'list businesses', 'show all businesses', 'list suppliers'
+        ]):
+            return jsonify({
+                "action": "show_all_businesses",
+                "message": "Listing all registered businesses…",
+                "tone": "neutral"
+            })
+
         # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
         search_triggers = [
             'who sell', 'who sells', 'who dey sell', 'find supplier', 'find',
@@ -1604,30 +1615,31 @@ def process_user_command(user_id, text):
             'who supplies', 'where can i get', 'who get', 'who dey supply', 'am looking for'
             'which person dey', 'who fit', 'who sabi', 'who dey run', 'serch for',
         ]
+        # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
+        # Sort longest-first to avoid partial matches
+        sorted_triggers = sorted(search_triggers, key=len, reverse=True)
+
         if any(phrase in text_lower for phrase in search_triggers):
-            # Extract the search term by taking everything after the FIRST matched trigger
             matched = None
-            for phrase in search_triggers:
+            for phrase in sorted_triggers:
                 idx = text_lower.find(phrase)
                 if idx != -1:
-                    # Take the part after the trigger
                     candidate = text_lower[idx + len(phrase):].strip()
-                    # Remove leading question marks or commas
                     candidate = candidate.lstrip('?,.- ')
                     if len(candidate) >= 2:
                         matched = candidate
                         break
             if not matched:
-                # Fallback: use the last word of the input if nothing captured
                 words = text_lower.split()
                 matched = words[-1] if words else ''
+
             if len(matched) < 2:
                 return jsonify({
                     "message": "Please be more specific. What are you looking for?",
                     "tone": "neutral"
                 })
 
-            # Remove any trailing location phrases
+            # Remove trailing location phrases
             matched = re.sub(r'\s+(in|for|at|near|around|wey\s+dey)\s+.*$', '', matched, flags=re.IGNORECASE).strip()
 
             facts = get_user_facts(user_id)
@@ -3346,44 +3358,6 @@ def handle_query(text, user_id):
                 "tone": "neutral"
             })
 
-
-
-    # ---------- BUSINESS NETWORK SEARCH ----------
-    search_triggers = [
-        'who sell', 'who sells', 'who dey sell', 'find supplier', 'find someone who',
-        'who does', 'who dey do', 'i need a', 'i dey find',
-        'who supplies', 'where can i get', 'who get', 'who dey supply',
-        'which person dey', 'who fit', 'who sabi', 'who dey run'
-    ]
-    if any(phrase in text_lower for phrase in search_triggers):
-        # Extract the product/service – grab everything after the trigger phrase
-        search_query = ''
-        for phrase in search_triggers:
-            if phrase in text_lower:
-                idx = text_lower.find(phrase) + len(phrase)
-                search_query = text_lower[idx:].strip()
-                break
-
-        # If extraction failed, just use the whole text after the trigger as the query
-        if not search_query:
-            search_query = text_lower
-
-        # Remove trailing fluff like "in ibadan", "for me", etc.
-        search_query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', search_query).strip()
-
-        if len(search_query) < 2:
-            return jsonify({"answer": "What are you looking for? Please say something like 'who sells tomatoes'.", "tone": "neutral"})
-
-        facts = get_user_facts(user_id)
-        my_city = facts.get('city', '')
-
-        return jsonify({
-            "action": "show_business_search",
-            "search_query": search_query,
-            "city": my_city,
-            "message": f"Searching for '{search_query}' near you…",
-            "tone": "neutral"
-        })
 
     # If no specific query matched, try conversational LLM
     reply = conversational_reply(user_id, text)

@@ -3438,7 +3438,10 @@ def onboard():
             conn.commit()
             cur.close()
             conn.close()
-            return jsonify({"message": "Welcome back! What's your email or username?", "tone": "neutral"})
+            return jsonify({
+                "message": "Welcome back! Please enter your email address or phone number:",
+                "tone": "neutral"
+            })
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
             user_data = {}
             cur.execute(
@@ -3457,24 +3460,39 @@ def onboard():
                 "tone": "neutral"
             })
 
+    # ---- LOGIN BRANCH ----
+    if step == 'login_identity':
+        identity = text.strip()
+        user_data['identity'] = identity
+        # Detect email vs phone
+        if re.fullmatch(r'\d{11}', identity):
+            # Phone number – ask for PIN
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_pin', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Enter your 6‑digit PIN:", "tone": "neutral"})
+        else:
+            # Email – ask for password
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Enter your password:", "tone": "neutral"})
 
     if step == 'login_password':
         user_data['password'] = text
         identity = user_data['identity']
-        # Try email first, then username
         from core import authenticate_user_by_email_or_username
         user = authenticate_user_by_email_or_username(identity, user_data['password'])
         if not user:
-            # Try finding by username
-            conn2 = get_conn()
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE username = %s", (identity,))
-            row2 = cur2.fetchone()
-            conn2.close()
-            if row2 and check_password(user_data['password'], row2[3]):
-                user = {"id": str(row2[0]), "name": row2[1], "email": row2[2], "account_type": row2[4]}
-        if not user:
-            # Keep session alive – back to login_identity for retry
+            # Retry
             cur.execute(
                 "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
@@ -3483,11 +3501,11 @@ def onboard():
             cur.close()
             conn.close()
             return jsonify({
-                "message": "Incorrect email/username or password. Please try again (or type 'reset' to start over).",
+                "message": "Incorrect email or password. Please try again (or type 'reset' to start over).",
                 "tone": "warning"
             })
-        # Success
-        access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
+        # Success – login
+        access_token = create_access_token(identity=user['id'], expires_delta=timedelta(days=7))
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
         cur.close()
@@ -3496,6 +3514,47 @@ def onboard():
             "jwt": access_token,
             "user": {"id": user['id'], "name": user['name']},
             "message": f"Welcome back, {user['name']}!",
+            "tone": "income",
+            "redirect": "/dashboard"
+        })
+
+    if step == 'login_pin':
+        pin = text.strip()
+        identity = user_data['identity']  # phone number
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s",
+                    (identity,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Phone number not found. Please try again.", "tone": "warning"})
+        user_id, name, email, password_hash, account_type = row
+        if not check_password(pin, password_hash):
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Incorrect PIN. Please try again.", "tone": "warning"})
+        access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
+        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "jwt": access_token,
+            "user": {"id": user_id, "name": name},
+            "message": f"Welcome back, {name}!",
             "tone": "income",
             "redirect": "/dashboard"
         })

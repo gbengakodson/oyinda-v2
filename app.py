@@ -26,7 +26,6 @@ try:
 except ImportError:
     socketio = None
 
-data = {}
 
 
 
@@ -756,6 +755,11 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
+    # Ensure data exists (prevents NameError from any leftover Flask request references)
+    # Safety net – prevents NameError from any leftover Flask data references
+    if 'data' not in locals():
+        data = {}
+
     try:
 
 
@@ -5519,14 +5523,12 @@ def search_business():
     SELECT id, name, product, category, market_name, city, phone,
            avatar_url, rating, total_ratings, is_verified, listing_type
     FROM business_listings
-    WHERE LOWER(product) LIKE %s
-       OR LOWER(name) LIKE %s
-       OR LOWER(market_name) LIKE %s
+    WHERE (LOWER(product) LIKE %s OR LOWER(name) LIKE %s OR LOWER(market_name) LIKE %s)
+      AND user_id != %s
     ORDER BY rating DESC NULLS LAST, created_at DESC
     LIMIT 20
     """
-    like_q = f'%{q}%'
-    cur.execute(query, (like_q, like_q, like_q))
+    cur.execute(query, (like_q, like_q, like_q, user_id))
     rows = cur.fetchall()
     conn.close()
 

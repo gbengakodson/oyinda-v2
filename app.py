@@ -87,6 +87,12 @@ pending_transfers = {}  # user_id -> payload
 pending_p2p_trades = {}
 app = Flask(__name__)
 socketio.init_app(app)
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    tb = traceback.format_exc()
+    return jsonify({"message": f"❌ Error: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"}), 500
+
 CORS(app, resources={r"/*": {"origins": [
     "https://oyinda-web.onrender.com",
     "http://localhost:5173",
@@ -106,6 +112,7 @@ CRON_SECRET = os.environ.get('CRON_SECRET', 'change-me-to-a-random-string')
 pending_transaction = {}
 # Cache for live exchange rates
 _live_rates_cache = {"data": {}, "last_fetched": None}
+
 
 # ----- LOAN CONSTANTS -----
 LOAN_MIN_AMOUNT = 5000
@@ -755,10 +762,7 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
-    # Ensure data exists (prevents NameError from any leftover Flask request references)
-    # Safety net – prevents NameError from any leftover Flask data references
-    if 'data' not in locals():
-        data = {}
+
 
     try:
 
@@ -5518,7 +5522,7 @@ def search_business():
 
     conn = get_conn()
     cur = conn.cursor()
-    # Fuzzy search on product, name, market_name; filter by city if provided, but include listings with empty city (system)
+    like_q = f'%{q}%'
     query = """
     SELECT id, name, product, category, market_name, city, phone,
            avatar_url, rating, total_ratings, is_verified, listing_type

@@ -26,6 +26,23 @@ try:
 except ImportError:
     socketio = None
 
+import sys
+import traceback
+
+def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
+    # Only catch NameErrors – let everything else crash normally
+    if issubclass(exc_type, NameError):
+        tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        # Try to return a JSON response; if that fails, just print
+        try:
+            from flask import jsonify
+            return jsonify({"message": f"❌ NameError: {str(exc_value)}\n```\n{tb}\n```", "tone": "warning"}), 500
+        except:
+            pass
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = handle_unhandled_exception
+
 
 
 
@@ -1601,7 +1618,11 @@ def process_user_command(user_id, text):
             query = re.sub(r'\s*(?:in|for|at|near|around|wey\s+dey)\s*.*$', '', query, flags=re.IGNORECASE).strip()
 
             if len(query) < 2:
-                query = 'crypto'
+                # The search term was too short; let the user know
+                return jsonify({
+                    "message": "Please be more specific. What are you looking for?",
+                    "tone": "neutral"
+                })
 
             facts = get_user_facts(user_id)
             my_city = facts.get('city', '')

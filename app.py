@@ -3580,6 +3580,16 @@ def onboard():
             cur.close()
             conn.close()
             return jsonify({"message": "Please enter a valid 11‑digit phone number.", "tone": "neutral"})
+
+        # Check if phone already exists
+        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (phone,))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify(
+                {"message": "This phone number is already registered. Please try a different number or login instead.",
+                 "tone": "warning"})
+
         user_data['phone'] = phone
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_type', data = %s WHERE token = %s",
@@ -3588,7 +3598,10 @@ def onboard():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
+        return jsonify({
+                           "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
+                           "tone": "neutral"})
+
 
 
     if step == 'ask_type':

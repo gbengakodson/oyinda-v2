@@ -4993,6 +4993,58 @@ def find_supplier(supplier_name, city=None):
         }
     return None
 
+@app.route('/loan/select_supplier', methods=['POST'])
+@jwt_required()
+def select_supplier():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    supplier_name = (data.get('supplier_name') or '').strip()
+    if not supplier_name:
+        return jsonify({"error": "Supplier name required"}), 400
+
+    # Get the pending loan details from the in‑memory state (fallback to DB later)
+    p = pending_transaction.get(user_id)
+    if not p or p.get('state') != 'loan_confirm_supplier':
+        return jsonify({"message": "No active loan wizard. Start a new loan request.", "tone": "warning"})
+
+    options = p["data"].get("supplier_options", [])
+    selected = None
+    for opt in options:
+        if opt["name"].lower() == supplier_name.lower():
+            selected = opt
+            break
+    if not selected:
+        return jsonify({"message": "Supplier not found. Please tap one from the list.", "tone": "warning"})
+
+    p["data"]["supplier_user_id"] = selected["id"]
+    p["data"]["supplier_name"] = selected["name"]
+
+    amount = p["data"]["amount"]
+    flat_fee = amount * 0.05
+    total_repayable = amount + flat_fee
+    daily_amount = round(total_repayable / 14, 2)
+
+    p["data"]["flat_fee"] = flat_fee
+    p["data"]["total_repayable"] = total_repayable
+    p["data"]["daily_amount"] = daily_amount
+
+    # Keep the state but move to confirming_inventory_loan
+    p["state"] = "confirming_inventory_loan"
+
+    return jsonify({
+        "message": (
+            f"📦 **Loan Summary**\n\n"
+            f"• Amount: ₦{amount:,.2f}\n"
+            f"• Product: {p['data']['product']}\n"
+            f"• Supplier: {selected['name']}\n"
+            f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+            f"• Total to repay: ₦{total_repayable:,.2f}\n"
+            f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+            f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+        ),
+        "tone": "neutral"
+    })
+
 
 @app.route('/cron/deduct-loans', methods=['POST'])
 def deduct_loans():

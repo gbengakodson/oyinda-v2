@@ -3457,17 +3457,6 @@ def onboard():
                 "tone": "neutral"
             })
 
-    # ---- LOGIN BRANCH ----
-    if step == 'login_identity':
-        user_data['identity'] = text.strip()
-        cur.execute(
-            "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
-            (json.dumps(user_data), token)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"message": "Enter your password:", "tone": "neutral"})
 
     if step == 'login_password':
         user_data['password'] = text

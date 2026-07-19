@@ -5588,6 +5588,43 @@ def search_business():
     return jsonify({"results": results})
 
 
+@app.route('/api/business/list', methods=['GET'])
+@jwt_required()
+def list_all_businesses():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, product, category, market_name, city, phone,
+               avatar_url, rating, total_ratings, is_verified, listing_type
+        FROM business_listings
+        WHERE user_id != %s
+        ORDER BY rating DESC NULLS LAST, created_at DESC
+        LIMIT 50
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        results.append({
+            "id": r[0],
+            "name": r[1],
+            "product": r[2],
+            "category": r[3],
+            "market_name": r[4],
+            "city": r[5],
+            "phone": r[6],
+            "avatar_url": r[7],
+            "rating": r[8],
+            "total_ratings": r[9],
+            "is_verified": r[10],
+            "listing_type": r[11]
+        })
+
+    return jsonify({"results": results})
+
+
 @app.route('/debug/business/all', methods=['GET'])
 def debug_business_all():
     conn = get_conn()

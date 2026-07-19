@@ -548,7 +548,7 @@ def create_user(name, email, password, account_type="personal", address=""):
         conn.commit()
         cur.close()
         return user_id
-    except Exception:
+    except Exception as e:
         conn.rollback()
         return f"error: {str(e)}"
     finally:

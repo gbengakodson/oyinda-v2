@@ -5777,7 +5777,8 @@ def finalize_registration(token):
             cur.execute("SELECT id FROM users WHERE username = %s", (username,))
             counter += 1
 
-        internal_email = f"{username}@oyinda.local"
+        import secrets
+        internal_email = f"{username}_{secrets.token_hex(3)}@oyinda.local"
 
         from core import create_user, store_user_fact
         try:

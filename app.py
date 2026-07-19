@@ -709,22 +709,8 @@ def extract_date_range(date_param=None):
     # fallback all time
     return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
 
-# --------------- AUTH ---------------
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    name = data.get('name')
-    email = data.get('email')
-    password = data.get('password')
-    account_type = data.get('account_type', 'personal')
-    address = data.get('address', '')
-    if not name or not email or not password:
-        return jsonify({"error": "Name, email, and password are required."}), 400
-    user_id = create_user(name, email, password, account_type, address)
-    if not user_id:
-        return jsonify({"error": "Registration failed. Email may already be in use."}), 400
-    token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
-    return jsonify({"message": f"Welcome {name}! I'm your CFO. Let's build your financial future. How much have you made or spent today?.", "user": {"id": user_id, "name": name}, "token": token})
+
+
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -3616,47 +3602,6 @@ def onboard():
     return jsonify({"message": "Something went wrong. Let's start over. What's your full name?", "tone": "neutral"})
 
 
-def confirm_registration(token):
-    state = onboarding_state.get(token)
-    if not state:
-        return jsonify({"message": "Session expired. Please start again."})
-
-    user_data = state["data"]
-
-    from core import create_user
-    user_id = create_user(
-        name=user_data["name"],
-        email=user_data["email"],
-        password=user_data["password"],
-        account_type=user_data.get("account_type", "personal"),
-        address=user_data.get("business_address", "")
-    )
-    if not user_id:
-        # Email already exists – go back to the email step
-        state["step"] = "ask_email"
-        return jsonify({
-            "message": "That email is already registered. Please enter a different email address:",
-            "tone": "neutral"
-        })
-
-    # Success – remove state and log the user in
-    onboarding_state.pop(token, None)
-
-    if user_data.get("account_type") in ['business', 'company']:
-        store_user_fact(user_id, "business_name", user_data.get("business_name", ""))
-        store_user_fact(user_id, "business_address", user_data.get("business_address", ""))
-
-    access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
-    reply = onboarding_message(token, "confirm", user_data, None)
-    return jsonify({
-        "token": token,
-        "jwt": access_token,
-        "user": {"id": user_id, "name": user_data["name"]},
-        "message": reply or f"All set, {user_data['name']}! You're now registered. Redirecting to your dashboard…",
-        "tone": "income",
-        "redirect": "/dashboard"
-    })
-
 
 def conversational_reply(user_id, text):
     """Use the LLM to generate a friendly, context-aware response."""
@@ -5835,16 +5780,18 @@ def finalize_registration(token):
         internal_email = f"{username}@oyinda.local"
 
         from core import create_user, store_user_fact
-        user_id = create_user(
-            name=user_data["name"],
-            email=internal_email,
-            password=user_data["password"],
-            account_type=user_data.get("account_type", "personal"),
-            address=user_data.get("business_address", "")
-        )
-
-        if not user_id:
-            return jsonify({"message": "Registration failed. Please try again."})
+        try:
+            user_id = create_user(
+                name=user_data["name"],
+                email=internal_email,
+                password=user_data["password"],
+                account_type=user_data.get("account_type", "personal"),
+                address=user_data.get("business_address", "")
+            )
+            if not user_id:
+                return jsonify({"message": "Registration failed – create_user returned None."})
+        except Exception as e:
+            return jsonify({"message": f"Registration error: {str(e)}"})
 
         store_user_fact(user_id, "username", username)
         store_user_fact(user_id, "language", user_data.get("language", "english"))

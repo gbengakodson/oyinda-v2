@@ -3431,15 +3431,28 @@ def onboard():
     if step == 'ask_new_or_returning':
         if any(word in text.lower() for word in ['login', 'returning', 'existing', 'already', 'have']):
             user_data = {}
+            saved_phone = (data.get('saved_phone') or '').strip()
+            # If a phone number was sent by the frontend, go straight to the PIN prompt
+            if saved_phone and re.fullmatch(r'\d{11}', saved_phone):
+                user_data['phone'] = saved_phone
+                cur.execute(
+                    "UPDATE onboarding_sessions SET step = 'login_pin', data = %s WHERE token = %s",
+                    (json.dumps(user_data), token)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                return jsonify({"message": "Enter your 6‑digit PIN:", "tone": "neutral"})
+            # Otherwise, ask for the phone number first (fallback for unsaved phones)
             cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
+                "UPDATE onboarding_sessions SET step = 'login_phone', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
             )
             conn.commit()
             cur.close()
             conn.close()
             return jsonify({
-                "message": "Welcome back! Please enter your email address or phone number:",
+                "message": "Welcome back! Enter your phone number (e.g., 08012345678):",
                 "tone": "neutral"
             })
         elif any(word in text.lower() for word in ['new', 'register', 'sign up', 'create']):
@@ -3460,92 +3473,66 @@ def onboard():
                 "tone": "neutral"
             })
 
-    # ---- LOGIN BRANCH ----
-    if step == 'login_identity':
-        identity = text.strip()
-        user_data['identity'] = identity
-        # Detect email vs phone
-        if re.fullmatch(r'\d{11}', identity):
-            # Phone number – ask for PIN
-            cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_pin', data = %s WHERE token = %s",
-                (json.dumps(user_data), token)
-            )
-            conn.commit()
+    # ---- LOGIN BRANCH (phone + PIN, or PIN‑only) ----
+    if step == 'login_phone':
+        phone = text.strip()
+        if not re.fullmatch(r'\d{11}', phone):
             cur.close()
             conn.close()
-            return jsonify({"message": "Enter your 6‑digit PIN:", "tone": "neutral"})
-        else:
-            # Email – ask for password
-            cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_password', data = %s WHERE token = %s",
-                (json.dumps(user_data), token)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({"message": "Enter your password:", "tone": "neutral"})
-
-    if step == 'login_password':
-        user_data['password'] = text
-        identity = user_data['identity']
-        from core import authenticate_user_by_email_or_username
-        user = authenticate_user_by_email_or_username(identity, user_data['password'])
-        if not user:
-            # Retry
-            cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
-                (json.dumps(user_data), token)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({
-                "message": "Incorrect email or password. Please try again (or type 'reset' to start over).",
-                "tone": "warning"
-            })
-        # Success – login
-        access_token = create_access_token(identity=user['id'], expires_delta=timedelta(days=7))
-        cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
+            return jsonify({"message": "Please enter a valid 11‑digit phone number.", "tone": "neutral"})
+        user_data['phone'] = phone
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'login_pin', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({
-            "jwt": access_token,
-            "user": {"id": user['id'], "name": user['name']},
-            "message": f"Welcome back, {user['name']}!",
-            "tone": "income",
-            "redirect": "/dashboard"
-        })
+        return jsonify({"message": "Enter your 6‑digit PIN:", "tone": "neutral"})
 
     if step == 'login_pin':
         pin = text.strip()
-        identity = user_data['identity']  # phone number
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s",
-                    (identity,))
-        row = cur.fetchone()
-        conn.close()
+        phone = user_data.get('phone', '')
+        if not phone:
+            # Shouldn't happen, but retry from phone input
+            cur.execute(
+                "UPDATE onboarding_sessions SET step = 'login_phone', data = %s WHERE token = %s",
+                (json.dumps(user_data), token)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Please enter your phone number first.", "tone": "warning"})
+
+        # Look up the user by phone
+        conn2 = get_conn()
+        cur2 = conn2.cursor()
+        cur2.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s",
+                     (phone,))
+        row = cur2.fetchone()
+        conn2.close()
         if not row:
             cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
+                "UPDATE onboarding_sessions SET step = 'login_phone', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
             )
             conn.commit()
             cur.close()
             conn.close()
             return jsonify({"message": "Phone number not found. Please try again.", "tone": "warning"})
+
         user_id, name, email, password_hash, account_type = row
         if not check_password(pin, password_hash):
             cur.execute(
-                "UPDATE onboarding_sessions SET step = 'login_identity', data = %s WHERE token = %s",
+                "UPDATE onboarding_sessions SET step = 'login_phone', data = %s WHERE token = %s",
                 (json.dumps(user_data), token)
             )
             conn.commit()
             cur.close()
             conn.close()
             return jsonify({"message": "Incorrect PIN. Please try again.", "tone": "warning"})
+
+        # Login success
         access_token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
@@ -3579,15 +3566,30 @@ def onboard():
             return jsonify({"message": "PIN must be exactly 6 digits. Please try again:", "tone": "neutral"})
         user_data['password'] = text  # store PIN as password
         cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_phone', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "What is your phone number? (e.g., 08012345678)", "tone": "neutral"})
+
+    if step == 'ask_phone':
+        phone = text.strip()
+        if not re.fullmatch(r'\d{11}', phone):
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Please enter a valid 11‑digit phone number.", "tone": "neutral"})
+        user_data['phone'] = phone
+        cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_type', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
         )
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({
-                           "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
-                           "tone": "neutral"})
+        return jsonify({"message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)", "tone": "neutral"})
+
 
     if step == 'ask_type':
         user_type = text.strip().lower()
@@ -5844,6 +5846,11 @@ def finalize_registration(token):
 
         store_user_fact(user_id, "username", username)
         store_user_fact(user_id, "language", user_data.get("language", "english"))
+        # Save phone number to user facts
+        phone = user_data.get('phone', '').strip()
+        if phone:
+            store_user_fact(user_id, 'phone', phone)
+
 
         # Auto‑list business if product was given
         product = user_data.get("product", "").strip()

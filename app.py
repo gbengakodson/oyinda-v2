@@ -1264,6 +1264,15 @@ def process_user_command(user_id, text):
                     """, (user_id, supplier_id, product, amount, total_interest,
 
                           total_repayable, daily_amount, total_repayable, start_date, end_date))
+                    # Auto‑list the supplier in the marketplace if not already listed
+                    supplier_phone = get_user_facts(supplier_id).get('phone', '')
+                    cur.execute("SELECT id FROM business_listings WHERE user_id = %s", (supplier_id,))
+                    if not cur.fetchone():
+                        cur.execute("""
+                            INSERT INTO business_listings
+                            (user_id, name, product, category, market_name, city, phone, listing_type)
+                            VALUES (%s, %s, %s, 'external', '', '', %s, 'external')
+                        """, (supplier_id, supplier_name, product, supplier_phone))
 
                     conn.commit()
 
@@ -1502,6 +1511,42 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
+            elif state == "external_supplier_phone":
+                phone = reply.strip()
+                if not re.fullmatch(r'\d{11}', phone):
+                    return jsonify({"message": "Please enter a valid 11‑digit phone number."})
+                supplier_name = p["data"]["supplier_name"]
+
+                conn = get_conn()
+                cur = conn.cursor()
+                # Check if a user with this phone already exists
+                cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (phone,))
+                existing = cur.fetchone()
+                if existing:
+                    supplier_user_id = existing[0]
+                else:
+                    # Create a minimal user account for the supplier
+                    import secrets
+                    temp_pin = secrets.token_hex(3)  # random password – they can change later
+                    email = f"{phone}@oyinda.external"
+                    user_id_new = create_user(supplier_name, email, temp_pin, "business", "")
+                    if not user_id_new:
+                        conn.close()
+                        return jsonify({"message": "Failed to create supplier account. Please try again."})
+                    store_user_fact(user_id_new, 'phone', phone)
+                    ensure_wallet(user_id_new)
+                    supplier_user_id = user_id_new
+                conn.close()
+
+                # Update the pending data and move to amount step
+                p["data"]["supplier_id"] = supplier_user_id
+                p["data"]["supplier_name"] = supplier_name
+                p["state"] = "direct_loan_amount"
+                return jsonify({
+                    "message": f"Got it! How much do you want to borrow to pay {supplier_name}? (e.g., 5000)",
+                    "tone": "neutral"
+                })
+
 
 
             elif state == "ask_id_type":
@@ -1531,6 +1576,8 @@ def process_user_command(user_id, text):
                 else:
                     pending_transaction.pop(user_id, None)
                     return jsonify({"message": "No problem. How can I help you instead?", "tone": "neutral"})
+
+
 
 
             elif state == "collecting_loan_direction":
@@ -1966,37 +2013,64 @@ def process_user_command(user_id, text):
         loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
         if loan_from_match:
             supplier_id = loan_from_match.group(1)
-            # Fetch supplier details
+
+            # Try to fetch supplier details from the business directory
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("SELECT user_id, name, product FROM business_listings WHERE user_id = %s", (supplier_id,))
             row = cur.fetchone()
             conn.close()
-            if not row:
-                return jsonify({"message": "Supplier not found.", "tone": "warning"})
-            supplier_name = row[1]
-            supplier_product = row[2] or 'goods'
 
-            # Check user eligibility (only need a credit score ≥ 20 to start)
-            credit = get_credit_score(user_id)
-            if credit['score'] < 20:
-                return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
-                                "tone": "warning"})
+            if row:
+                # ---- Registered supplier ----
+                supplier_name = row[1]
+                supplier_product = row[2] or 'goods'
 
-            # Store in pending transaction
-            pending_transaction[user_id] = {
-                "state": "direct_loan_amount",
-                "data": {
-                    "supplier_id": supplier_id,
-                    "supplier_name": supplier_name,
-                    "product_hint": supplier_product
-                },
-                "category": None
-            }
-            return jsonify({
-                "message": f"How much do you want to borrow to pay {supplier_name}? (e.g., 5000)",
-                "tone": "neutral"
-            })
+                # Check user eligibility (credit score ≥ 20 to start)
+                if get_credit_score(user_id)['score'] < 20:
+                    return jsonify({
+                        "message": "Your credit score is too low for a loan. Keep logging transactions!",
+                        "tone": "warning"
+                    })
+
+                # Store in pending transaction
+                pending_transaction[user_id] = {
+                    "state": "direct_loan_amount",
+                    "data": {
+                        "supplier_id": supplier_id,
+                        "supplier_name": supplier_name,
+                        "product_hint": supplier_product
+                    },
+                    "category": None
+                }
+                return jsonify({
+                    "message": f"How much do you want to borrow to pay {supplier_name}? (e.g., 5000)",
+                    "tone": "neutral"
+                })
+
+            else:
+                # ---- External supplier (not yet registered) ----
+                # Determine supplier name – if the ID is a UUID but not found, use a placeholder
+                import uuid as uuid_check
+                try:
+                    uuid_check.UUID(supplier_id)
+                    supplier_name = "that supplier"
+                except ValueError:
+                    supplier_name = supplier_id  # the user typed a name directly
+
+                pending_transaction[user_id] = {
+                    "state": "external_supplier_phone",
+                    "data": {
+                        "supplier_name": supplier_name,
+                        "supplier_id": None,  # will be created after phone is provided
+                    },
+                    "category": None
+                }
+                return jsonify({
+                    "message": f"I don't have {supplier_name} in our marketplace yet. "
+                               "Please provide their phone number (e.g., 0803xxx) so I can pay them directly.",
+                    "tone": "neutral"
+                })
 
 
         # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----

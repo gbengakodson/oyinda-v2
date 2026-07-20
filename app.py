@@ -865,18 +865,20 @@ def process_user_command(user_id, text):
                 conn.close()
 
                 if total_income > 0:
-
                     ratio = total_expense / total_income
-
-                    if ratio < 0.70 or ratio > 0.30:  # must be between 30% and 70% expense ratio
-
-                        return jsonify({
-
-                            "message": "Your expense‑to‑income ratio must be between 30% and 70% to qualify for a loan. Keep logging your transactions.",
-
-                            "tone": "warning"
-
-                        })
+                    if ratio < 0.30 or ratio > 0.70:
+                        current_ratio_pct = round(ratio * 100, 1)
+                        if ratio < 0.30:
+                            advice = (
+                                f"Your expense‑to‑income ratio is **{current_ratio_pct}%**, which is below the required 30%. "
+                                "You need to **log more expenses** relative to your income. Try telling me about things you spent money on today."
+                            )
+                        else:
+                            advice = (
+                                f"Your expense‑to‑income ratio is **{current_ratio_pct}%**, which is above the required 70%. "
+                                "You need to **log more income** relative to your expenses. Tell me about any money you receive recently."
+                            )
+                        return jsonify({"message": advice, "tone": "warning"})
 
                 try:
 

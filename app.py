@@ -885,27 +885,108 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
+
             elif state == "confirming_direct_loan":
+
                 if any(word in reply.lower() for word in ['yes', 'yeah', 'confirm']):
-                    # Disburse the loan (same as confirming_inventory_loan logic)
+
                     supplier_id = p["data"]["supplier_id"]
-                    amount = p["data"]["amount"]
+
+                    amount = float(p["data"]["amount"])
+
+                    product = str(p["data"]["product"])
+
+                    flat_fee = float(p["data"]["flat_fee"])
+
+                    total_repayable = float(p["data"]["total_repayable"])
+
+                    daily_amount = float(p["data"]["daily_amount"])
+
                     # Credit supplier wallet
+
                     conn = get_conn()
+
                     cur = conn.cursor()
+
                     cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s",
                                 (amount, supplier_id))
-                    conn.commit()
-                    conn.close()
-                    append_event(user_id, user_id, 'LoanTaken', {...})
-                    pending_transaction.pop(user_id, None)
-                    return jsonify({
-                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! Your daily repayment is ₦{p['data']['daily_amount']:,.2f}.",
-                        "tone": "income",
-                        "feedback_prompt": {...}
+
+                    # Log events (JSON‑safe payloads)
+
+                    loan_payload = {
+
+                        "amount": amount,
+
+                        "supplier_id": str(supplier_id),
+
+                        "product": product,
+
+                        "flat_fee": flat_fee,
+
+                        "total_repayable": total_repayable,
+
+                        "daily_amount": daily_amount
+
+                    }
+
+                    append_event(user_id, user_id, 'LoanTaken', loan_payload)
+
+                    append_event(supplier_id, supplier_id, 'WalletCredited', {
+
+                        "amount": amount,
+
+                        "source": "oyinda_loan"
+
                     })
-                else:
+
+                    # Create inventory_loan record
+
+                    start_date = datetime.utcnow().date()
+
+                    end_date = start_date + timedelta(days=21)
+
+                    cur.execute("""
+
+                        INSERT INTO inventory_loans
+
+                        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+
+                         daily_amount, remaining_balance, start_date, end_date, status)
+
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+
+                    """, (user_id, supplier_id, product, amount, flat_fee,
+
+                          total_repayable, daily_amount, total_repayable, start_date, end_date))
+
+                    conn.commit()
+
+                    conn.close()
+
                     pending_transaction.pop(user_id, None)
+
+                    return jsonify({
+
+                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! Your daily repayment is ₦{daily_amount:,.2f}.",
+
+                        "tone": "income",
+
+                        "feedback_prompt": {
+
+                            "context": "after_loan",
+
+                            "question": "How was the loan process?",
+
+                            "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
+
+                        }
+
+                    })
+
+                else:
+
+                    pending_transaction.pop(user_id, None)
+
                     return jsonify({"message": "Loan cancelled."})
 
 

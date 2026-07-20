@@ -1750,7 +1750,6 @@ def process_user_command(user_id, text):
             # If we didn't match any state, just finalise to avoid hanging
             return finalise_transaction(user_id)
 
-
         # ---- DIRECT LOAN FROM MARKETPLACE (tapped "Pay with Loan" on a business card) ----
         loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
         if loan_from_match:
@@ -1766,7 +1765,7 @@ def process_user_command(user_id, text):
             supplier_name = row[1]
             supplier_product = row[2] or 'goods'
 
-            # Check user eligibility (same as before)
+            # Check user eligibility (only need a credit score ≥ 20 to start)
             credit = get_credit_score(user_id)
             if credit['score'] < 20:
                 return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
@@ -1778,8 +1777,7 @@ def process_user_command(user_id, text):
                 "data": {
                     "supplier_id": supplier_id,
                     "supplier_name": supplier_name,
-                    "product_hint": supplier_product,
-                    "max_loan": max_loan
+                    "product_hint": supplier_product
                 },
                 "category": None
             }

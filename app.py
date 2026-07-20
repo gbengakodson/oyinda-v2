@@ -1030,6 +1030,29 @@ def process_user_command(user_id, text):
 
                     })
 
+                # Spread check: income entries must be spread over at least N distinct days
+                min_income_days = max(1, int(dur_days / 7))  # e.g., 3 days for 21‑day tier
+                cur.execute("""
+                    SELECT COUNT(DISTINCT created_at::date)
+                    FROM events
+                    WHERE user_id = %s
+                      AND event_type = 'IncomeReceived'
+                      AND created_at::date >= %s
+                """, (user_id, lookback_start))
+                distinct_income_days = cur.fetchone()[0]
+                if distinct_income_days < min_income_days:
+                    needed_days = min_income_days - distinct_income_days
+                    conn.close()
+                    return jsonify({
+                        "message": (
+                            f"Your income entries are all on {distinct_income_days} day(s), but they need to be spread over at least "
+                            f"{min_income_days} different days in the last {dur_days} days. "
+                            f"Try logging income on {needed_days} more separate days."
+                        ),
+                        "tone": "warning"
+                    })
+                conn.close()
+
                 # Store and move on
 
                 total_interest = amount * interest_rate

@@ -137,19 +137,28 @@ def get_loan_terms(amount, credit_score):
     or raises ValueError if the amount is not in any tier.
     """
     tiers = [
-        # (min_amount, max_amount, duration_days, grace_days, interest_rate, min_score)
-        (5000, 10000, 21, 3, 0.10, 20),
-        (10001, 50000, 28, 7, 0.10, 50),
-        (51000, 100000, 56, 14, 0.10, 100),
-        (101000, 200000, 90, 21, 0.10, 250),
-        (201000, 500000, 180, 30, 0.10, 350),
-        (501000, 1000000, 240, 60, 0.10, 500),
-        (1100000, 5000000, 365, 90, 0.10, 700),
+        # (min_amount, max_amount, duration_days, grace_days, min_score)
+        (5000, 10000, 21, 3, 20),
+        (10001, 50000, 28, 7, 50),
+        (51000, 100000, 56, 14, 100),
+        (101000, 200000, 90, 21, 250),
+        (201000, 500000, 180, 30, 350),
+        (501000, 1000000, 240, 60, 500),
+        (1100000, 5000000, 365, 90, 700),
     ]
-    for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+    for min_amt, max_amt, dur, grace, min_score in tiers:
         if min_amt <= amount <= max_amt:
             if credit_score < min_score:
                 raise ValueError(f"You need a credit score of at least {min_score} to borrow ₦{amount:,}. Your score is {credit_score}.")
+            # Determine interest rate based on duration
+            if dur <= 30:
+                rate = 0.10
+            elif dur <= 90:
+                rate = 0.15
+            elif dur <= 180:
+                rate = 0.20
+            else:
+                rate = 0.25
             return dur, grace, rate
     raise ValueError(f"Loan amount ₦{amount:,} is not within any available tier.")
 
@@ -1030,8 +1039,30 @@ def process_user_command(user_id, text):
 
                     })
 
-                # Spread check: income entries must be spread over at least N distinct days
-                min_income_days = max(1, int(dur_days / 7))  # e.g., 3 days for 21‑day tier
+                # ---- SPREAD REQUIREMENT (with loyalty grace) ----
+                credit_score = get_credit_score(user_id)['score']
+
+                # Minimum total transactions – relaxed for trusted users
+                if credit_score > 300:
+                    if total_logs < 5:
+                        conn.close()
+                        return jsonify({
+                            "message": f"Even as a trusted user, you need at least 5 transactions in the last {dur_days} days. Keep logging!",
+                            "tone": "warning"
+                        })
+                    # Relaxed spread: need only ceil(lookback_days / 14) distinct income days
+                    min_income_days = max(1, int(dur_days / 14))
+                else:
+                    if total_logs < 10:
+                        conn.close()
+                        return jsonify({
+                            "message": f"You need at least 10 transactions in the last {dur_days} days. Keep logging!",
+                            "tone": "warning"
+                        })
+                    # Normal spread: need ceil(lookback_days / 7) distinct income days
+                    min_income_days = max(1, int(dur_days / 7))
+
+                # Fetch distinct income days (conn still open from ratio query)
                 cur.execute("""
                     SELECT COUNT(DISTINCT created_at::date)
                     FROM events
@@ -1040,18 +1071,45 @@ def process_user_command(user_id, text):
                       AND created_at::date >= %s
                 """, (user_id, lookback_start))
                 distinct_income_days = cur.fetchone()[0]
+
                 if distinct_income_days < min_income_days:
                     needed_days = min_income_days - distinct_income_days
                     conn.close()
                     return jsonify({
                         "message": (
-                            f"Your income entries are all on {distinct_income_days} day(s), but they need to be spread over at least "
-                            f"{min_income_days} different days in the last {dur_days} days. "
-                            f"Try logging income on {needed_days} more separate days."
+                            f"Your income entries appear on only {distinct_income_days} separate day(s). "
+                            f"They need to be spread over at least {min_income_days} different days in the last {dur_days} days. "
+                            f"Try logging income on {needed_days} more separate day(s)."
                         ),
                         "tone": "warning"
                     })
+
                 conn.close()
+
+
+                # ---- TURNOVER‑BASED CAP (2× average monthly revenue) ----
+                cur.execute("""
+                    SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)
+                    FROM events
+                    WHERE user_id = %s
+                      AND event_type = 'IncomeReceived'
+                      AND created_at::date >= %s
+                """, (user_id, lookback_start))
+                total_income_amount = cur.fetchone()[0] or 0
+                if total_income_amount > 0:
+                    avg_monthly = total_income_amount / (dur_days / 30.0)
+                    max_by_turnover = avg_monthly * 2
+                    if amount > max_by_turnover:
+                        conn.close()
+                        return jsonify({
+                            "message": (
+                                f"Your average monthly revenue in the last {dur_days} days is ₦{avg_monthly:,.2f}, "
+                                f"so you can borrow up to ₦{max_by_turnover:,.2f} (2× your monthly turnover). "
+                                f"Try a smaller amount or continue logging income to increase your turnover."
+                            ),
+                            "tone": "warning"
+                        })
+                # (if total_income_amount is 0, we can skip the cap or set a default minimum – we'll allow up to the tier minimum)
 
                 # Store and move on
 
@@ -1097,43 +1155,37 @@ def process_user_command(user_id, text):
                 grace_days = p["data"]["grace_days"]
 
                 repay_days = dur_days - grace_days
-
                 daily_amount = round(total_repayable / repay_days, 2)
 
+                # Determine if weekly repayment applies (for loans > 90 days)
+                is_weekly = dur_days > 90
+                weekly_amount = round(total_repayable / (repay_days / 7), 2) if is_weekly else None
+
                 p["data"]["total_interest"] = total_interest
-
                 p["data"]["total_repayable"] = total_repayable
-
                 p["data"]["daily_amount"] = daily_amount
-
+                p["data"]["weekly_amount"] = weekly_amount
                 p["state"] = "confirming_direct_loan"
 
+                # Build the summary message
+                if is_weekly:
+                    repayment_msg = f"• Weekly repayment: ₦{weekly_amount:,.2f} ({int(repay_days / 7)} weeks)\n"
+                else:
+                    repayment_msg = f"• Daily repayment: ₦{daily_amount:,.2f} for {repay_days} days\n"
+
                 return jsonify({
-
                     "message": (
-
                         f"📦 **Loan Summary**\n\n"
-
                         f"• Amount: ₦{amount:,.2f}\n"
-
-                        f"• Product: {p['data']['product']}\n"
-
-                        f"• Supplier: {p['data']['supplier_name']}\n"
-
-                        f"• Interest (10%): ₦{total_interest:,.2f}\n"
-
+                        f"• Product: {product}\n"
+                        f"• Supplier: {supplier_name}\n"
+                        f"• Interest ({int(interest_rate * 100)}%): ₦{total_interest:,.2f}\n"
                         f"• Total to repay: ₦{total_repayable:,.2f}\n"
-
-                        f"• Duration: {dur_days} days (grace: {grace_days} days, repay over {repay_days} days)\n"
-
-                        f"• Daily repayment: ₦{daily_amount:,.2f}\n\n"
-
+                        f"• Duration: {dur_days} days (grace: {grace_days} days)\n"
+                        f"{repayment_msg}\n"
                         f"Reply **'yes'** to confirm and I'll pay the supplier directly."
-
                     ),
-
                     "tone": "neutral"
-
                 })
 
 
@@ -3112,7 +3164,8 @@ def process_user_command(user_id, text):
                 return jsonify({
                     "message": (
                         f"Your credit score is {score}/850. "
-                        f"You can borrow between ₦{min_eligible:,} and ₦{max_eligible:,}.\n"
+                        f"You can borrow between ₦{min_eligible:,} and ₦{max_eligible:,}, "
+                        f"but the exact amount depends on your monthly business turnover.\n"
                         "Tap the cart icon 🛒 to browse suppliers and start a loan."
                     ),
                     "tone": "income"
@@ -5583,51 +5636,63 @@ def select_supplier():
 
 @app.route('/cron/deduct-loans', methods=['POST'])
 def deduct_loans():
-    # Simple auth (use CRON_SECRET)
     secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
     if secret != CRON_SECRET:
         return jsonify({"error": "unauthorized"}), 403
 
     conn = get_conn()
     cur = conn.cursor()
-    # Fetch all active loans where today <= end_date
     today = datetime.utcnow().date()
     cur.execute("""
-        SELECT id, user_id, daily_amount, remaining_balance
+        SELECT id, user_id, daily_amount, weekly_amount, remaining_balance,
+               start_date, payment_frequency, grace_days
         FROM inventory_loans
         WHERE status = 'active' AND end_date >= %s
     """, (today,))
     loans = cur.fetchall()
 
     for loan in loans:
-        loan_id, user_id, daily_amount, remaining, start_date = loan[0], loan[1], loan[2], loan[3], loan[4]
-        # Grace period: no deduction for first 7 days
-        if today <= start_date + timedelta(days=7):
+        loan_id, user_id, daily_amt, weekly_amt, remaining, start_date, freq, grace_days = loan
+        grace_end = start_date + timedelta(days=grace_days)
+
+        # Skip deduction during grace period
+        if today <= grace_end:
             continue
+
+        # Determine the deduction amount and whether to deduct today
+        if freq == 'weekly':
+            # Deduct only if today is exactly 0, 7, 14, ... days after grace_end
+            days_after_grace = (today - grace_end).days
+            if days_after_grace % 7 != 0:
+                continue
+            deduction = weekly_amt
+        else:
+            deduction = daily_amt
+
+        if deduction is None or deduction <= 0:
+            continue
+
         # Check user wallet balance
         cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
         wallet_row = cur.fetchone()
-        if not wallet_row or wallet_row[0] < daily_amount:
-            # Insufficient balance; skip or mark missed (we'll just skip for now)
+        if not wallet_row or wallet_row[0] < deduction:
             continue
 
-        # Deduct
-        new_balance = wallet_row[0] - daily_amount
+        # Perform deduction
+        new_balance = wallet_row[0] - deduction
         cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
                     (new_balance, user_id))
-        new_remaining = remaining - daily_amount
+        new_remaining = remaining - deduction
         cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s",
                     (new_remaining, loan_id))
-        # Log repayment
         cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'auto')",
-                    (loan_id, daily_amount))
-        # Log event
+                    (loan_id, deduction))
         append_event(user_id, user_id, 'LoanRepaid', {
             "loan_id": str(loan_id),
-            "amount": daily_amount,
+            "amount": deduction,
             "method": "auto"
         })
-        # If fully repaid, mark completed
+
         if new_remaining <= 0:
             cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
 

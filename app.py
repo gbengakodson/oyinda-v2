@@ -864,21 +864,57 @@ def process_user_command(user_id, text):
 
                 conn.close()
 
-                if total_income > 0:
-                    ratio = total_expense / total_income
-                    if ratio < 0.30 or ratio > 0.70:
-                        current_ratio_pct = round(ratio * 100, 1)
-                        if ratio < 0.30:
-                            advice = (
-                                f"Your expense‑to‑income ratio is **{current_ratio_pct}%**, which is below the required 30%. "
-                                "You need to **log more expenses** relative to your income. Try telling me about things you spent money on today."
-                            )
-                        else:
-                            advice = (
-                                f"Your expense‑to‑income ratio is **{current_ratio_pct}%**, which is above the required 70%. "
-                                "You need to **log more income** relative to your expenses. Tell me about any money you receive recently."
-                            )
-                        return jsonify({"message": advice, "tone": "warning"})
+                # Get the loan tier for this amount (to know the lookback window)
+                try:
+                    dur_days, grace_days, interest_rate = get_loan_terms(amount, get_credit_score(user_id)['score'])
+                except ValueError as e:
+                    return jsonify({"message": str(e), "tone": "warning"})
+
+                # Count income vs expense events in the last dur_days
+                lookback_start = (datetime.utcnow().date() - timedelta(days=dur_days)).strftime('%Y-%m-%d')
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE event_type = 'IncomeReceived'),
+                        COUNT(*) FILTER (WHERE event_type = 'ExpenseLogged')
+                    FROM events
+                    WHERE user_id = %s
+                      AND (event_type = 'IncomeReceived' OR event_type = 'ExpenseLogged')
+                      AND created_at::date >= %s
+                """, (user_id, lookback_start))
+                income_count, expense_count = cur.fetchone()
+                conn.close()
+                total_logs = income_count + expense_count
+
+                if total_logs < 10:  # need at least some history
+                    return jsonify({
+                        "message": f"You need at least 10 transactions in the last {dur_days} days to apply for this loan. "
+                                   "Keep telling me your expenses and income!",
+                        "tone": "warning"
+                    })
+
+                income_pct = (income_count / total_logs) * 100
+                if income_pct < 30.0:
+                    needed_income = int((0.30 * total_logs) - income_count)
+                    return jsonify({
+                        "message": (
+                            f"Your income ratio is {income_pct:.0f}% — too low. "
+                            f"In the last {dur_days} days, you have {total_logs} transactions, but only {income_count} are income. "
+                            f"You need at least {needed_income} more income entries to reach 30%.\n"
+                            "Try telling me about money you received recently."
+                        ),
+                        "tone": "warning"
+                    })
+
+                # Store tier details (already obtained)
+                p["data"]["amount"] = amount
+                p["data"]["interest_rate"] = interest_rate
+                p["data"]["duration_days"] = dur_days
+                p["data"]["grace_days"] = grace_days
+                p["state"] = "direct_loan_product"
+                return jsonify(
+                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
 
                 try:
 
@@ -914,6 +950,7 @@ def process_user_command(user_id, text):
 
                 return jsonify(
                     {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
 
 
             elif state == "direct_loan_product":

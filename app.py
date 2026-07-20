@@ -1223,45 +1223,27 @@ def process_user_command(user_id, text):
                     grace_days = int(p["data"]["grace_days"])
 
                     # Credit supplier wallet
-
-                    conn = get_conn()
-
-                    cur = conn.cursor()
-
                     cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s",
                                 (amount, supplier_id))
 
+                    # Debit Oyinda treasury
+                    cur.execute(
+                        "UPDATE user_wallets SET balance = balance - %s WHERE user_id = '00000000-0000-0000-0000-000000000000'",
+                        (amount,))
+
                     # Log events (JSON‑safe payloads)
-
-                    loan_payload = {
-
-                        "amount": amount,
-
-                        "supplier_id": str(supplier_id),
-
-                        "product": product,
-
-                        "total_interest": total_interest,
-
-                        "total_repayable": total_repayable,
-
-                        "daily_amount": daily_amount,
-
-                        "duration_days": dur_days,
-
-                        "grace_days": grace_days
-
-                    }
-
+                    loan_payload = {...}  # existing
                     append_event(user_id, user_id, 'LoanTaken', loan_payload)
-
                     append_event(supplier_id, supplier_id, 'WalletCredited', {
-
                         "amount": amount,
-
                         "source": "oyinda_loan"
-
                     })
+                    append_event('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000000',
+                                 'WalletDebited', {
+                                     "amount": amount,
+                                     "reason": "loan_disbursement",
+                                     "borrower": user_id
+                                 })
 
                     # Create inventory_loan record
 
@@ -3030,6 +3012,74 @@ def process_user_command(user_id, text):
                 })
             else:
                 return jsonify({"message": "You have no active inventory loan."})
+
+        # ---------- MANUAL LOAN REPAYMENT ----------
+        # Catch "repay 5000" or "repay my loan" etc.
+        if any(phrase in text_lower for phrase in ['repay', 'i want to repay', 'pay back']):
+            # Extract amount if present
+            amount_match = re.search(r'(\d[\d,]*\.?\d*)', text)
+            if not amount_match:
+                return jsonify({
+                    "message": "How much do you want to repay? For example, 'repay 5000'.",
+                    "tone": "neutral"
+                })
+            amount = float(amount_match.group(1).replace(',', ''))
+
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, remaining_balance, daily_amount, product, total_repayable
+                FROM inventory_loans
+                WHERE user_id = %s AND status = 'active'
+            """, (user_id,))
+            loan = cur.fetchone()
+            if not loan:
+                conn.close()
+                return jsonify({"message": "You have no active loan to repay."})
+            loan_id, remaining, daily, product, total = loan
+
+            if amount > remaining:
+                conn.close()
+                return jsonify(
+                    {"message": f"Amount exceeds remaining balance of ₦{remaining:,.2f}.", "tone": "warning"})
+
+            # Check wallet balance
+            cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+            wallet_row = cur.fetchone()
+            if not wallet_row or wallet_row[0] < amount:
+                conn.close()
+                return jsonify({"message": "Insufficient wallet balance for this repayment."})
+
+            # Deduct wallet
+            new_wallet = wallet_row[0] - amount
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_wallet, user_id))
+            # Update loan
+            new_remaining = remaining - amount
+            cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s", (new_remaining, loan_id))
+            cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'manual')",
+                        (loan_id, amount))
+            if new_remaining <= 0:
+                cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s",
+                            (loan_id,))
+
+            append_event(user_id, user_id, 'LoanRepaid', {
+                "loan_id": str(loan_id),
+                "amount": amount,
+                "method": "manual"
+            })
+
+            # Update credit score
+            update_credit_score(conn, user_id)
+
+            conn.commit()
+            conn.close()
+
+            save_conversation(user_id, 'user', text)
+            return jsonify({
+                "message": f"✅ Repaid ₦{amount:,.2f} for {product}. Remaining balance: ₦{max(0, new_remaining):,.2f}.",
+                "tone": "income"
+            })
 
 
 
@@ -5703,7 +5753,9 @@ def deduct_loans():
             "loan_id": str(loan_id),
             "amount": deduction,
             "method": "auto"
+
         })
+        update_credit_score(conn, user_id)
 
         if new_remaining <= 0:
             cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
@@ -5834,20 +5886,31 @@ def mono_webhook():
     data = payload.get('data', {})
     if event == 'credit':
         account_id = data.get('account')
-        amount = data.get('amount')
-        # Find user by mono_account_id
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, balance FROM user_wallets WHERE mono_account_id = %s", (account_id,))
-        row = cur.fetchone()
-        if row:
-            new_balance = row[1] + amount
-            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE mono_account_id = %s", (new_balance, account_id))
-            conn.commit()
-            # Log event
-            append_event(row[0], row[0], 'WalletCredited', {"amount": amount, "source": "bank_transfer", "account_id": account_id})
-            # Optionally send notification to user
-        conn.close()
+        amount = float(data.get('amount', 0))
+        narration = (data.get('narration') or '').lower()
+        if account_id and amount > 0:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, balance FROM user_wallets WHERE mono_account_id = %s", (account_id,))
+            row = cur.fetchone()
+            if row:
+                user_id, old_balance = row[0], float(row[1])
+                new_balance = old_balance + amount
+                cur.execute(
+                    "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE mono_account_id = %s",
+                    (new_balance, account_id))
+                append_event(user_id, user_id, 'WalletCredited', {"amount": amount, "source": "bank_transfer"})
+
+                # Auto‑log as income if this is an external payment (not a loan repayment)
+                if 'loan repayment' not in narration and 'oyinda' not in narration:
+                    append_event(user_id, user_id, 'IncomeReceived', {
+                        "amount": amount,
+                        "currency": "NGN",
+                        "description": "Customer payment via wallet"
+                    })
+
+                conn.commit()
+            conn.close()
     return jsonify({"status": "received"}), 200
 
 

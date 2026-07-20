@@ -131,44 +131,27 @@ pending_transaction = {}
 _live_rates_cache = {"data": {}, "last_fetched": None}
 
 
-# ----- LOAN CONSTANTS -----
-LOAN_MIN_AMOUNT = 5000
-LOAN_MAX_AMOUNT = 500000
-LOAN_MIN_DURATION = 3
-LOAN_MAX_DURATION = 12
-GRACE_PERIOD_MONTHS = 1   # first month interest‑free
-
-def get_loan_interest_rate(credit_score):
-    """Return monthly interest rate (%) based on FICO‑style score."""
-    if credit_score >= 701:
-        return 2.0
-    elif credit_score >= 501:
-        return 4.0
-    elif credit_score >= 301:
-        return 7.0
-    else:
-        return 10.0
-
-def get_max_loan_amount(credit_score):
-    """Maximum borrowable amount based on credit score tier."""
-    if credit_score >= 801:
-        return 1_100_000   # > 1.1M (we'll say up to 1.5M for now)
-    elif credit_score >= 701:
-        return 1_000_000
-    elif credit_score >= 501:
-        return 500_000
-    elif credit_score >= 351:
-        return 200_000
-    elif credit_score >= 201:
-        return 100_000
-    elif credit_score >= 151:
-        return 49_000
-    elif credit_score >= 101:
-        return 20_000
-    elif credit_score >= 50:
-        return 10_000
-    else:
-        return 0
+def get_loan_terms(amount, credit_score):
+    """
+    Returns (duration_days, grace_days, interest_rate, min_score, max_amount)
+    or raises ValueError if the amount is not in any tier.
+    """
+    tiers = [
+        # (min_amount, max_amount, duration_days, grace_days, interest_rate, min_score)
+        (5000, 10000, 21, 3, 0.10, 20),
+        (10001, 50000, 28, 7, 0.10, 50),
+        (51000, 100000, 56, 14, 0.10, 100),
+        (101000, 200000, 90, 21, 0.10, 250),
+        (201000, 500000, 180, 30, 0.10, 350),
+        (501000, 1000000, 240, 60, 0.10, 500),
+        (1100000, 5000000, 365, 90, 0.10, 700),
+    ]
+    for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+        if min_amt <= amount <= max_amt:
+            if credit_score < min_score:
+                raise ValueError(f"You need a credit score of at least {min_score} to borrow ₦{amount:,}. Your score is {credit_score}.")
+            return dur, grace, rate
+    raise ValueError(f"Loan amount ₦{amount:,} is not within any available tier.")
 
 
 
@@ -846,44 +829,147 @@ def process_user_command(user_id, text):
                 p["state"] = "collecting_category"
                 return ask_next_question(user_id)
 
+
             elif state == "direct_loan_amount":
-                # Validate amount
-                amount = float(reply.strip().replace(',', ''))
-                # Check eligibility, max loan, etc. (reuse existing checks)
+
+                try:
+
+                    amount = float(reply.strip().replace(',', ''))
+
+                except ValueError:
+
+                    return jsonify({"message": "Please enter a valid number for the amount."})
+
+                # Check expense/income ratio
+
+                conn = get_conn()
+
+                cur = conn.cursor()
+
+                cur.execute("""
+
+                    SELECT
+
+                        COALESCE(SUM(CASE WHEN event_type = 'ExpenseLogged' THEN (payload->>'amount')::numeric ELSE 0 END), 0),
+
+                        COALESCE(SUM(CASE WHEN event_type = 'IncomeReceived' THEN (payload->>'amount')::numeric ELSE 0 END), 0)
+
+                    FROM events
+
+                    WHERE user_id = %s
+
+                """, (user_id,))
+
+                total_expense, total_income = cur.fetchone()
+
+                conn.close()
+
+                if total_income > 0:
+
+                    ratio = total_expense / total_income
+
+                    if ratio < 0.70 or ratio > 0.30:  # must be between 30% and 70% expense ratio
+
+                        return jsonify({
+
+                            "message": "Your expense‑to‑income ratio must be between 30% and 70% to qualify for a loan. Keep logging your transactions.",
+
+                            "tone": "warning"
+
+                        })
+
+                try:
+
+                    dur_days, grace_days, interest_rate = get_loan_terms(amount, get_credit_score(user_id)['score'])
+
+                except ValueError as e:
+
+                    return jsonify({"message": str(e), "tone": "warning"})
+
+                # Calculate new terms
+
+                total_interest = amount * interest_rate
+
+                total_repayable = amount + total_interest
+
+                repay_days = dur_days - grace_days
+
+                daily_amount = round(total_repayable / repay_days, 2)
+
                 p["data"]["amount"] = amount
+
+                p["data"]["interest_rate"] = interest_rate
+
+                p["data"]["total_repayable"] = total_repayable
+
+                p["data"]["daily_amount"] = daily_amount
+
+                p["data"]["duration_days"] = dur_days
+
+                p["data"]["grace_days"] = grace_days
+
                 p["state"] = "direct_loan_product"
+
                 return jsonify(
                     {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
 
+
             elif state == "direct_loan_product":
+
                 p["data"]["product"] = reply.strip()
+
                 amount = p["data"]["amount"]
-                supplier_name = p["data"]["supplier_name"]
-                supplier_id = p["data"]["supplier_id"]
 
-                # Calculate loan terms
-                flat_fee = amount * 0.05
-                total_repayable = amount + flat_fee
-                daily_amount = round(total_repayable / 14, 2)
+                interest_rate = p["data"]["interest_rate"]
 
-                p["data"]["flat_fee"] = flat_fee
+                total_interest = amount * interest_rate
+
+                total_repayable = amount + total_interest
+
+                dur_days = p["data"]["duration_days"]
+
+                grace_days = p["data"]["grace_days"]
+
+                repay_days = dur_days - grace_days
+
+                daily_amount = round(total_repayable / repay_days, 2)
+
+                p["data"]["total_interest"] = total_interest
+
                 p["data"]["total_repayable"] = total_repayable
+
                 p["data"]["daily_amount"] = daily_amount
+
                 p["state"] = "confirming_direct_loan"
 
                 return jsonify({
+
                     "message": (
+
                         f"📦 **Loan Summary**\n\n"
+
                         f"• Amount: ₦{amount:,.2f}\n"
+
                         f"• Product: {p['data']['product']}\n"
-                        f"• Supplier: {supplier_name}\n"
-                        f"• Fee (5%): ₦{flat_fee:,.2f}\n"
+
+                        f"• Supplier: {p['data']['supplier_name']}\n"
+
+                        f"• Interest (10%): ₦{total_interest:,.2f}\n"
+
                         f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                        f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
+
+                        f"• Duration: {dur_days} days (grace: {grace_days} days, repay over {repay_days} days)\n"
+
+                        f"• Daily repayment: ₦{daily_amount:,.2f}\n\n"
+
                         f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+
                     ),
+
                     "tone": "neutral"
+
                 })
+
 
 
             elif state == "confirming_direct_loan":
@@ -896,11 +982,15 @@ def process_user_command(user_id, text):
 
                     product = str(p["data"]["product"])
 
-                    flat_fee = float(p["data"]["flat_fee"])
+                    total_interest = float(p["data"]["total_interest"])
 
                     total_repayable = float(p["data"]["total_repayable"])
 
                     daily_amount = float(p["data"]["daily_amount"])
+
+                    dur_days = int(p["data"]["duration_days"])
+
+                    grace_days = int(p["data"]["grace_days"])
 
                     # Credit supplier wallet
 
@@ -921,11 +1011,15 @@ def process_user_command(user_id, text):
 
                         "product": product,
 
-                        "flat_fee": flat_fee,
+                        "total_interest": total_interest,
 
                         "total_repayable": total_repayable,
 
-                        "daily_amount": daily_amount
+                        "daily_amount": daily_amount,
+
+                        "duration_days": dur_days,
+
+                        "grace_days": grace_days
 
                     }
 
@@ -943,7 +1037,7 @@ def process_user_command(user_id, text):
 
                     start_date = datetime.utcnow().date()
 
-                    end_date = start_date + timedelta(days=21)
+                    end_date = start_date + timedelta(days=dur_days)
 
                     cur.execute("""
 
@@ -955,7 +1049,7 @@ def process_user_command(user_id, text):
 
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
 
-                    """, (user_id, supplier_id, product, amount, flat_fee,
+                    """, (user_id, supplier_id, product, amount, total_interest,
 
                           total_repayable, daily_amount, total_repayable, start_date, end_date))
 
@@ -967,7 +1061,9 @@ def process_user_command(user_id, text):
 
                     return jsonify({
 
-                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! Your daily repayment is ₦{daily_amount:,.2f}.",
+                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! "
+
+                                   f"Your daily repayment is ₦{daily_amount:,.2f}.",
 
                         "tone": "income",
 

@@ -1768,8 +1768,7 @@ def process_user_command(user_id, text):
 
             # Check user eligibility (same as before)
             credit = get_credit_score(user_id)
-            max_loan = get_max_loan_amount(credit['score'])
-            if max_loan == 0:
+            if credit['score'] < 20:
                 return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
                                 "tone": "warning"})
 
@@ -1822,8 +1821,9 @@ def process_user_command(user_id, text):
                 if 'k' in text_lower or 'thousand' in text_lower:
                     amount *= 1000
 
-            credit = get_credit_score(user_id)
-            max_loan = get_max_loan_amount(credit['score'])
+            if get_credit_score(user_id)['score'] < 20:
+                return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
+                                "tone": "warning"})
 
             # Eligibility check
             if max_loan == 0:
@@ -2854,43 +2854,70 @@ def process_user_command(user_id, text):
             'how much can i borrow', 'how much will i get'
         ]):
             hypothetical_score = int(hypothetical_score_match.group(1))
-            if 50 <= hypothetical_score <= 850:
-                max_loan = get_max_loan_amount(hypothetical_score)
-                if max_loan == 0:
-                    return jsonify({
-                        "message": f"With a score of {hypothetical_score}, you won't qualify for a loan yet. Keep logging transactions to reach 50.",
-                        "tone": "neutral"
-                    })
-                else:
-                    return jsonify({
-                        "message": (
-                            f"If your credit score is {hypothetical_score}, you can borrow up to ₦{max_loan:,}.\n"
-                            "Your current score is {}/850. Keep logging expenses to reach that target!"
-                        ).format(get_credit_score(user_id)['score']),
-                        "tone": "neutral"
-                    })
-            else:
-                return jsonify({"message": "Credit score must be between 50 and 850.", "tone": "warning"})
-
-        # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
-        if re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
-            # Treat it exactly like "can I get a loan"
-            credit = get_credit_score(user_id)
-            max_loan = get_max_loan_amount(credit['score'])
-            if max_loan == 0:
+            # Tiers: (min_amount, max_amount, dur, grace, rate, min_score)
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.10, 100),
+                (101000, 200000, 90, 21, 0.10, 250),
+                (201000, 500000, 180, 30, 0.10, 350),
+                (501000, 1000000, 240, 60, 0.10, 500),
+                (1100000, 5000000, 365, 90, 0.10, 700),
+            ]
+            min_eligible = None
+            max_eligible = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if hypothetical_score >= min_score:
+                    if min_eligible is None:
+                        min_eligible = min_amt
+                    max_eligible = max_amt
+            if min_eligible is not None:
                 return jsonify({
-                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                    "message": (
+                        f"If your credit score is {hypothetical_score}, you can borrow "
+                        f"between ₦{min_eligible:,} and ₦{max_eligible:,}."
+                    ),
                     "tone": "neutral"
                 })
             else:
                 return jsonify({
+                    "message": f"With a score of {hypothetical_score}, you won't qualify for any loan tier yet. Keep logging transactions.",
+                    "tone": "neutral"
+                })
+
+        # ---- DIRECT BORROW REQUEST (NO SUPPLIER) ----
+        if re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE):
+            credit = get_credit_score(user_id)
+            score = credit['score']
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.10, 100),
+                (101000, 200000, 90, 21, 0.10, 250),
+                (201000, 500000, 180, 30, 0.10, 350),
+                (501000, 1000000, 240, 60, 0.10, 500),
+                (1100000, 5000000, 365, 90, 0.10, 700),
+            ]
+            min_eligible = None
+            max_eligible = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if score >= min_score:
+                    if min_eligible is None:
+                        min_eligible = min_amt
+                    max_eligible = max_amt
+            if min_eligible is not None:
+                return jsonify({
                     "message": (
-                        f"Your credit score is {credit['score']}/850. "
-                        f"You can borrow up to ₦{max_loan:,}.\n"
-                        "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
-                        "I'll pay the supplier directly and you repay in 14 days."
+                        f"Your credit score is {score}/850. "
+                        f"You can borrow between ₦{min_eligible:,} and ₦{max_eligible:,}.\n"
+                        "Tap the cart icon 🛒 to browse suppliers and start a loan."
                     ),
                     "tone": "income"
+                })
+            else:
+                return jsonify({
+                    "message": f"Your credit score is {score}/850. You need at least 20 to qualify. Keep logging transactions!",
+                    "tone": "neutral"
                 })
 
         # ---------- GENERIC LOAN INQUIRY (before fallback) ----------
@@ -2899,21 +2926,37 @@ def process_user_command(user_id, text):
             'loan eligibility', 'how much loan can i get'
         ]):
             credit = get_credit_score(user_id)
-            max_loan = get_max_loan_amount(credit['score'])
-            if max_loan == 0:
+            score = credit['score']
+            # Tiers: (min_amount, max_amount, dur, grace, rate, min_score)
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.10, 100),
+                (101000, 200000, 90, 21, 0.10, 250),
+                (201000, 500000, 180, 30, 0.10, 350),
+                (501000, 1000000, 240, 60, 0.10, 500),
+                (1100000, 5000000, 365, 90, 0.10, 700),
+            ]
+            min_eligible = None
+            max_eligible = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if score >= min_score:
+                    if min_eligible is None:
+                        min_eligible = min_amt
+                    max_eligible = max_amt
+            if min_eligible is not None:
                 return jsonify({
-                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                    "tone": "neutral"
+                    "message": (
+                        f"Your credit score is {score}/850. "
+                        f"You can borrow between ₦{min_eligible:,} and ₦{max_eligible:,}.\n"
+                        "Tap the cart icon 🛒 to browse suppliers and start a loan."
+                    ),
+                    "tone": "income"
                 })
             else:
                 return jsonify({
-                    "message": (
-                        f"Your credit score is {credit['score']}/850. "
-                        f"You can borrow up to ₦{max_loan:,}.\n"
-                        "To request an inventory loan, say like: 'borrow 50000 to buy bags of rice from Mama Tunde'. "
-                        "I'll pay the supplier directly and you repay in 14 days."
-                    ),
-                    "tone": "income"
+                    "message": f"Your credit score is {score}/850. You need at least 20 to qualify. Keep logging transactions!",
+                    "tone": "neutral"
                 })
 
 
@@ -3498,37 +3541,55 @@ def handle_query(text, user_id):
 
     # ---------- LOAN ELIGIBILITY ----------
     if any(phrase in text_lower for phrase in ['can i get a loan', 'do i qualify for a loan', 'i need a loan',
-                                                'borrow money', 'loan offer', 'lend me']):
+                                               'borrow money', 'loan offer', 'lend me']):
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM transactions_view WHERE user_id = %s", (user_id,))
-        txn_count = cur.fetchone()[0]
         cur.execute("SELECT MIN(created_at) FROM events WHERE user_id = %s", (user_id,))
         first_event = cur.fetchone()[0]
-        days_active = (datetime.utcnow().date() - first_event.date()).days if first_event else 0
         conn.close()
+        days_active = (datetime.utcnow().date() - first_event.date()).days if first_event else 0
 
         if days_active < 7:
-            return jsonify({"answer": "You need at least 7 days of transaction history to apply for a loan. Keep telling me your daily expenses!", "tone": "neutral"})
+            return jsonify({
+                "answer": "You need at least 7 days of transaction history to apply for a loan. Keep telling me your daily expenses!",
+                "tone": "neutral"
+            })
 
-        score_data = get_credit_score(user_id)
-        credit_score = score_data['score']
-        max_loan = get_max_loan_amount(credit_score)
-        if max_loan == 0:
-            return jsonify({"answer": f"Your credit score is {credit_score}/850. You need at least 100 to qualify. Keep logging your transactions!", "tone": "neutral"})
-
-        interest = get_loan_interest_rate(credit_score)
-        return jsonify({
-            "answer": f"🎉 You qualify for a loan!\n\n"
-                      f"• Credit score: **{credit_score}/850**\n"
-                      f"• Maximum amount: **₦{max_loan:,.2f}**\n"
-                      f"• Monthly interest: **{interest}%**\n"
-                      f"• Duration: 3‑12 months\n"
-                      f"• First month interest‑free!\n\n"
-                      f"To apply, just tell me how much you want and for how many months.\n"
-                      f"Example: *'borrow 20,000 for 6 months'*",
-            "tone": "income"
-        })
+        credit = get_credit_score(user_id)
+        score = credit['score']
+        tiers = [
+            (5000, 10000, 21, 3, 0.10, 20),
+            (10001, 50000, 28, 7, 0.10, 50),
+            (51000, 100000, 56, 14, 0.10, 100),
+            (101000, 200000, 90, 21, 0.10, 250),
+            (201000, 500000, 180, 30, 0.10, 350),
+            (501000, 1000000, 240, 60, 0.10, 500),
+            (1100000, 5000000, 365, 90, 0.10, 700),
+        ]
+        min_eligible = None
+        max_eligible = None
+        for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+            if score >= min_score:
+                if min_eligible is None:
+                    min_eligible = min_amt
+                max_eligible = max_amt
+        if min_eligible is not None:
+            return jsonify({
+                "answer": (
+                    f"🎉 You qualify for a loan!\n\n"
+                    f"• Credit score: **{score}/850**\n"
+                    f"• Eligible range: **₦{min_eligible:,} – ₦{max_eligible:,}**\n"
+                    f"• Interest: 10% flat\n"
+                    f"• Duration & grace depend on the amount\n\n"
+                    f"Tap the cart icon 🛒 to browse suppliers and start a loan."
+                ),
+                "tone": "income"
+            })
+        else:
+            return jsonify({
+                "answer": f"Your credit score is {score}/850. You need at least 20 to qualify. Keep logging transactions!",
+                "tone": "neutral"
+            })
 
 
 

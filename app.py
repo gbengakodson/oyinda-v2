@@ -5755,11 +5755,11 @@ def list_all_businesses():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, name, product, category, market_name, city, phone,
-               avatar_url, rating, total_ratings, is_verified, listing_type
-        FROM business_listings
-        WHERE user_id != %s
-        ORDER BY rating DESC NULLS LAST, created_at DESC
+        SELECT bl.id, bl.user_id, bl.name, bl.product, bl.category, bl.market_name, bl.city,
+               bl.phone, bl.avatar_url, bl.rating, bl.total_ratings, bl.is_verified, bl.listing_type
+        FROM business_listings bl
+        WHERE bl.user_id != %s
+        ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
         LIMIT 50
     """, (user_id,))
     rows = cur.fetchall()
@@ -5770,6 +5770,7 @@ def list_all_businesses():
         results.append({
             "id": r[0],
             "name": r[1],
+            "user_id": r[1],
             "product": r[2],
             "category": r[3],
             "market_name": r[4],

@@ -849,6 +849,18 @@ def process_user_command(user_id, text):
                 income_keywords = ['earned', 'received', 'made', 'got paid', 'income']
 
                 expense_keywords = ['spent', 'bought', 'paid', 'expense']
+                # ---- Friendly exit if the user is confused or wants to stop ----
+                exit_words = [
+                    'ok', 'okay', 'cancel', 'stop', 'no', 'never mind', 'forget',
+                    'what', 'how', 'help', 'menu', 'balance', 'credit score',
+                    'i don\'t know', 'i dont know', 'nothing'
+                ]
+                if any(w in reply_lower for w in exit_words) or len(reply_lower) < 3:
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({
+                        "message": "No problem! How can I help you instead?",
+                        "tone": "neutral"
+                    })
 
                 if any(w in reply_lower for w in income_keywords) or any(w in reply_lower for w in expense_keywords):
 

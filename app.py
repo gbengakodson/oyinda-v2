@@ -830,7 +830,121 @@ def process_user_command(user_id, text):
                 return ask_next_question(user_id)
 
 
+
             elif state == "direct_loan_amount":
+
+                reply_lower = reply.lower()
+
+                # ---- SMART LOGGING: if user is reporting income/expense instead of an amount ----
+
+                income_keywords = ['earned', 'received', 'made', 'got paid', 'income']
+
+                expense_keywords = ['spent', 'bought', 'paid', 'expense']
+
+                if any(w in reply_lower for w in income_keywords) or any(w in reply_lower for w in expense_keywords):
+
+                    # Temporarily remove ourselves so the main command handler can log this entry
+
+                    saved_state = pending_transaction[user_id]
+
+                    pending_transaction.pop(user_id, None)
+
+                    resp = process_user_command(user_id, reply)  # this will log the transaction
+
+                    # Restore the loan state
+
+                    pending_transaction[user_id] = saved_state
+
+                    # Re‑check ratio with the same duration that will be used for this loan
+
+                    # (we already have supplier info, but we need a tentative amount to get the tier duration)
+
+                    # Use a temporary amount of 5000 to get a default duration (21 days) for the re‑check.
+
+                    # If the user hasn't told us an amount yet, we use the lowest tier duration (21 days).
+
+                    tentative_amount = 5000
+
+                    try:
+
+                        dur_days, grace_days, interest_rate = get_loan_terms(tentative_amount,
+                                                                             get_credit_score(user_id)['score'])
+
+                    except ValueError:
+
+                        dur_days = 21  # fallback
+
+                    lookback_start = (datetime.utcnow().date() - timedelta(days=dur_days)).strftime('%Y-%m-%d')
+
+                    conn = get_conn()
+
+                    cur = conn.cursor()
+
+                    cur.execute("""
+
+                        SELECT
+
+                            COUNT(*) FILTER (WHERE event_type = 'IncomeReceived'),
+
+                            COUNT(*) FILTER (WHERE event_type = 'ExpenseLogged')
+
+                        FROM events
+
+                        WHERE user_id = %s
+
+                          AND (event_type = 'IncomeReceived' OR event_type = 'ExpenseLogged')
+
+                          AND created_at::date >= %s
+
+                    """, (user_id, lookback_start))
+
+                    income_count, expense_count = cur.fetchone()
+
+                    conn.close()
+
+                    total_logs = income_count + expense_count
+
+                    income_pct = (income_count / total_logs) * 100 if total_logs > 0 else 0
+
+                    if income_pct < 30.0:
+
+                        needed_income = max(1, int((0.30 * total_logs) - income_count))
+
+                        return jsonify({
+
+                            "message": (
+
+                                f"Logged! Your income ratio is now {income_pct:.0f}% — still below 30%. "
+
+                                f"You have {total_logs} transactions, {income_count} income. "
+
+                                f"You need at least {needed_income} more income entries.\n"
+
+                                f"How much do you want to borrow to pay {saved_state['data']['supplier_name']}?"
+
+                            ),
+
+                            "tone": "neutral"
+
+                        })
+
+                    else:
+
+                        # Ratio satisfied – move to product step
+
+                        saved_state["state"] = "direct_loan_product"
+
+                        return jsonify({
+
+                            "message": "Logged! Your income ratio now meets the requirement. "
+
+                                       "What exactly do you want to buy? (e.g., 'bags of rice')",
+
+                            "tone": "neutral"
+
+                        })
+
+                # ---- NORMAL AMOUNT ENTRY ----
 
                 try:
 
@@ -838,101 +952,91 @@ def process_user_command(user_id, text):
 
                 except ValueError:
 
-                    return jsonify({"message": "Please enter a valid number for the amount."})
+                    return jsonify({
+                                       "message": "Please enter a valid number for the amount, or tell me about income/expense you want to log.",
+                                       "tone": "neutral"})
 
-                # Check expense/income ratio
+                # Check expense/income ratio using the tier's duration
 
-                conn = get_conn()
-
-                cur = conn.cursor()
-
-                cur.execute("""
-
-                    SELECT
-
-                        COALESCE(SUM(CASE WHEN event_type = 'ExpenseLogged' THEN (payload->>'amount')::numeric ELSE 0 END), 0),
-
-                        COALESCE(SUM(CASE WHEN event_type = 'IncomeReceived' THEN (payload->>'amount')::numeric ELSE 0 END), 0)
-
-                    FROM events
-
-                    WHERE user_id = %s
-
-                """, (user_id,))
-
-                total_expense, total_income = cur.fetchone()
-
-                conn.close()
-
-                # Get the loan tier for this amount (to know the lookback window)
                 try:
+
                     dur_days, grace_days, interest_rate = get_loan_terms(amount, get_credit_score(user_id)['score'])
+
                 except ValueError as e:
+
                     return jsonify({"message": str(e), "tone": "warning"})
 
-                # Count income vs expense events in the last dur_days
                 lookback_start = (datetime.utcnow().date() - timedelta(days=dur_days)).strftime('%Y-%m-%d')
+
                 conn = get_conn()
+
                 cur = conn.cursor()
+
                 cur.execute("""
+
                     SELECT
+
                         COUNT(*) FILTER (WHERE event_type = 'IncomeReceived'),
+
                         COUNT(*) FILTER (WHERE event_type = 'ExpenseLogged')
+
                     FROM events
+
                     WHERE user_id = %s
+
                       AND (event_type = 'IncomeReceived' OR event_type = 'ExpenseLogged')
+
                       AND created_at::date >= %s
+
                 """, (user_id, lookback_start))
+
                 income_count, expense_count = cur.fetchone()
+
                 conn.close()
+
                 total_logs = income_count + expense_count
 
-                if total_logs < 10:  # need at least some history
+                if total_logs < 10:
                     return jsonify({
-                        "message": f"You need at least 10 transactions in the last {dur_days} days to apply for this loan. "
+
+                        "message": f"You need at least 10 transactions in the last {dur_days} days to apply. "
+
                                    "Keep telling me your expenses and income!",
+
                         "tone": "warning"
+
                     })
 
-                income_pct = (income_count / total_logs) * 100
+                income_pct = (income_count / total_logs) * 100 if total_logs > 0 else 0
+
                 if income_pct < 30.0:
-                    needed_income = int((0.30 * total_logs) - income_count)
+                    needed_income = max(1, int((0.30 * total_logs) - income_count))
+
                     return jsonify({
+
                         "message": (
+
                             f"Your income ratio is {income_pct:.0f}% — too low. "
+
                             f"In the last {dur_days} days, you have {total_logs} transactions, but only {income_count} are income. "
+
                             f"You need at least {needed_income} more income entries to reach 30%.\n"
-                            "Try telling me about money you received recently."
+
+                            "Tell me about money you received, or enter a different loan amount."
+
                         ),
+
                         "tone": "warning"
+
                     })
 
-                # Store tier details (already obtained)
-                p["data"]["amount"] = amount
-                p["data"]["interest_rate"] = interest_rate
-                p["data"]["duration_days"] = dur_days
-                p["data"]["grace_days"] = grace_days
-                p["state"] = "direct_loan_product"
-                return jsonify(
-                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
-
-                try:
-
-                    dur_days, grace_days, interest_rate = get_loan_terms(amount, get_credit_score(user_id)['score'])
-
-                except ValueError as e:
-
-                    return jsonify({"message": str(e), "tone": "warning"})
-
-                # Calculate new terms
+                # Store and move on
 
                 total_interest = amount * interest_rate
 
                 total_repayable = amount + total_interest
 
-                repay_days = dur_days - grace_days
-
-                daily_amount = round(total_repayable / repay_days, 2)
+                daily_amount = round(total_repayable / (dur_days - grace_days), 2)
 
                 p["data"]["amount"] = amount
 

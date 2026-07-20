@@ -583,11 +583,9 @@ def ensure_wallet(user_id):
         conn.close()
         return wallet
 
-    # Generate a unique account number for this user
-    # We'll use the format: 79 + last 8 digits of user_id (hex -> int, take last 8)
-    # This gives a 10-digit number that looks like a NUBAN.
-    short_id = str(int(user_id.replace('-', ''), 16))[-8:]  # last 8 digits
-    account_number = "79" + short_id.zfill(8)  # 10 digits starting with 79
+    account_number = user_facts.get('phone', '')
+    if not account_number:
+        raise Exception("You need to add your phone number first. Type 'verify my identity' to complete your profile.")
 
     # Use a fixed system ID that represents our pooled Mono account
     system_account_id = "oyinda_pool"
@@ -1202,6 +1200,7 @@ def process_user_command(user_id, text):
 
 
 
+
             elif state == "confirming_direct_loan":
 
                 if any(word in reply.lower() for word in ['yes', 'yeah', 'confirm']):
@@ -1222,57 +1221,29 @@ def process_user_command(user_id, text):
 
                     grace_days = int(p["data"]["grace_days"])
 
-                    # Credit supplier wallet
-                    cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s",
-                                (amount, supplier_id))
+                    supplier_name = p["data"]["supplier_name"]
 
-                    # Debit Oyinda treasury
-                    cur.execute(
-                        "UPDATE user_wallets SET balance = balance - %s WHERE user_id = '00000000-0000-0000-0000-000000000000'",
-                        (amount,))
+                    supplier_phone = get_user_facts(supplier_id).get('phone', '')
 
-                    # Log events (JSON‑safe payloads)
-                    loan_payload = {...}  # existing
-                    append_event(user_id, user_id, 'LoanTaken', loan_payload)
-                    append_event(supplier_id, supplier_id, 'WalletCredited', {
-                        "amount": amount,
-                        "source": "oyinda_loan"
-                    })
-                    append_event('00000000-0000-0000-0000-000000000000', '00000000-0000-0000-0000-000000000000',
-                                 'WalletDebited', {
-                                     "amount": amount,
-                                     "reason": "loan_disbursement",
-                                     "borrower": user_id
-                                 })
+                    # Save as pending loan request – admin will review and disburse
 
-                    # Create inventory_loan record
+                    conn = get_conn()
 
-                    start_date = datetime.utcnow().date()
-
-                    end_date = start_date + timedelta(days=dur_days)
+                    cur = conn.cursor()
 
                     cur.execute("""
 
-                        INSERT INTO inventory_loans
+                        INSERT INTO pending_loans
 
-                        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+                        (user_id, supplier_id, product, amount, interest, total_repayable,
 
-                         daily_amount, remaining_balance, start_date, end_date, status)
+                         daily_amount, duration_days, grace_days, supplier_name, supplier_phone, status)
 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
 
-                    """, (user_id, supplier_id, product, amount, total_interest,
+                    """, (user_id, supplier_id, product, amount, total_interest, total_repayable,
 
-                          total_repayable, daily_amount, total_repayable, start_date, end_date))
-                    # Auto‑list the supplier in the marketplace if not already listed
-                    supplier_phone = get_user_facts(supplier_id).get('phone', '')
-                    cur.execute("SELECT id FROM business_listings WHERE user_id = %s", (supplier_id,))
-                    if not cur.fetchone():
-                        cur.execute("""
-                            INSERT INTO business_listings
-                            (user_id, name, product, category, market_name, city, phone, listing_type)
-                            VALUES (%s, %s, %s, 'external', '', '', %s, 'external')
-                        """, (supplier_id, supplier_name, product, supplier_phone))
+                          daily_amount, dur_days, grace_days, supplier_name, supplier_phone))
 
                     conn.commit()
 
@@ -1282,21 +1253,11 @@ def process_user_command(user_id, text):
 
                     return jsonify({
 
-                        "message": f"✅ Loan of ₦{amount:,.2f} paid to {p['data']['supplier_name']}! "
+                        "message": f"✅ Loan request of ₦{amount:,.2f} to {supplier_name} has been submitted. "
 
-                                   f"Your daily repayment is ₦{daily_amount:,.2f}.",
+                                   "I'll notify you when it's been reviewed and disbursed.",
 
-                        "tone": "income",
-
-                        "feedback_prompt": {
-
-                            "context": "after_loan",
-
-                            "question": "How was the loan process?",
-
-                            "options": ["Smooth & fast 🚀", "Okay", "Too confusing 😕"]
-
-                        }
+                        "tone": "income"
 
                     })
 
@@ -6262,6 +6223,95 @@ def daily_data_reward():
     return jsonify({"rewarded": rewarded})
 
 
+@app.route('/admin/pending-loans', methods=['GET'])
+def admin_pending_loans():
+    secret = request.args.get('secret', '')
+    if secret != ADMIN_CREDIT_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT pl.id, u.name as borrower, pl.supplier_name, pl.product,
+               pl.amount, pl.total_repayable, pl.supplier_phone, pl.created_at
+        FROM pending_loans pl
+        JOIN users u ON pl.user_id = u.id
+        WHERE pl.status = 'pending'
+        ORDER BY pl.created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    loans = [{
+        "id": r[0],
+        "borrower": r[1],
+        "supplier": r[2],
+        "product": r[3],
+        "amount": r[4],
+        "repayable": r[5],
+        "supplier_phone": r[6],
+        "requested_at": str(r[7])
+    } for r in rows]
+
+    return jsonify({"loans": loans})
+
+@app.route('/admin/confirm-loan', methods=['POST'])
+def admin_confirm_loan():
+    data = request.get_json()
+    secret = data.get('secret', '')
+    loan_id = data.get('loan_id', '')
+
+    if secret != ADMIN_CREDIT_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM pending_loans WHERE id = %s AND status = 'pending'", (loan_id,))
+    loan = cur.fetchone()
+    if not loan:
+        conn.close()
+        return jsonify({"error": "Loan not found or already processed"}), 404
+
+    user_id, supplier_id, product, amount, interest, total_repayable, daily_amount, dur_days, grace_days, supplier_name, supplier_phone = loan[1:12]
+
+    # Credit supplier wallet (simulate disbursement)
+    cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s", (amount, supplier_id))
+
+    # Create inventory loan record
+    start_date = datetime.utcnow().date()
+    end_date = start_date + timedelta(days=dur_days)
+    cur.execute("""
+        INSERT INTO inventory_loans
+        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+         daily_amount, remaining_balance, start_date, end_date, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+    """, (user_id, supplier_id, product, amount, interest,
+          total_repayable, daily_amount, total_repayable, start_date, end_date))
+
+    # Log events
+    append_event(user_id, user_id, 'LoanTaken', {
+        "amount": amount,
+        "supplier_id": str(supplier_id),
+        "product": product,
+        "total_interest": interest,
+        "total_repayable": total_repayable,
+        "daily_amount": daily_amount,
+        "duration_days": dur_days,
+        "grace_days": grace_days
+    })
+    append_event(supplier_id, supplier_id, 'WalletCredited', {
+        "amount": amount,
+        "source": "oyinda_loan"
+    })
+
+    # Mark pending loan as approved
+    cur.execute("UPDATE pending_loans SET status = 'approved' WHERE id = %s", (loan_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"Loan of ₦{amount:,.2f} to {supplier_name} disbursed successfully."})
+
+
 
 @app.route('/cron/remind', methods=['POST'])
 def cron_remind():
@@ -6674,6 +6724,52 @@ def admin_summary():
         "total_commands": total_commands,
         "recent_feedback": feedback
     })
+
+
+
+ADMIN_CREDIT_SECRET = os.environ.get('ADMIN_CREDIT_SECRET', 'change-me-to-a-random-string')
+
+@app.route('/admin/credit-wallet', methods=['POST'])
+def admin_credit_wallet():
+    data = request.get_json()
+    secret = data.get('secret', '')
+    phone = data.get('phone', '').strip()
+    amount = float(data.get('amount', 0))
+
+    if secret != ADMIN_CREDIT_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+    if not re.fullmatch(r'\d{11}', phone):
+        return jsonify({"error": "Invalid phone number"}), 400
+    if amount <= 0:
+        return jsonify({"error": "Amount must be positive"}), 400
+
+    # Find user by phone
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    user_id = row[0]
+
+    # Credit wallet
+    cur.execute("UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
+                (amount, user_id))
+    # Log as income
+    append_event(user_id, user_id, 'IncomeReceived', {
+        "amount": amount,
+        "currency": "NGN",
+        "description": "Customer payment (manual credit)"
+    })
+    append_event(user_id, user_id, 'WalletCredited', {
+        "amount": amount,
+        "source": "manual_credit"
+    })
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"₦{amount:,.2f} credited to {phone}"})
 
 
 

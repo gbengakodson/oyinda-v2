@@ -1951,15 +1951,59 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-        # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
-        search_triggers = [
-            'who sell', 'who sells', 'who dey sell', 'find supplier', 'find',
-            'who does', 'who dey do', 'i need a', 'i dey find', 'search', 'look for',
-            'who supplies', 'where can i get', 'who get', 'who dey supply', 'am looking for'
-            'which person dey', 'who fit', 'who sabi', 'who dey run', 'serch for',
+
+        # ---------- UNIFIED BUSINESS SEARCH (flexible + triggers) ----------
+        # First, try flexible natural‑language patterns
+        flexible_search_triggers = [
+            'search for', 'find', 'look for', 'show me', 'filter by',
+            'list', 'who has', 'who get', 'who sells', 'who dey sell',
+            'i need', 'i want', 'get me', 'connect me to', 'i dey find',
+            'who supplies', 'where can i get', 'who dey supply',
+            'am looking for', 'which person dey', 'who fit', 'who sabi',
+            'who dey run'
         ]
-        # ---------- BUSINESS NETWORK SEARCH (PERMANENT) ----------
-        # Sort longest-first to avoid partial matches
+        flexible_match = None
+        for phrase in flexible_search_triggers:
+            idx = text_lower.find(phrase)
+            if idx != -1:
+                candidate = text_lower[idx + len(phrase):].strip().lstrip('?,.- ')
+                if len(candidate) >= 2:
+                    flexible_match = candidate
+                    break
+
+        if flexible_match:
+            # Extract location hints (e.g., "in Lagos", "near Dugbe Market")
+            city_filter = ''
+            market_filter = ''
+            location_match = re.search(r'\s+(in|near|at|around|for)\s+(.+)$', flexible_match, re.IGNORECASE)
+            if location_match:
+                loc_part = location_match.group(2).strip()
+                # Simple heuristic: if it looks like a city (capitalized, common), treat as city; else market
+                # We'll send both as possible filters to the backend, which handles them
+                city_filter = loc_part
+                market_filter = loc_part
+                flexible_match = re.sub(r'\s+(in|near|at|around|for)\s+.+$', '', flexible_match,
+                                        flags=re.IGNORECASE).strip()
+
+            if len(flexible_match) < 2:
+                return jsonify({"message": "Please be more specific. What are you looking for?", "tone": "neutral"})
+
+            return jsonify({
+                "action": "show_business_search",
+                "search_query": flexible_match,
+                "city": city_filter,
+                "market": market_filter,
+                "message": f"Searching for '{flexible_match}'…",
+                "tone": "neutral"
+            })
+
+        # Fallback to the traditional trigger‑word extraction
+        search_triggers = [
+            'who sell', 'who sells', 'who dey sell', 'find supplier',
+            'who does', 'who dey do', 'i need a',
+            'who supplies', 'where can i get', 'who get',
+            'which person dey', 'who fit', 'who sabi', 'who dey run'
+        ]
         sorted_triggers = sorted(search_triggers, key=len, reverse=True)
 
         if any(phrase in text_lower for phrase in search_triggers):
@@ -1967,8 +2011,7 @@ def process_user_command(user_id, text):
             for phrase in sorted_triggers:
                 idx = text_lower.find(phrase)
                 if idx != -1:
-                    candidate = text_lower[idx + len(phrase):].strip()
-                    candidate = candidate.lstrip('?,.- ')
+                    candidate = text_lower[idx + len(phrase):].strip().lstrip('?,.- ')
                     if len(candidate) >= 2:
                         matched = candidate
                         break
@@ -6307,10 +6350,11 @@ def search_business():
         FROM business_listings bl
         WHERE (LOWER(bl.name) ILIKE %s
            OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(bl.products) AS p WHERE LOWER(p) ILIKE %s)
-           OR LOWER(bl.market_name) ILIKE %s)
+           OR LOWER(bl.market_name) ILIKE %s
+           OR LOWER(bl.city) ILIKE %s)
           AND bl.user_id != %s
     """
-    params = [like_q, like_q, like_q, user_id]
+    params = [like_q, like_q, like_q, like_q, user_id]
 
     if city:
         query += " AND LOWER(bl.city) = %s"
@@ -6562,8 +6606,6 @@ def handle_voice():
     audio_file = request.files['audio']
     if audio_file.filename == '':
         return jsonify({"error": "Empty file name"}), 422
-    if not audio_file.mimetype or not audio_file.mimetype.startswith('audio/'):
-        return jsonify({"error": f"Invalid file type: {audio_file.mimetype}. Please record an audio note."}), 422
 
     temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
     audio_file.save(temp_filename)
@@ -6576,7 +6618,6 @@ def handle_voice():
         import openai
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Get user's preferred language
         user_facts = get_user_facts(user_id)
         lang_pref = user_facts.get('language', 'english').lower()
         lang_map = {
@@ -6605,7 +6646,7 @@ def handle_voice():
         return jsonify(resp_json)
 
     except openai.OpenAIError as e:
-        return jsonify({"message": f"Transcription service error. Please try again later.", "tone": "warning"})
+        return jsonify({"message": f"Transcription service error: {str(e)}", "tone": "warning"})
     except Exception as e:
         return jsonify({"message": f"Transcription failed: {str(e)}", "tone": "warning"})
     finally:

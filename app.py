@@ -2578,6 +2578,9 @@ def process_user_command(user_id, text):
                 VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (user_id, name, product, category, market, city, phone)
             )
+            cur.execute(
+                "UPDATE business_listings SET price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
+                (user_id,))
             conn.commit()
             conn.close()
 
@@ -4342,9 +4345,13 @@ def onboard():
         return jsonify({"message": "Business address? (or type 'skip')", "tone": "neutral"})
 
     if step == 'ask_what_they_sell':
-        product = text.strip()
-        if product.lower() != 'skip':
-            user_data['product'] = product
+        product_text = text.strip()
+        if product_text.lower() != 'skip':
+            # Split by commas and clean up
+            products = [p.strip() for p in product_text.split(',') if p.strip()]
+            user_data['products'] = products
+            user_data['product'] = products[0] if products else ''  # backward compat
+        # … continue to next step
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
@@ -6374,6 +6381,7 @@ def search_business():
     user_id = get_jwt_identity()
     q = request.args.get('q', '').strip().lower()
     city = request.args.get('city', '').strip().lower()
+    market = request.args.get('market', '').strip().lower()
 
     if not q or len(q) < 2:
         return jsonify({"results": [], "message": "Please enter at least 2 letters to search."})
@@ -6382,15 +6390,26 @@ def search_business():
     cur = conn.cursor()
     like_q = f'%{q}%'
     query = """
-    SELECT id, name, product, category, market_name, city, phone,
-           avatar_url, rating, total_ratings, is_verified, listing_type
-    FROM business_listings
-    WHERE (LOWER(product) LIKE %s OR LOWER(name) LIKE %s OR LOWER(market_name) LIKE %s)
-      AND user_id != %s
-    ORDER BY rating DESC NULLS LAST, created_at DESC
-    LIMIT 20
+        SELECT bl.id, bl.user_id, bl.name, bl.products, bl.shop_photo, bl.owner_photo,
+               bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings,
+               bl.is_verified, bl.listing_type, bl.price_update_count, bl.last_price_update
+        FROM business_listings bl
+        WHERE (LOWER(bl.name) ILIKE %s
+           OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(bl.products) AS p WHERE LOWER(p) ILIKE %s)
+           OR LOWER(bl.market_name) ILIKE %s)
+          AND bl.user_id != %s
     """
-    cur.execute(query, (like_q, like_q, like_q, user_id))
+    params = [like_q, like_q, like_q, user_id]
+
+    if city:
+        query += " AND LOWER(bl.city) = %s"
+        params.append(city)
+    if market:
+        query += " AND LOWER(bl.market_name) ILIKE %s"
+        params.append(f'%{market}%')
+
+    query += " ORDER BY (COALESCE(bl.rating, 0) + (bl.price_update_count * 0.02)) DESC, bl.last_price_update DESC NULLS LAST LIMIT 20"
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
 
@@ -6398,17 +6417,20 @@ def search_business():
     for r in rows:
         results.append({
             "id": r[0],
-            "name": r[1],
-            "product": r[2],
-            "category": r[3],
-            "market_name": r[4],
-            "city": r[5],
-            "phone": r[6],
-            "avatar_url": r[7],
-            "rating": r[8],
-            "total_ratings": r[9],
-            "is_verified": r[10],
-            "listing_type": r[11]
+            "user_id": r[1],
+            "name": r[2],
+            "products": json.loads(r[3]) if r[3] else [],
+            "shop_photo": r[4],
+            "owner_photo": r[5],
+            "market_name": r[6] or '',
+            "city": r[7] or '',
+            "phone": r[8] or '',
+            "rating": r[9] or 0,
+            "total_ratings": r[10] or 0,
+            "is_verified": r[11] or False,
+            "listing_type": r[12],
+            "price_update_count": r[13] or 0,
+            "last_price_update": str(r[14]) if r[14] else None
         })
 
     return jsonify({"results": results})
@@ -6418,16 +6440,29 @@ def search_business():
 @jwt_required()
 def list_all_businesses():
     user_id = get_jwt_identity()
+    city = request.args.get('city', '').strip().lower()
+    market = request.args.get('market', '').strip().lower()
+
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT bl.id, bl.user_id, bl.name, bl.product, bl.category, bl.market_name, bl.city,
-               bl.phone, bl.avatar_url, bl.rating, bl.total_ratings, bl.is_verified, bl.listing_type
+    query = """
+        SELECT bl.id, bl.user_id, bl.name, bl.products, bl.shop_photo, bl.owner_photo,
+               bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings,
+               bl.is_verified, bl.listing_type, bl.price_update_count, bl.last_price_update
         FROM business_listings bl
         WHERE bl.user_id != %s
-        ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
-        LIMIT 50
-    """, (user_id,))
+    """
+    params = [user_id]
+
+    if city:
+        query += " AND LOWER(bl.city) = %s"
+        params.append(city)
+    if market:
+        query += " AND LOWER(bl.market_name) ILIKE %s"
+        params.append(f'%{market}%')
+
+    query += " ORDER BY (COALESCE(bl.rating, 0) + (bl.price_update_count * 0.02)) DESC, bl.last_price_update DESC NULLS LAST LIMIT 50"
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
 
@@ -6435,18 +6470,20 @@ def list_all_businesses():
     for r in rows:
         results.append({
             "id": r[0],
-            "name": r[1],
             "user_id": r[1],
-            "product": r[2],
-            "category": r[3],
-            "market_name": r[4],
-            "city": r[5],
-            "phone": r[6],
-            "avatar_url": r[7],
-            "rating": r[8],
-            "total_ratings": r[9],
-            "is_verified": r[10],
-            "listing_type": r[11]
+            "name": r[2],
+            "products": json.loads(r[3]) if r[3] else [],
+            "shop_photo": r[4],
+            "owner_photo": r[5],
+            "market_name": r[6] or '',
+            "city": r[7] or '',
+            "phone": r[8] or '',
+            "rating": r[9] or 0,
+            "total_ratings": r[10] or 0,
+            "is_verified": r[11] or False,
+            "listing_type": r[12],
+            "price_update_count": r[13] or 0,
+            "last_price_update": str(r[14]) if r[14] else None
         })
 
     return jsonify({"results": results})
@@ -6831,9 +6868,9 @@ def finalize_registration(token):
                 name = user_data.get("name", "")
                 cur2.execute(
                     """INSERT INTO business_listings
-                       (user_id, name, product, category, market_name, city, phone, listing_type)
+                       (user_id, name, products, category, market_name, city, phone, listing_type)
                        VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
-                    (user_id, name, product, "", city, phone)
+                    (user_id, name, json.dumps(products), '', city, phone)
                 )
                 conn2.commit()
                 conn2.close()

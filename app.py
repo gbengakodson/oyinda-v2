@@ -6619,15 +6619,19 @@ import openai
 @jwt_required()
 def handle_voice():
     user_id = get_jwt_identity()
-    if 'audio' not in request.files:
-        return jsonify({"error": "No audio file provided"}), 422
+    data = request.get_json(silent=True)
+    if not data or 'audio' not in data:
+        return jsonify({"message": "No audio received. Please try again.", "tone": "warning"})
 
-    audio_file = request.files['audio']
-    if audio_file.filename == '':
-        return jsonify({"error": "Empty file name"}), 422
+    import base64
+    try:
+        audio_bytes = base64.b64decode(data['audio'])
+    except Exception:
+        return jsonify({"message": "Invalid audio format.", "tone": "warning"})
 
     temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
-    audio_file.save(temp_filename)
+    with open(temp_filename, "wb") as f:
+        f.write(audio_bytes)
 
     if os.path.getsize(temp_filename) == 0:
         os.remove(temp_filename)
@@ -6665,7 +6669,7 @@ def handle_voice():
         return jsonify(resp_json)
 
     except openai.OpenAIError as e:
-        return jsonify({"message": f"Transcription service error: {str(e)}", "tone": "warning"})
+        return jsonify({"message": f"Transcription service error. Please try again later.", "tone": "warning"})
     except Exception as e:
         return jsonify({"message": f"Transcription failed: {str(e)}", "tone": "warning"})
     finally:

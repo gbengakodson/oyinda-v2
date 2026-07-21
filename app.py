@@ -2410,7 +2410,6 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-
         # ---- FLEXIBLE BUSINESS UPDATE (edit listing) ----
         update_keywords = ['update my business', 'edit my listing', 'change my',
                            'add product', 'add my product', 'set my city',
@@ -2420,22 +2419,25 @@ def process_user_command(user_id, text):
                            'add service', 'change market', 'change city',
                            'my business details', 'update listing']
         if any(phrase in text_lower for phrase in update_keywords):
-            # Check if user already has a listing
             conn = get_conn()
             cur = conn.cursor()
+
+            # Check if user already has a listing
             cur.execute("SELECT id FROM business_listings WHERE user_id = %s", (user_id,))
             if not cur.fetchone():
+                cur.close()
                 conn.close()
                 return jsonify({
                                    "message": "You don't have a business listing yet. Say 'I sell [product] in [city]' to create one.",
                                    "tone": "neutral"})
-            conn.close()
 
-            # Ask what they want to update, with suggestions based on what's missing
+            # Fetch current details (conn still open)
             cur.execute("SELECT city, market_name, products, shop_photo FROM business_listings WHERE user_id = %s",
                         (user_id,))
             row = cur.fetchone()
             cur.close()
+            conn.close()
+
             missing = []
             if not row[0]: missing.append("City")
             if not row[1]: missing.append("Market")

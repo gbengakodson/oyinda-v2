@@ -1968,22 +1968,35 @@ def process_user_command(user_id, text):
             if idx != -1:
                 candidate = text_lower[idx + len(phrase):].strip().lstrip('?,.- ')
                 if len(candidate) >= 2:
-                    flexible_match = candidate
+                    # Remove leading filler words (for, a, the, me, some, any, my, our)
+                    flexible_match = re.sub(r'^(for|a|the|me|some|any|my|our)\s+', '', candidate, flags=re.IGNORECASE)
                     break
 
         if flexible_match:
-            # Extract location hints (e.g., "in Lagos", "near Dugbe Market")
+            # ---- EXTRACT LOCATION from the query ----
             city_filter = ''
             market_filter = ''
-            location_match = re.search(r'\s+(in|near|at|around|for)\s+(.+)$', flexible_match, re.IGNORECASE)
+            location_match = re.search(r'\s+(in|near|at|around|for|from)\s+(.+)$', flexible_match, re.IGNORECASE)
             if location_match:
                 loc_part = location_match.group(2).strip()
-                # Simple heuristic: if it looks like a city (capitalized, common), treat as city; else market
-                # We'll send both as possible filters to the backend, which handles them
+                # Remove trailing punctuation
+                loc_part = re.sub(r'[!?.]+$', '', loc_part).strip()
+                # Use as both city and market filter for now (backend searches both fields)
                 city_filter = loc_part
                 market_filter = loc_part
-                flexible_match = re.sub(r'\s+(in|near|at|around|for)\s+.+$', '', flexible_match,
+                # Remove location from the main search query
+                flexible_match = re.sub(r'\s+(in|near|at|around|for|from)\s+.+$', '', flexible_match,
                                         flags=re.IGNORECASE).strip()
+
+            # ---- CLEAN UP the remaining query (remove filler words) ----
+            # Remove leading articles and filler words
+            flexible_match = re.sub(r'^(a|an|the|some|any|my|our|me|for)\s+', '', flexible_match,
+                                    flags=re.IGNORECASE).strip()
+
+            # ---- DETECT INTENT (optional) ----
+            # If the query mentions "seller", "supplier", "vendor", we can focus on product search
+            # Otherwise the backend already searches across names, products, and markets
+            # We'll just pass the cleaned query as is.
 
             if len(flexible_match) < 2:
                 return jsonify({"message": "Please be more specific. What are you looking for?", "tone": "neutral"})
@@ -2015,6 +2028,10 @@ def process_user_command(user_id, text):
                     if len(candidate) >= 2:
                         matched = candidate
                         break
+            if matched:
+                # Remove leading filler words (for, a, the, me, some, any, my, our)
+                matched = re.sub(r'^(for|a|the|me|some|any|my|our)\s+', '', matched, flags=re.IGNORECASE)
+
             if not matched:
                 words = text_lower.split()
                 matched = words[-1] if words else ''

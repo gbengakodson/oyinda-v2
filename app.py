@@ -6195,30 +6195,17 @@ def search_business():
 @app.route('/api/business/list', methods=['GET'])
 @jwt_required()
 def list_all_businesses():
-    user_id = get_jwt_identity()
-    city = request.args.get('city', '').strip().lower()
-    market = request.args.get('market', '').strip().lower()
-
     conn = get_conn()
     cur = conn.cursor()
-    query = """
+    cur.execute("""
         SELECT bl.id, bl.user_id, bl.name, bl.products, bl.shop_photo, bl.owner_photo,
                bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings,
                bl.is_verified, bl.listing_type, bl.price_update_count, bl.last_price_update
         FROM business_listings bl
-        WHERE bl.user_id != %s
-    """
-    params = [user_id]
-
-    if city:
-        query += " AND LOWER(bl.city) = %s"
-        params.append(city)
-    if market:
-        query += " AND LOWER(bl.market_name) ILIKE %s"
-        params.append(f'%{market}%')
-
-    query += " ORDER BY (COALESCE(bl.rating, 0) + (bl.price_update_count * 0.02)) DESC, bl.last_price_update DESC NULLS LAST LIMIT 50"
-    cur.execute(query, params)
+        ORDER BY (COALESCE(bl.rating, 0) + (bl.price_update_count * 0.02)) DESC,
+                 bl.last_price_update DESC NULLS LAST
+        LIMIT 50
+    """)
     rows = cur.fetchall()
     conn.close()
 

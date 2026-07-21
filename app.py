@@ -1393,6 +1393,98 @@ def process_user_command(user_id, text):
                     })
 
 
+            elif state == "ask_update_field":
+                choice = reply.strip().lower()
+                field_map = {
+                    'products': 'update_products',
+                    'product': 'update_products',
+                    'city': 'update_city',
+                    'market': 'update_market',
+                    'photo': 'update_photo',
+                    'picture': 'update_photo',
+                    'image': 'update_photo'
+                }
+                next_state = field_map.get(choice)
+                if not next_state:
+                    return jsonify({
+                        "message": "I can update your Products, City, Market, or Photo. Which one?",
+                        "tone": "neutral"
+                    })
+                p["state"] = next_state
+                prompts = {
+                    'update_products': "List your products, separated by commas. For example: 'Web Design, FinTech Consulting'",
+                    'update_city': "Which city is your business located in? (e.g., Lagos, Ibadan)",
+                    'update_market': "Which market or area? (e.g., Dugbe Market, or type 'skip')",
+                    'update_photo': "Send me a URL of your shop photo, or type 'skip'."
+                }
+                return jsonify({"message": prompts[next_state], "tone": "neutral"})
+
+            elif state == "update_products":
+                products = [p.strip() for p in reply.split(',') if p.strip()]
+                if not products:
+                    return jsonify({"message": "Please list at least one product, separated by commas."})
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE business_listings SET products = %s, price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
+                    (json.dumps(products), user_id))
+                conn.commit()
+                conn.close()
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": f"Products updated to: {', '.join(products)}.", "tone": "income"})
+
+            elif state == "update_city":
+                city = reply.strip()
+                if not city or city.lower() == 'skip':
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "No changes made.", "tone": "neutral"})
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE business_listings SET city = %s, price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
+                    (city, user_id))
+                conn.commit()
+                conn.close()
+                store_user_fact(user_id, 'city', city)
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": f"City updated to {city}.", "tone": "income"})
+
+            elif state == "update_market":
+                market = reply.strip()
+                if not market or market.lower() == 'skip':
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "No changes made.", "tone": "neutral"})
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE business_listings SET market_name = %s, price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
+                    (market, user_id))
+                conn.commit()
+                conn.close()
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": f"Market updated to {market}.", "tone": "income"})
+
+            elif state == "update_photo":
+                photo_url = reply.strip()
+                if photo_url.lower() == 'skip':
+                    pending_transaction.pop(user_id, None)
+                    return jsonify({"message": "No changes made.", "tone": "neutral"})
+                # Basic validation for URL
+                if not photo_url.startswith('http://') and not photo_url.startswith('https://'):
+                    return jsonify({
+                                       "message": "Please send a valid photo URL (starting with http:// or https://), or type 'skip'.",
+                                       "tone": "neutral"})
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE business_listings SET shop_photo = %s, price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
+                    (photo_url, user_id))
+                conn.commit()
+                conn.close()
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "Photo updated! It will appear on your supplier card.", "tone": "income"})
+
+
             elif state == "collecting_category":
                 reply_lower = reply.lower()
                 cat_map = {
@@ -2274,6 +2366,59 @@ def process_user_command(user_id, text):
                            "longer than that. Other networks coming soon!",
                 "tone": "neutral"
             })
+
+
+        # ---- FLEXIBLE BUSINESS UPDATE (edit listing) ----
+        update_keywords = ['update my business', 'edit my listing', 'change my',
+                           'add product', 'add my product', 'set my city',
+                           'set my market', 'update photo', 'change photo',
+                           'add photo', 'update city', 'update market',
+                           'edit business', 'modify listing', 'add goods',
+                           'add service', 'change market', 'change city',
+                           'my business details', 'update listing']
+        if any(phrase in text_lower for phrase in update_keywords):
+            # Check if user already has a listing
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM business_listings WHERE user_id = %s", (user_id,))
+            if not cur.fetchone():
+                conn.close()
+                return jsonify({
+                                   "message": "You don't have a business listing yet. Say 'I sell [product] in [city]' to create one.",
+                                   "tone": "neutral"})
+            conn.close()
+
+            # Ask what they want to update, with suggestions based on what's missing
+            cur.execute("SELECT city, market_name, products, shop_photo FROM business_listings WHERE user_id = %s",
+                        (user_id,))
+            row = cur.fetchone()
+            cur.close()
+            missing = []
+            if not row[0]: missing.append("City")
+            if not row[1]: missing.append("Market")
+            if not row[2] or row[2] == '[]': missing.append("Products")
+            if not row[3]: missing.append("Photo")
+
+            pills = ["Products", "City", "Market", "Photo"]
+            message = "What would you like to update?"
+            if missing:
+                message += f" You're missing: {', '.join(missing)}."
+
+            pending_transaction[user_id] = {
+                "state": "ask_update_field",
+                "data": {},
+                "category": None
+            }
+            return jsonify({
+                "message": message,
+                "tone": "neutral",
+                "feedback_prompt": {
+                    "context": "update_business_field",
+                    "question": "Choose what to update",
+                    "options": pills
+                }
+            })
+
 
         # ---------- BUSINESS REGISTRATION ----------
         biz_reg_match = re.match(

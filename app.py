@@ -6558,11 +6558,12 @@ def handle_voice():
     user_id = get_jwt_identity()
     if 'audio' not in request.files:
         return jsonify({"error": "No audio file provided"}), 422
+
     audio_file = request.files['audio']
     if audio_file.filename == '':
         return jsonify({"error": "Empty file name"}), 422
-    if not audio_file.mimetype.startswith('audio/'):
-        return jsonify({"error": "Invalid file type"}), 422
+    if not audio_file.mimetype or not audio_file.mimetype.startswith('audio/'):
+        return jsonify({"error": f"Invalid file type: {audio_file.mimetype}. Please record an audio note."}), 422
 
     temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
     audio_file.save(temp_filename)
@@ -6572,47 +6573,41 @@ def handle_voice():
         return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
 
     try:
+        import openai
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        # Get user's preferred language
+        user_facts = get_user_facts(user_id)
+        lang_pref = user_facts.get('language', 'english').lower()
+        lang_map = {
+            'english': 'en', 'pidgin': 'en', 'yoruba': 'yo', 'yorùbá': 'yo',
+            'hausa': 'ha', 'igbo': 'ig'
+        }
+        whisper_lang = lang_map.get(lang_pref, 'en')
+
         with open(temp_filename, "rb") as f:
-            # Get user's preferred language (default to English)
-            user_facts = get_user_facts(user_id)
-            lang_pref = user_facts.get('language', 'english').lower()
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="text",
+                language=whisper_lang
+            )
 
-            # Map internal language names to Whisper language codes
-            lang_map = {
-                'english': 'en',
-                'pidgin': 'en',  # Pidgin is English‑based, so 'en' works best
-                'yoruba': 'yo',
-                'hausa': 'ha',
-                'igbo': 'ig'
-            }
-            whisper_lang = lang_map.get(lang_pref, 'en')
-
-            with open(temp_filename, "rb") as f:
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=f,
-                    response_format="text",
-                    language=whisper_lang
-                )
-        text = transcript.strip()
+        text = transcript.strip() if isinstance(transcript, str) else str(transcript).strip()
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
 
         save_conversation(user_id, 'user', text)
 
-        try:
-            resp = process_user_command(user_id, text)
-        except NameError as e:
-            import traceback
-            tb = traceback.format_exc()
-            resp = jsonify({"message": f"❌ NameError: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
+        resp = process_user_command(user_id, text)
         resp_json = resp.get_json()
         resp_json['transcription'] = text
         return jsonify(resp_json)
 
+    except openai.OpenAIError as e:
+        return jsonify({"message": f"Transcription service error. Please try again later.", "tone": "warning"})
     except Exception as e:
-        return jsonify({"error": f"Transcription failed: {str(e)}"}), 500
+        return jsonify({"message": f"Transcription failed: {str(e)}", "tone": "warning"})
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
@@ -6622,6 +6617,8 @@ def handle_voice():
 @app.route('/')
 def landing():
     return send_from_directory('webapp', 'landing.html')
+
+
 
 @app.route('/admin/summary', methods=['GET'])
 @jwt_required()

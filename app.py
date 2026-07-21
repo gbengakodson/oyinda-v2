@@ -1268,209 +1268,6 @@ def process_user_command(user_id, text):
                     return jsonify({"message": "Loan cancelled."})
 
 
-            elif state == "loan_ask_product":
-                # If the user seems to be starting a new task, cancel the loan wizard
-                likely_other_task = any(word in reply.lower() for word in [
-                    # Actions
-                    'spent', 'bought', 'paid', 'earned', 'received', 'made',
-                    'balance', 'net worth', 'credit score', 'statement', 'tax',
-                    'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
-                    'search', 'find', 'who sells', 'i need', 'what', 'how',
-                    # Questions / new intents
-                    'list', 'show', 'register', 'link', 'connect',
-                    # Explicit cancellation
-                    'cancel', 'stop', 'never mind', 'forget',
-                    # Loan re-trigger (start fresh)
-                    'borrow', 'loan', 'lend'
-                ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
-
-                if likely_other_task:
-                    pending_transaction.pop(user_id, None)
-                    return process_user_command(user_id, reply)
-                # User might provide amount + product in one go, or just product
-                text_clean = reply.strip()
-                # Check if they also gave an amount now (if we didn't have one)
-                if p["data"]["amount"] is None:
-                    amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text_clean, re.IGNORECASE)
-                    if amount_match:
-                        amount_str = amount_match.group(1).replace(',', '')
-                        p["data"]["amount"] = float(amount_str)
-                        if 'k' in text_clean.lower() or 'thousand' in text_clean.lower():
-                            p["data"]["amount"] *= 1000
-                        # Remove the amount from the product description
-                        text_clean = re.sub(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', '', text_clean,
-                                            flags=re.IGNORECASE).strip()
-                    else:
-                        return jsonify({
-                            "message": "I need the amount you want to borrow. For example, '5000 for bags of rice'.",
-                            "tone": "neutral"
-                        })
-
-                # Remove common filler words from the product description
-                text_clean = re.sub(r'\b(borrow|to buy|to purchase|for|to)\b', '', text_clean, flags=re.IGNORECASE)
-                text_clean = re.sub(r'\s+', ' ', text_clean).strip()
-                if not text_clean:
-                    return jsonify(
-                        {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
-
-                p["data"]["product"] = text_clean
-                p["state"] = "loan_ask_supplier"
-                return jsonify({
-                    "message": f"Got it! You want to buy {text_clean}. Which supplier do you want to buy from? Give me a name or part of the name.",
-                    "tone": "neutral"
-                })
-
-
-            elif state == "loan_ask_supplier":
-
-                # ... keep the existing "likely_other_task" check and confusion_words check ...
-
-                supplier_query = reply.strip()
-
-                if not supplier_query:
-                    return jsonify({"message": "Please give me the supplier's name or part of it.", "tone": "neutral"})
-
-                # Search the business directory
-
-                conn = get_conn()
-
-                cur = conn.cursor()
-
-                like_query = f'%{supplier_query}%'
-
-                cur.execute("""
-                    SELECT bl.user_id, bl.name, bl.product, bl.market_name, bl.city, bl.phone, bl.rating, bl.total_ratings, bl.is_verified
-                    FROM business_listings bl
-                    JOIN user_wallets uw ON bl.user_id = uw.user_id
-                    WHERE LOWER(bl.name) ILIKE %s AND bl.user_id != %s
-                    ORDER BY bl.rating DESC NULLS LAST, bl.created_at DESC
-                    LIMIT 5
-                """, (like_query, user_id))
-
-                suppliers = cur.fetchall()
-
-                conn.close()
-
-                if not suppliers:
-                    return jsonify({
-
-                        "message": f"I couldn't find any supplier matching '{supplier_query}'. Make sure the supplier has a registered business on Oyinda and a wallet. Try another name.",
-
-                        "tone": "warning"
-
-                    })
-
-                # Build supplier options and store in pending data
-
-                options = []
-
-                for s in suppliers:
-                    options.append({
-
-                        "id": s[0],
-
-                        "name": s[1],
-
-                        "product": s[2],
-
-                        "market": s[3] or '',
-
-                        "city": s[4] or '',
-
-                        "phone": s[5] or ''
-
-                    })
-
-                p["data"]["supplier_options"] = options
-
-                p["state"] = "loan_confirm_supplier"
-
-                # Return feedback chips with supplier names
-
-                return jsonify({
-
-                    "message": f"I found {len(options)} supplier(s) matching '{supplier_query}'. Tap the one you want:",
-
-                    "tone": "neutral",
-
-                    "feedback_prompt": {
-
-                        "context": "supplier_selection",
-
-                        "question": "Choose supplier",
-
-                        "options": [opt["name"] for opt in options]
-
-                    }
-
-                })
-
-            elif state == "loan_confirm_supplier":
-                # If the user seems to be starting a new task, cancel the loan wizard
-                likely_other_task = any(word in reply.lower() for word in [
-                    # Actions
-                    'spent', 'bought', 'paid', 'earned', 'received', 'made',
-                    'balance', 'net worth', 'credit score', 'statement', 'tax',
-                    'data', 'airtime', 'withdraw', 'send', 'swap', 'buy', 'sell',
-                    'search', 'find', 'who sells', 'i need', 'what', 'how',
-                    # Questions / new intents
-                    'list', 'show', 'register', 'link', 'connect',
-                    # Explicit cancellation
-                    'cancel', 'stop', 'never mind', 'forget',
-                    # Loan re-trigger (start fresh)
-                    'borrow', 'loan', 'lend'
-                ]) or re.search(r'\b(?:who|what|how|where)\b', reply, re.IGNORECASE)
-
-                if likely_other_task:
-                    pending_transaction.pop(user_id, None)
-                    return process_user_command(user_id, reply)
-                # We'll match the selected name from the options we stored.
-                selected_name = reply.strip()
-                options = p["data"].get("supplier_options", [])
-                selected = None
-                for opt in options:
-                    if opt["name"].lower() == selected_name.lower():
-                        selected = opt
-                        break
-                if not selected:
-                    return jsonify({
-                        "message": "Please tap one of the suppliers from the list I sent.",
-                        "tone": "warning"
-                    })
-                # Prevent borrowing from yourself
-                if selected["id"] == user_id:
-                    pending_transaction.pop(user_id, None)
-                    return jsonify({
-                        "message": "You can't borrow from yourself. Please choose a different supplier.",
-                        "tone": "warning"
-                    })
-
-                p["data"]["supplier_user_id"] = selected["id"]
-                p["data"]["supplier_name"] = selected["name"]
-                p["state"] = "confirming_inventory_loan"  # reuse the existing confirmation state
-
-                amount = p["data"]["amount"]
-                flat_fee = amount * 0.05
-                total_repayable = amount + flat_fee
-                daily_amount = round(total_repayable / 14, 2)
-
-                p["data"]["flat_fee"] = flat_fee
-                p["data"]["total_repayable"] = total_repayable
-                p["data"]["daily_amount"] = daily_amount
-
-                return jsonify({
-                    "message": (
-                        f"📦 **Loan Summary**\n\n"
-                        f"• Amount: ₦{amount:,.2f}\n"
-                        f"• Product: {p['data']['product']}\n"
-                        f"• Supplier: {selected['name']}\n"
-                        f"• Fee (5%): ₦{flat_fee:,.2f}\n"
-                        f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                        f"• Daily repayment: ₦{daily_amount:,.2f} for 14 days (after 7‑day grace)\n\n"
-                        f"Reply **'yes'** to confirm and I'll pay the supplier directly."
-                    ),
-                    "tone": "neutral"
-                })
 
             elif state == "external_supplier_phone":
                 phone = reply.strip()
@@ -1517,28 +1314,6 @@ def process_user_command(user_id, text):
                 p["data"]["id_type"] = id_type
                 p["state"] = "ask_id_number"
                 return jsonify({"message": f"What is your {id_type.upper()} number? (11 digits)", "tone": "neutral"})
-
-            elif state == "loan_confirm_lower_amount":
-                if any(word in reply.lower() for word in ['yes', 'yeah', 'ok', 'okay']):
-                    offered = p["data"]["offered_amount"]
-                    pending_transaction[user_id] = {
-                        "state": "loan_ask_product",
-                        "data": {
-                            "amount": offered,
-                            "max_loan": p["data"]["max_loan"],
-                            "credit_score": p["data"]["credit_score"]
-                        },
-                        "category": None
-                    }
-                    return jsonify({
-                        "message": f"Okay! You want to borrow ₦{offered:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                        "tone": "neutral"
-                    })
-                else:
-                    pending_transaction.pop(user_id, None)
-                    return jsonify({"message": "No problem. How can I help you instead?", "tone": "neutral"})
-
-
 
 
             elif state == "collecting_loan_direction":
@@ -2033,94 +1808,35 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
-
-        # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
+        # ---- CONVERSATIONAL LOAN ENTRY (now redirects to marketplace) ----
         past_borrowing = any(phrase in text_lower for phrase in [
             'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
             'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
         ])
 
         borrow_trigger = any(phrase in text_lower for phrase in [
-            'borrow', 'i want to borrow', 'i wan borrow', 'lend me', 'can i get','i need to borrow', 'lend me',
-            'can i get a loan', 'how much loan', 'i need loan', 'give me', 'can you borrow me',
+            'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
+            'can i get a loan', 'how much loan', 'i need loan',
             'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
             'get a loan', 'how can i borrow', 'can i borrow'
         ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
-        # Only start the wizard if it's a genuine request (not a past report)
         if borrow_trigger and not past_borrowing:
-            # If the user is already in a loan wizard, warn them
-            if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
+            # Check eligibility (just credit score)
+            if get_credit_score(user_id)['score'] < 20:
                 return jsonify({
-                    "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
+                    "message": "Your credit score is too low for a loan. Keep logging your transactions!",
                     "tone": "warning"
                 })
-
-            # ... rest of the existing loan entry logic (amount extraction, eligibility, etc.) ...
-            amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
-            amount = None
-            if amount_match:
-                amount_str = amount_match.group(1).replace(',', '')
-                amount = float(amount_str)
-                # If "k" or "thousand" is mentioned, multiply by 1000
-                if 'k' in text_lower or 'thousand' in text_lower:
-                    amount *= 1000
-
-            if get_credit_score(user_id)['score'] < 20:
-                return jsonify({"message": "Your credit score is too low for a loan. Keep logging transactions!",
-                                "tone": "warning"})
-
-            # Eligibility check
-            if max_loan == 0:
-                return jsonify({
-                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                    "tone": "neutral"
-                })
-
-            # If an amount was given, validate it
-            if amount is not None:
-                if amount > max_loan:
-                    # Store a pending intent to confirm the lower amount
-                    pending_transaction[user_id] = {
-                        "state": "loan_confirm_lower_amount",
-                        "data": {
-                            "offered_amount": max_loan,
-                            "max_loan": max_loan,
-                            "credit_score": credit['score']
-                        },
-                        "category": None
-                    }
-                    return jsonify({
-                        "message": (
-                            f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                            f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
-                        ),
-                        "tone": "warning"
-                    })
-            else:
-                amount = None  # will be asked later if not provided
-
-            # Store loan intent in pending transaction
-            pending_transaction[user_id] = {
-                "state": "loan_ask_product",
-                "data": {
-                    "amount": amount,
-                    "max_loan": max_loan,
-                    "credit_score": credit['score']
-                },
-                "category": None
-            }
-
-            if amount:
-                return jsonify({
-                    "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                    "tone": "neutral"
-                })
-            else:
-                return jsonify({
-                    "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
-                    "tone": "neutral"
-                })
+            # Guide them to the marketplace
+            return jsonify({
+                "message": (
+                    "You can borrow money to pay a supplier directly. "
+                    "Tap the cart icon 🛒 to browse suppliers, or type "
+                    "'loan from [supplier name]' to start."
+                ),
+                "tone": "neutral"
+            })
 
         # ---- LIST ALL BUSINESSES ----
         if any(phrase in text_lower for phrase in [
@@ -3119,8 +2835,6 @@ def process_user_command(user_id, text):
                 "tone": "income"
             })
 
-
-
         # ---- MINIMUM SCORE FOR A TARGET LOAN AMOUNT ----
         score_for_amount_match = re.search(
             r'(?:how\s+(?:many|much)\s+credit\s+score\s+(?:do|will)\s+I\s+(?:need|have)\s+to\s+borrow\s+)?(\d[\d,]*\.?\d*)',
@@ -3131,21 +2845,19 @@ def process_user_command(user_id, text):
             'score to borrow', 'score do i need', 'score will i have'
         ]):
             target_amount = float(score_for_amount_match.group(1).replace(',', ''))
-            # Find the minimum score tier that allows at least this amount
-            tiers = [
-                (50, 10_000),
-                (101, 20_000),
-                (151, 49_000),
-                (201, 100_000),
-                (351, 200_000),
-                (501, 500_000),
-                (701, 1_000_000),
-                (801, 1_100_000),
-            ]
+            # Use the new tier system to find the minimum score required
             min_score_needed = None
-            for score_threshold, max_loan in tiers:
-                if target_amount <= max_loan:
-                    min_score_needed = score_threshold
+            for min_amt, max_amt, dur, grace, rate, min_score in [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.10, 100),
+                (101000, 200000, 90, 21, 0.10, 250),
+                (201000, 500000, 180, 30, 0.10, 350),
+                (501000, 1000000, 240, 60, 0.10, 500),
+                (1100000, 5000000, 365, 90, 0.10, 700),
+            ]:
+                if target_amount <= max_amt:
+                    min_score_needed = min_score
                     break
             if min_score_needed:
                 return jsonify({
@@ -3160,6 +2872,8 @@ def process_user_command(user_id, text):
                     "message": f"₦{target_amount:,.0f} is above our current maximum loan amount. Please try a smaller amount.",
                     "tone": "warning"
                 })
+
+
         # ---- LOAN AMOUNT FOR A GIVEN SCORE ----
         hypothetical_score_match = re.search(
             r'(?:if\s+(?:I\s+have|my)\s+credit\s+score\s+(?:is|of)\s+)?(\d{2,3})',

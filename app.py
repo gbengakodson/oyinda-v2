@@ -29,6 +29,16 @@ except ImportError:
 import sys
 import traceback
 
+def safe_parse_products(val):
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    try:
+        return json.loads(val)
+    except Exception:
+        return []
+
 def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
     # Only catch NameErrors – let everything else crash normally
     if issubclass(exc_type, NameError):
@@ -6175,7 +6185,7 @@ def search_business():
             "id": r[0],
             "user_id": r[1],
             "name": r[2],
-            "products": json.loads(r[3]) if r[3] else [],
+            "products": safe_parse_products(r[3]),
             "shop_photo": r[4],
             "owner_photo": r[5],
             "market_name": r[6] or '',
@@ -6215,7 +6225,7 @@ def list_all_businesses():
             "id": r[0],
             "user_id": r[1],
             "name": r[2],
-            "products": json.loads(r[3]) if r[3] else [],
+            "products": safe_parse_products(r[3]),
             "shop_photo": r[4],
             "owner_photo": r[5],
             "market_name": r[6] or '',

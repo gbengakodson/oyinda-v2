@@ -2,7 +2,7 @@
 
 import os, re, uuid, requests
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, send_file, jsonify, send_file
+from flask import Flask, request, jsonify, send_from_directory, send_file, jsonify, send_file, Response
 from flask_cors import CORS, cross_origin
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from io import BytesIO
@@ -2272,39 +2272,55 @@ def process_user_command(user_id, text):
             text, re.IGNORECASE
         )
         if biz_reg_match:
-            product = biz_reg_match.group(1).strip()
-            market = biz_reg_match.group(2).strip()
+            product_text = biz_reg_match.group(1).strip()
+            market_or_city = biz_reg_match.group(2).strip()
             phone = biz_reg_match.group(3) or ''
+
+            # Parse products as comma-separated list
+            products = [p.strip() for p in product_text.split(',') if p.strip()]
 
             # Get user info
             facts = get_user_facts(user_id)
-            city = facts.get('city', 'your city')
+            existing_city = facts.get('city', '')
             name = get_user_name(user_id)
 
-            # Determine category (goods vs services)
-            has_unit = any(re.search(r'\b' + unit + r'\b', product.lower()) for unit in GOODS_UNITS)
-            category = 'goods' if has_unit else 'services'
+            # Determine if the second part is a city or market
+            # If it matches the user's existing city, treat it as city; otherwise as market
+            city = market_name = ''
+            if existing_city and existing_city.lower() == market_or_city.lower():
+                city = existing_city
+            else:
+                # Could be a market name; we'll store as market_name and keep city from facts
+                market_name = market_or_city
+                city = existing_city
 
-            # Insert into business_listings table (delete old listing first)
+            # Upsert business listing
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("DELETE FROM business_listings WHERE user_id = %s", (user_id,))
             cur.execute(
-                """INSERT INTO business_listings (user_id, name, product, category, market_name, city, phone)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, name, product, category, market, city, phone)
+                """INSERT INTO business_listings
+                   (user_id, name, products, category, market_name, city, phone, listing_type)
+                   VALUES (%s, %s, %s, 'goods', %s, %s, %s, 'user')""",
+                (user_id, name, json.dumps(products), market_name, city, phone)
             )
+            # Update price update count for ranking
             cur.execute(
                 "UPDATE business_listings SET price_update_count = price_update_count + 1, last_price_update = now() WHERE user_id = %s",
                 (user_id,))
             conn.commit()
             conn.close()
 
-            phone_msg = f" Call me {phone}" if phone else ""
+            # Also update user facts with city if not set
+            if city and not existing_city:
+                store_user_fact(user_id, 'city', city)
+
+            product_display = ', '.join(products[:2])
+            if len(products) > 2:
+                product_display += f' and {len(products) - 2} more'
             return jsonify({
-                "message": f"Your business is now listed! When someone searches for '{product}', they'll see: "
-                           f"{name}, {market}, {city}{phone_msg}. "
-                           f"Tap the 📞 button and they'll call you directly.",
+                "message": f"Your business is now listed! Products: {product_display}. "
+                           f"Location: {market_name or city}. When someone searches for these, they'll find you.",
                 "tone": "income"
             })
 
@@ -4078,6 +4094,32 @@ def onboard():
     if step == 'ask_business_address':
         if text.strip().lower() != 'skip':
             user_data['business_address'] = text.strip()
+        # Ask for city separately
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_business_city', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Which city is your business located in? (e.g., Lagos, Ibadan)", "tone": "neutral"})
+
+
+    if step == 'ask_business_city':
+        if text.strip().lower() != 'skip':
+            user_data['city'] = text.strip()
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_market_name', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "What market or area is your business located in? (e.g., Dugbe Market, or type 'skip')", "tone": "neutral"})
+
+    if step == 'ask_market_name':
+        if text.strip().lower() != 'skip':
+            user_data['market_name'] = text.strip()
         cur.close()
         conn.close()
         return finalize_registration(token)
@@ -6524,7 +6566,7 @@ def admin_credit_wallet():
 
 
 
-def finalize_registration(token):
+def finalize_registration(token: object) -> Response | tuple[Response, int]:
     # Open a fresh connection – never trust the caller's cursor
     conn = get_conn()
     cur = conn.cursor()
@@ -6580,11 +6622,14 @@ def finalize_registration(token):
                 city = user_data.get("business_address", "") or ""
                 phone = user_data.get("phone", "") or ""
                 name = user_data.get("name", "")
+                city = user_data.get('city', user_data.get('business_address', ''))
+                market_name = user_data.get('market_name', '')
+
                 cur2.execute(
                     """INSERT INTO business_listings
                        (user_id, name, products, category, market_name, city, phone, listing_type)
                        VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
-                    (user_id, name, json.dumps(products), '', city, phone)
+                    (user_id, name, json.dumps(products), market_name, city, phone)
                 )
                 conn2.commit()
                 conn2.close()

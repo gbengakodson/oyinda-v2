@@ -6687,29 +6687,33 @@ def tts():                         # <-- changed from text_to_speech
 @jwt_required()
 def handle_voice():
     user_id = get_jwt_identity()
-    data = request.get_json(silent=True)
-    if not data or 'audio' not in data:
-        return jsonify({"message": "No audio received. Please try again.", "tone": "warning"})
-
-    import base64
     try:
-        audio_bytes = base64.b64decode(data['audio'])
-    except Exception:
-        return jsonify({"message": "Invalid audio format.", "tone": "warning"})
+        data = request.get_json(silent=True)
+        if not data or 'audio' not in data:
+            return jsonify({"message": "No audio received. Please try again.", "tone": "warning"})
 
-    temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
-    with open(temp_filename, "wb") as f:
-        f.write(audio_bytes)
+        import base64
+        audio_b64 = data['audio']
+        # Add padding if missing
+        missing_padding = len(audio_b64) % 4
+        if missing_padding:
+            audio_b64 += '=' * (4 - missing_padding)
+        try:
+            audio_bytes = base64.b64decode(audio_b64)
+        except Exception:
+            return jsonify({"message": "Could not process audio. Please try again.", "tone": "warning"})
 
-    if os.path.getsize(temp_filename) == 0:
-        os.remove(temp_filename)
-        return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
+        temp_filename = f"/tmp/{user_id}_{uuid.uuid4().hex}.webm"
+        with open(temp_filename, "wb") as f:
+            f.write(audio_bytes)
 
-    try:
+        if os.path.getsize(temp_filename) == 0:
+            os.remove(temp_filename)
+            return jsonify({"message": "I didn't hear anything. Please try again.", "tone": "neutral"})
+
         import openai
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Auto‑detect language – no fixed language parameter
         with open(temp_filename, "rb") as f:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -6721,8 +6725,10 @@ def handle_voice():
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
 
-        # ---- MULTILINGUAL SUPPORT ----
+        # Save original text for display
         original_text = text
+
+        # Detect Nigerian language
         nigerian_lang_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
         is_nigerian_lang = bool(nigerian_lang_pattern.search(text)) or any(
             word in text.lower() for word in [
@@ -6732,6 +6738,7 @@ def handle_voice():
             ]
         )
 
+        # Translate to English if needed
         if is_nigerian_lang:
             try:
                 text = translate(text, 'en')
@@ -6744,6 +6751,7 @@ def handle_voice():
         resp_json = resp.get_json()
         resp_json['transcription'] = original_text
 
+        # Translate reply back if needed
         if is_nigerian_lang:
             try:
                 detected_lang = detect_nigerian_language(original_text)
@@ -6758,8 +6766,11 @@ def handle_voice():
     except Exception as e:
         return jsonify({"message": f"Transcription failed: {str(e)}", "tone": "warning"})
     finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
+        try:
+            if 'temp_filename' in locals() and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except Exception:
+            pass
 
 
 

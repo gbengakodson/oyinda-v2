@@ -827,10 +827,10 @@ def login():
     # Look up the business name for this user
     conn2 = get_conn()
     cur2 = conn2.cursor()
-    cur2.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (str(user_id),))
+    cur2.execute("SELECT facts->>'business_name', name FROM users WHERE id = %s", (str(user_id),))
     biz_name_row = cur2.fetchone()
     conn2.close()
-    display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else name)
+    display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else biz_name_row[1]) if biz_name_row else name
 
     token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
     return jsonify({

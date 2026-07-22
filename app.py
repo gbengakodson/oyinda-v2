@@ -6,8 +6,6 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, jsoni
 from flask_cors import CORS, cross_origin
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from io import BytesIO
-
-
 from core import *
 from groq_parser import parse_intent_groq, classify_query_intent
 from utils.crypto import encrypt, decrypt
@@ -6633,6 +6631,8 @@ def debug_groq_echo():
         return jsonify({"error": str(e)})
 
 
+
+
 def detect_nigerian_language(text):
     """Return the ISO 639-1 code of the detected Nigerian language, or 'en' if none."""
     text_lower = text.lower()
@@ -6650,7 +6650,7 @@ def detect_nigerian_language(text):
 
 @app.route('/tts', methods=['POST'])
 @jwt_required()
-def text_to_speech():
+def tts():                         # <-- changed from text_to_speech
     data = request.get_json()
     text = data.get('text', '')
     if not text:
@@ -6681,7 +6681,7 @@ def text_to_speech():
         return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
     return jsonify({"error": "TTS failed"}), 500
 
-import openai
+
 
 @app.route('/voice', methods=['POST'])
 @jwt_required()
@@ -6760,6 +6760,7 @@ def handle_voice():
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
+
 
 
 # --------------- FRONTEND ---------------

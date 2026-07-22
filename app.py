@@ -855,9 +855,7 @@ def process_user_command(user_id, text):
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
-
-
-        # ---- FLEXIBLE MARKETPLACE OPENING (many natural phrases) ----
+        # ---- FLEXIBLE MARKETPLACE OPENING (location‑aware) ----
         marketplace_phrases = [
             'show marketplace', 'open marketplace', 'view marketplace',
             'marketplace', 'show market', 'open market', 'view market',
@@ -887,8 +885,23 @@ def process_user_command(user_id, text):
             'nuna man kasuwa', 'nuna min kasuwa',
         ]
         if any(phrase in text_lower for phrase in marketplace_phrases):
+            # Extract optional location from the message
+            # Look for patterns like "in Lagos", "for Ibadan", "near Dugbe", "around Osun"
+            location_match = re.search(r'\s+(?:in|for|at|near|around|from|wey\s+dey)\s+(.+)$', text_lower)
+            city_filter = ''
+            market_filter = ''
+            if location_match:
+                loc_part = location_match.group(1).strip()
+                # Remove trailing punctuation
+                loc_part = re.sub(r'[!?.]+$', '', loc_part).strip()
+                if len(loc_part) >= 2:
+                    city_filter = loc_part
+                    market_filter = loc_part
+
             return jsonify({
                 "action": "show_all_businesses",
+                "city": city_filter,
+                "market": market_filter,
                 "message": "Opening the marketplace for you…",
                 "tone": "neutral"
             })

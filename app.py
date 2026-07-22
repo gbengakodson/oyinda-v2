@@ -4382,7 +4382,7 @@ def onboard():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": "What is your phone number? (e.g., 08012345678)", "tone": "neutral"})
+        return jsonify({"message": "What is your business phone number? (e.g., 08012345678)", "tone": "neutral"})
 
     if step == 'ask_phone':
         phone = text.strip()
@@ -4390,16 +4390,6 @@ def onboard():
             cur.close()
             conn.close()
             return jsonify({"message": "Please enter a valid 11‑digit phone number.", "tone": "neutral"})
-
-        # Check if phone already exists
-        cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (phone,))
-        if cur.fetchone():
-            cur.close()
-            conn.close()
-            return jsonify(
-                {"message": "This phone number is already registered. Please try a different number or login instead.",
-                 "tone": "warning"})
-
         user_data['phone'] = phone
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_type', data = %s WHERE token = %s",
@@ -4408,55 +4398,65 @@ def onboard():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({
-                           "message": "Are you an individual, a small business owner, or a company? (Type: individual / business / company)",
-                           "tone": "neutral"})
-
-
+        return jsonify(
+            {"message": "Are you a small business owner or a company? (Type: business / company)", "tone": "neutral"})
 
     if step == 'ask_type':
         user_type = text.strip().lower()
-        if user_type not in ['individual', 'business', 'company']:
+        if user_type not in ['business', 'company']:
             cur.close()
             conn.close()
-            return jsonify({"message": "Please choose one: individual, business, or company.", "tone": "neutral"})
+            return jsonify({"message": "Please choose one: business, or company.", "tone": "neutral"})
         user_data['account_type'] = user_type
-        if user_type in ['business', 'company']:
-            cur.execute(
-                "UPDATE onboarding_sessions SET step = 'ask_what_they_sell', data = %s WHERE token = %s",
-                (json.dumps(user_data), token)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({
-                               "message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes', 'plumbing', 'tailoring')",
-                               "tone": "neutral"})
-        else:
-            cur.close()
-            conn.close()
-            return finalize_registration(token)
-
-    if step == 'ask_business_name':
-        if text.strip().lower() != 'skip':
-            user_data['business_name'] = text.strip()
         cur.execute(
-            "UPDATE onboarding_sessions SET step = 'ask_business_address', data = %s WHERE token = %s",
+            "UPDATE onboarding_sessions SET step = 'ask_what_they_sell', data = %s WHERE token = %s",
             (json.dumps(user_data), token)
         )
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"message": "Business address? (or type 'skip')", "tone": "neutral"})
+        return jsonify(
+            {"message": "What do you sell or what service do you provide? (e.g., 'fresh tomatoes, rice, beans')",
+             "tone": "neutral"})
+
+    if step == 'ask_business_name':
+        if text.strip().lower() != 'skip':
+            user_data['business_name'] = text.strip()
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_business_city', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Which city is your business located in? (e.g., Lagos, Ibadan)", "tone": "neutral"})
 
     if step == 'ask_what_they_sell':
         product_text = text.strip()
         if product_text.lower() != 'skip':
-            # Split by commas and clean up
             products = [p.strip() for p in product_text.split(',') if p.strip()]
             user_data['products'] = products
-            user_data['product'] = products[0] if products else ''  # backward compat
-        # … continue to next step
+            user_data['product'] = products[0] if products else ''
+        else:
+            user_data['products'] = []
+            user_data['product'] = ''
+        cur.execute(
+            "UPDATE onboarding_sessions SET step = 'ask_business_category', data = %s WHERE token = %s",
+            (json.dumps(user_data), token)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify(
+            {"message": "Do you sell goods (physical items) or services? (Type: goods / services)", "tone": "neutral"})
+
+    if step == 'ask_business_category':
+        cat = text.strip().lower()
+        if cat not in ['goods', 'services']:
+            cur.close()
+            conn.close()
+            return jsonify({"message": "Please type 'goods' or 'services'.", "tone": "neutral"})
+        user_data['category'] = cat
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
             (json.dumps(user_data), token)

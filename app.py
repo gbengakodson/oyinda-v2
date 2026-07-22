@@ -5514,6 +5514,43 @@ def emergency_data():
     return jsonify({"emergency_sent": sent})
 
 
+@app.route('/messages/send', methods=['POST'])
+@jwt_required()
+def send_message():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    receiver_id = data.get('receiver_id')
+    content = data.get('content', '').strip()
+    if not receiver_id or not content:
+        return jsonify({"error": "receiver_id and content required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO messages (sender_id, receiver_id, content) VALUES (%s, %s, %s)",
+                (user_id, receiver_id, content))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Message sent"})
+
+@app.route('/messages/<other_user_id>', methods=['GET'])
+@jwt_required()
+def get_messages(other_user_id):
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT sender_id, content, created_at
+        FROM messages
+        WHERE (sender_id = %s AND receiver_id = %s)
+           OR (sender_id = %s AND receiver_id = %s)
+        ORDER BY created_at ASC
+    """, (user_id, other_user_id, other_user_id, user_id))
+    rows = cur.fetchall()
+    conn.close()
+    msgs = [{"sender": r[0], "content": r[1], "time": str(r[2])} for r in rows]
+    return jsonify({"messages": msgs})
+
+
 
 @app.route('/credit/share/<token>', methods=['GET'])
 def share_credit_report(token):

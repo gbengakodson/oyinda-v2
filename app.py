@@ -1958,12 +1958,13 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
-        # ---- CONVERSATIONAL LOAN ENTRY (now redirects to marketplace) ----
+        # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
         past_borrowing = any(phrase in text_lower for phrase in [
             'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
-            'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed', 'mo ya',
+            'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
         ])
 
+        # Direct loan triggers (including translated Yoruba / Pidgin phrases)
         borrow_trigger = any(phrase in text_lower for phrase in [
             'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
             'can i get a loan', 'how much loan', 'i need loan',
@@ -1971,25 +1972,85 @@ def process_user_command(user_id, text):
             'get a loan', 'how can i borrow', 'can i borrow',
             'i want to borrow', 'i need to borrow', 'i would like to borrow',
             'i wanna borrow', 'i gotta get a loan', 'i need money',
-            'i want money', 'mo fe ya', 'mo fe borrow', 'ya mi', 'ya owo'
+            'i want money',
+            # Yoruba / Pidgin loan phrases
+            'mo fe ya', 'mo fe borrow', 'ya mi', 'ya owo',
+            'mo fe ya owo', 'e lo ni mo le ya', 'ya mi ni',
+            'abeg borrow me', 'i dey find loan', 'i need loan',
+            'make i borrow'
         ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
         if borrow_trigger and not past_borrowing:
-            # Check eligibility (just credit score)
-            if get_credit_score(user_id)['score'] < 20:
+            # Check if the user is already in a loan wizard, warn them
+            if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
                 return jsonify({
-                    "message": "Your credit score is too low for a loan. Keep logging your transactions!",
+                    "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
                     "tone": "warning"
                 })
-            # Guide them to the marketplace
-            return jsonify({
-                "message": (
-                    "You can borrow money to pay a supplier directly. "
-                    "Tap the cart icon 🛒 to browse suppliers, or type "
-                    "'loan from [supplier name]' to start."
-                ),
-                "tone": "neutral"
-            })
+
+            # Extract amount if present
+            amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
+            amount = None
+            if amount_match:
+                amount_str = amount_match.group(1).replace(',', '')
+                amount = float(amount_str)
+                if 'k' in text_lower or 'thousand' in text_lower:
+                    amount *= 1000
+
+            credit = get_credit_score(user_id)
+            max_loan = get_max_loan_amount(credit['score'])
+
+            # Eligibility check
+            if max_loan == 0:
+                return jsonify({
+                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
+                    "tone": "neutral"
+                })
+
+            # If an amount was given, validate it
+            if amount is not None:
+                if amount > max_loan:
+                    # Store a pending intent to confirm the lower amount
+                    pending_transaction[user_id] = {
+                        "state": "loan_confirm_lower_amount",
+                        "data": {
+                            "offered_amount": max_loan,
+                            "max_loan": max_loan,
+                            "credit_score": credit['score']
+                        },
+                        "category": None
+                    }
+                    return jsonify({
+                        "message": (
+                            f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
+                            f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
+                        ),
+                        "tone": "warning"
+                    })
+            else:
+                amount = None  # will be asked later if not provided
+
+            # Store loan intent in pending transaction
+            pending_transaction[user_id] = {
+                "state": "loan_ask_product",
+                "data": {
+                    "amount": amount,
+                    "max_loan": max_loan,
+                    "credit_score": credit['score']
+                },
+                "category": None
+            }
+
+            if amount:
+                return jsonify({
+                    "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
+                    "tone": "neutral"
+                })
+            else:
+                return jsonify({
+                    "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
+                    "tone": "neutral"
+                })
 
         # ---- LIST ALL BUSINESSES ----
         if any(phrase in text_lower for phrase in [
@@ -3275,6 +3336,9 @@ def process_user_command(user_id, text):
                 })
 
 
+
+
+
         # ---------- SMART FALLBACK with user‑aware currency conversion ----------
         # Step 1: Look for a price‑indicating word followed by a number
         price_match = re.search(
@@ -3407,6 +3471,20 @@ def process_user_command(user_id, text):
                 "message": f"Did you spend, earn, invest, save, or take a loan of {amount_converted:,.2f} {home_currency}? (original: {amount_original} {currency_code})",
                 "tone": "neutral"
             })
+
+        # ---------- ENHANCED SMALL‑TALK FALLBACK (Pidgin / greetings) ----------
+        small_talk = {
+            'how e dey be': "I dey alright, my dear! How your day? Tell me if you need anything.",
+            'how far': "I dey o! How your side? If you need help, just talk.",
+            'how body': "Body dey fine! Wetin you want make I do for you today?",
+            'i dey o': "E good! I dey here to help. Tell me your expenses or income.",
+            'i dey fine': "Good to hear! Remember, every expense you tell me helps your credit score.",
+            'good morning': "Good morning! Hope you slept well? How can I help today?",
+            'good evening': "Good evening! Ready to track your money?",
+            'good afternoon': "Good afternoon! What can I do for you?",
+        }
+        if text_lower.strip().rstrip('?.!') in small_talk:
+            return jsonify({"message": small_talk[text_lower.strip().rstrip('?.!')], "tone": "neutral"})
 
         # ---------- ENHANCED SMALL‑TALK FALLBACK (avoids LLM loop) ----------
         small_talk = {

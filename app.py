@@ -4452,11 +4452,15 @@ def onboard():
 
     if step == 'ask_business_category':
         cat = text.strip().lower()
-        if cat not in ['goods', 'services']:
+        if cat in ['service', 'services']:
+            user_data['category'] = 'services'
+        elif cat in ['good', 'goods']:
+            user_data['category'] = 'goods'
+        else:
             cur.close()
             conn.close()
             return jsonify({"message": "Please type 'goods' or 'services'.", "tone": "neutral"})
-        user_data['category'] = cat
+
         cur.execute(
             "UPDATE onboarding_sessions SET step = 'ask_business_name', data = %s WHERE token = %s",
             (json.dumps(user_data), token)

@@ -785,7 +785,7 @@ def login():
     phone = (data.get('phone') or '').strip()
     pin = (data.get('pin') or data.get('password') or '').strip()
 
-    # If no phone, fall back to email/username for old accounts
+    # --- Email / password fallback (old accounts) ---
     if not phone:
         email = data.get('email', '').strip()
         password = data.get('password', '')
@@ -794,10 +794,23 @@ def login():
         user = authenticate_user(email, password)
         if not user:
             return jsonify({"error": "Invalid credentials."}), 401
-        token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
-        return jsonify({"message": f"Welcome back, {user['name']}!", "user": user, "token": token})
 
-    # Lookup by phone number (stored in user facts)
+        # Look up the business name for this user
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (user['id'],))
+        biz_name_row = cur.fetchone()
+        conn.close()
+        display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else user['name'])
+
+        token = create_access_token(identity=user['id'], expires_delta=timedelta(days=7))
+        return jsonify({
+            "message": f"Welcome back, {display_name}!",
+            "user": {"id": user['id'], "name": display_name},
+            "token": token
+        })
+
+    # --- Phone + PIN login (new accounts) ---
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s", (phone,))
@@ -811,10 +824,18 @@ def login():
     if not check_password(pin, password_hash):
         return jsonify({"error": "Incorrect PIN."}), 401
 
-    token = create_access_token(identity=user_id, expires_delta=timedelta(days=7))
+    # Look up the business name for this user
+    conn2 = get_conn()
+    cur2 = conn2.cursor()
+    cur2.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (str(user_id),))
+    biz_name_row = cur2.fetchone()
+    conn2.close()
+    display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else name)
+
+    token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
     return jsonify({
-        "message": f"Welcome back, {name}!",
-        "user": {"id": user_id, "name": name},
+        "message": f"Welcome back, {display_name}!",
+        "user": {"id": str(user_id), "name": display_name},
         "token": token
     })
 
@@ -1793,24 +1814,21 @@ def process_user_command(user_id, text):
 
                         wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
 
+                    # Get business name for the frontend header
+                    from core import get_user_facts
+                    facts = get_user_facts(user_id)
+                    display_name = facts.get('business_name') or facts.get('name') or name
+
                     pending_transaction.pop(user_id, None)
-
                     return jsonify({
-
                         "message": f"Identity verified! {wallet_msg}",
-
                         "tone": "income",
-
+                        "display_name": display_name,
                         "feedback_prompt": {
-
                             "context": "after_wallet_activation",
-
                             "question": "How was the verification process?",
-
                             "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
-
                         }
-
                     })
 
                 else:

@@ -2009,13 +2009,12 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
-        # ---- CONVERSATIONAL LOAN ENTRY (any borrow intent, refined) ----
+        # ---- CONVERSATIONAL LOAN ENTRY (tier‑based, no max_loan) ----
         past_borrowing = any(phrase in text_lower for phrase in [
             'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
             'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
         ])
 
-        # Direct loan triggers (including translated Yoruba / Pidgin phrases)
         borrow_trigger = any(phrase in text_lower for phrase in [
             'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
             'can i get a loan', 'how much loan', 'i need loan',
@@ -2023,85 +2022,27 @@ def process_user_command(user_id, text):
             'get a loan', 'how can i borrow', 'can i borrow',
             'i want to borrow', 'i need to borrow', 'i would like to borrow',
             'i wanna borrow', 'i gotta get a loan', 'i need money',
-            'i want money',
-            # Yoruba / Pidgin loan phrases
-            'mo fe ya', 'mo fe borrow', 'ya mi', 'ya owo',
+            'i want money', 'mo fe ya', 'mo fe borrow', 'ya mi', 'ya owo',
             'mo fe ya owo', 'e lo ni mo le ya', 'ya mi ni',
-            'abeg borrow me', 'i dey find loan', 'i need loan',
-            'make i borrow'
+            'abeg borrow me', 'i dey find loan', 'make i borrow'
         ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
         if borrow_trigger and not past_borrowing:
-            # Check if the user is already in a loan wizard, warn them
-            if user_id in pending_transaction and pending_transaction[user_id]['state'].startswith('loan_'):
+            # Check eligibility (just credit score)
+            if get_credit_score(user_id)['score'] < 20:
                 return jsonify({
-                    "message": "You're already in the middle of a loan request. To start over, type 'cancel' first.",
+                    "message": "Your credit score is too low for a loan. Keep logging your transactions!",
                     "tone": "warning"
                 })
-
-            # Extract amount if present
-            amount_match = re.search(r'(\d[\d,]*\.?\d*)\s*(?:k|thousand)?', text, re.IGNORECASE)
-            amount = None
-            if amount_match:
-                amount_str = amount_match.group(1).replace(',', '')
-                amount = float(amount_str)
-                if 'k' in text_lower or 'thousand' in text_lower:
-                    amount *= 1000
-
-            credit = get_credit_score(user_id)
-            max_loan = get_max_loan_amount(credit['score'])
-
-            # Eligibility check
-            if max_loan == 0:
-                return jsonify({
-                    "message": "Your credit score is below 50. Keep telling me your daily expenses and income, and your score will grow!",
-                    "tone": "neutral"
-                })
-
-            # If an amount was given, validate it
-            if amount is not None:
-                if amount > max_loan:
-                    # Store a pending intent to confirm the lower amount
-                    pending_transaction[user_id] = {
-                        "state": "loan_confirm_lower_amount",
-                        "data": {
-                            "offered_amount": max_loan,
-                            "max_loan": max_loan,
-                            "credit_score": credit['score']
-                        },
-                        "category": None
-                    }
-                    return jsonify({
-                        "message": (
-                            f"With your credit score of {credit['score']}/850, the maximum you can borrow is ₦{max_loan:,}. "
-                            f"Would you like to borrow ₦{max_loan:,} instead? (reply 'yes' or 'no')"
-                        ),
-                        "tone": "warning"
-                    })
-            else:
-                amount = None  # will be asked later if not provided
-
-            # Store loan intent in pending transaction
-            pending_transaction[user_id] = {
-                "state": "loan_ask_product",
-                "data": {
-                    "amount": amount,
-                    "max_loan": max_loan,
-                    "credit_score": credit['score']
-                },
-                "category": None
-            }
-
-            if amount:
-                return jsonify({
-                    "message": f"Okay! You want to borrow ₦{amount:,.0f}. What do you want to buy? (e.g., 'bags of rice', 'cartons of noodles')",
-                    "tone": "neutral"
-                })
-            else:
-                return jsonify({
-                    "message": f"You can borrow up to ₦{max_loan:,}. How much do you need, and what do you want to buy? (e.g., 'borrow 50000 to buy bags of rice')",
-                    "tone": "neutral"
-                })
+            # Guide them to the marketplace
+            return jsonify({
+                "message": (
+                    "You can borrow money to pay a supplier directly. "
+                    "Tap the cart icon 🛒 to browse suppliers, or type "
+                    "'loan from [supplier name]' to start."
+                ),
+                "tone": "neutral"
+            })
 
         # ---- LIST ALL BUSINESSES ----
         if any(phrase in text_lower for phrase in [

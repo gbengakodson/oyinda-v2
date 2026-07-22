@@ -2114,52 +2114,43 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-
-        # ---------- UNIFIED BUSINESS SEARCH (flexible + triggers) ----------
-        # First, try flexible natural‑language patterns
+        # ---- UNIFIED BUSINESS SEARCH (catches "search X", "search for X", "find Y", etc.) ----
         flexible_search_triggers = [
-            'search for', 'find', 'look for', 'show me', 'filter by',
+            'search', 'search for', 'find', 'look for', 'show me', 'filter by',
             'list', 'who has', 'who get', 'who sells', 'who dey sell',
             'i need', 'i want', 'get me', 'connect me to', 'i dey find',
             'who supplies', 'where can i get', 'who dey supply',
             'am looking for', 'which person dey', 'who fit', 'who sabi',
-            'who dey run'
+            'who dey run', 'find supplier',
         ]
         flexible_match = None
         for phrase in flexible_search_triggers:
             idx = text_lower.find(phrase)
             if idx != -1:
+                # Take everything after the matched trigger
                 candidate = text_lower[idx + len(phrase):].strip().lstrip('?,.- ')
                 if len(candidate) >= 2:
-                    # Remove leading filler words (for, a, the, me, some, any, my, our)
-                    flexible_match = re.sub(r'^(for|a|the|me|some|any|my|our)\s+', '', candidate, flags=re.IGNORECASE)
+                    flexible_match = candidate
                     break
 
         if flexible_match:
-            # ---- EXTRACT LOCATION from the query ----
+            # ---- EXTRACT LOCATION ----
             city_filter = ''
             market_filter = ''
-            location_match = re.search(r'\s+(in|near|at|around|for|from)\s+(.+)$', flexible_match, re.IGNORECASE)
+            location_match = re.search(r'\s+(in|near|at|around|for|from|wey\s+dey)\s+(.+)$', flexible_match,
+                                       re.IGNORECASE)
             if location_match:
                 loc_part = location_match.group(2).strip()
-                # Remove trailing punctuation
                 loc_part = re.sub(r'[!?.]+$', '', loc_part).strip()
-                # Use as both city and market filter for now (backend searches both fields)
                 city_filter = loc_part
                 market_filter = loc_part
-                # Remove location from the main search query
-                flexible_match = re.sub(r'\s+(in|near|at|around|for|from)\s+.+$', '', flexible_match,
+                # Remove location from the main query
+                flexible_match = re.sub(r'\s+(in|near|at|around|for|from|wey\s+dey)\s+.+$', '', flexible_match,
                                         flags=re.IGNORECASE).strip()
 
-            # ---- CLEAN UP the remaining query (remove filler words) ----
-            # Remove leading articles and filler words
+            # ---- REMOVE FILLER WORDS ----
             flexible_match = re.sub(r'^(a|an|the|some|any|my|our|me|for)\s+', '', flexible_match,
                                     flags=re.IGNORECASE).strip()
-
-            # ---- DETECT INTENT (optional) ----
-            # If the query mentions "seller", "supplier", "vendor", we can focus on product search
-            # Otherwise the backend already searches across names, products, and markets
-            # We'll just pass the cleaned query as is.
 
             if len(flexible_match) < 2:
                 return jsonify({"message": "Please be more specific. What are you looking for?", "tone": "neutral"})

@@ -7017,8 +7017,7 @@ def admin_credit_wallet():
 
 
 
-def finalize_registration(token: object) -> Response | tuple[Response, int]:
-    # Open a fresh connection – never trust the caller's cursor
+def finalize_registration(token):
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -7039,53 +7038,56 @@ def finalize_registration(token: object) -> Response | tuple[Response, int]:
             cur.execute("SELECT id FROM users WHERE username = %s", (username,))
             counter += 1
 
-        import secrets
         internal_email = f"{username}_{secrets.token_hex(3)}@oyinda.local"
 
         from core import create_user, store_user_fact
-        try:
-            user_id = create_user(
-                name=user_data["name"],
-                email=internal_email,
-                password=user_data["password"],
-                account_type=user_data.get("account_type", "personal"),
-                address=user_data.get("business_address", "")
-            )
-            if not user_id or (isinstance(user_id, str) and user_id.startswith("error:")):
-                return jsonify({"message": f"Registration failed: {user_id}"})
-        except Exception as e:
-            return jsonify({"message": f"Registration error: {str(e)}"})
+        user_id = create_user(
+            name=user_data["name"],
+            email=internal_email,
+            password=user_data["password"],
+            account_type=user_data.get("account_type", "business"),
+            address=user_data.get("business_address", "")
+        )
 
+        if not user_id:
+            return jsonify({"message": "Registration failed. Please try again."})
+
+        # Store core facts
         store_user_fact(user_id, "username", username)
         store_user_fact(user_id, "language", user_data.get("language", "english"))
-        # Save phone number to user facts
-        phone = user_data.get('phone', '').strip()
-        if phone:
-            store_user_fact(user_id, 'phone', phone)
+        store_user_fact(user_id, "phone", user_data.get("phone", ""))
+        store_user_fact(user_id, "city", user_data.get("city", ""))
+        store_user_fact(user_id, "market_name", user_data.get("market_name", ""))
+        if user_data.get("business_name"):
+            store_user_fact(user_id, "business_name", user_data["business_name"])
 
+        # Auto‑create wallet
+        try:
+            ensure_wallet(user_id)
+        except Exception:
+            pass
 
-        # Auto‑list business if product was given
-        product = user_data.get("product", "").strip()
-        if product:
+        # Auto‑list in marketplace
+        products = user_data.get("products", [])
+        if products:
+            city = user_data.get("city") or user_data.get("business_address", "")
+            market = user_data.get("market_name", "")
+            name = user_data["name"]
+            phone = user_data.get("phone", "")
+            category = user_data.get("category", "goods")
             try:
                 conn2 = get_conn()
                 cur2 = conn2.cursor()
-                city = user_data.get("business_address", "") or ""
-                phone = user_data.get("phone", "") or ""
-                name = user_data.get("name", "")
-                city = user_data.get('city', user_data.get('business_address', ''))
-                market_name = user_data.get('market_name', '')
-
                 cur2.execute(
                     """INSERT INTO business_listings
                        (user_id, name, products, category, market_name, city, phone, listing_type)
-                       VALUES (%s, %s, %s, 'services', %s, %s, %s, 'user')""",
-                    (user_id, name, json.dumps(products), market_name, city, phone)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'user')""",
+                    (user_id, name, json.dumps(products), category, market, city, phone)
                 )
                 conn2.commit()
                 conn2.close()
             except Exception:
-                pass
+                pass   # never block registration
 
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
@@ -7093,8 +7095,11 @@ def finalize_registration(token: object) -> Response | tuple[Response, int]:
         access_token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
         return jsonify({
             "jwt": access_token,
-            "user": {"id": user_id, "name": user_data["name"]},
-            "message": f"All set, {user_data['name']}! Your username is {username}. You're now registered.",
+            "user": {
+                "id": user_id,
+                "name": user_data.get("business_name") or user_data["name"]
+            },
+            "message": f"All set, {user_data['name']}! Your business is now registered and listed in the marketplace.",
             "tone": "income",
             "redirect": "/dashboard"
         })

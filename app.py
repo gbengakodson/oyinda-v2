@@ -6654,7 +6654,6 @@ def handle_voice():
                 model="whisper-1",
                 file=f,
                 response_format="text",
-                language=whisper_lang
             )
 
         text = transcript.strip() if isinstance(transcript, str) else str(transcript).strip()

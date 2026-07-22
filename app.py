@@ -6624,7 +6624,7 @@ def search_business():
             "last_price_update": str(r[14]) if r[14] else None
         })
     if not results:
-        # Make the message friendlier and profession‑aware
+        # Friendlier, profession‑aware message
         profession_words = ['farmers', 'farmer', 'sellers', 'seller', 'suppliers', 'supplier',
                             'vendors', 'vendor', 'dealers', 'dealer', 'agents', 'agent',
                             'providers', 'provider', 'traders', 'trader']
@@ -6636,7 +6636,7 @@ def search_business():
         if cleaned_q != q:
             friendly_msg = (
                 f"I couldn't find any {cleaned_q} suppliers in {city or 'your area'} yet. "
-                f"You could be the first! Just say 'I sell {cleaned_q}' or 'I am a {q}'."
+                f"You could be the first! Just say 'I supply {cleaned_q}'."
             )
         else:
             friendly_msg = (

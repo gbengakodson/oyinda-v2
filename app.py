@@ -779,6 +779,16 @@ def login():
 
 def process_user_command(user_id, text):
     text_lower = text.lower().strip()
+    # --- MULTILINGUAL SUPPORT: translate non-English messages to English ---
+    original_text = text
+    # Simple detection: if text contains Yoruba, Igbo, or Hausa characters, translate
+    yoruba_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
+    if yoruba_pattern.search(text) or any(word in text_lower for word in ['ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá']):
+        try:
+            text = translate(text, 'en')
+        except Exception:
+            pass  # fall back to original text
+
     data = request.get_json()
 
 
@@ -3394,6 +3404,25 @@ def process_user_command(user_id, text):
 
 
 
+def translate(text, target_lang='en'):
+    """Translate text to the target language using OpenAI GPT."""
+    try:
+        import openai
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"Translate the following text to {target_lang}. Only return the translated text, nothing else."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1,
+            max_tokens=200
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return text
+
 @app.route('/command', methods=['POST'])
 @jwt_required()
 def handle_command():
@@ -3403,12 +3432,38 @@ def handle_command():
     save_conversation(user_id, 'user', text)
     if not text:
         return jsonify({"error": "No text provided"}), 400
+
+    # ---- MULTILINGUAL SUPPORT: detect non-English and translate to English ----
+    original_text = text
+    # Simple detection for Yoruba, Igbo, Hausa characters and common words
+    nigerian_lang_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
+    is_nigerian_lang = bool(nigerian_lang_pattern.search(text)) or any(
+        word in text.lower() for word in ['ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá', 'kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe', 'sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya']
+    )
+
+    if is_nigerian_lang:
+        try:
+            text = translate(text, 'en')  # translate user's message to English for processing
+        except Exception:
+            pass  # fall back to original text if translation fails
+
     try:
-        return process_user_command(user_id, text)
+        resp = process_user_command(user_id, text)
     except NameError as e:
         import traceback
         tb = traceback.format_exc()
         return jsonify({"message": f"❌ NameError: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
+
+    # If the original was a Nigerian language, translate Oyinda's reply back
+    if is_nigerian_lang:
+        resp_json = resp.get_json()
+        try:
+            resp_json['message'] = translate(resp_json['message'], 'yo')  # default to Yoruba; you can make this smarter later
+        except Exception:
+            pass
+        return jsonify(resp_json)
+
+    return resp
 
 
 # --------------- QUERY HANDLER (with voice-friendly responses) ---------------
@@ -6641,30 +6696,47 @@ def handle_voice():
         import openai
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        user_facts = get_user_facts(user_id)
-        lang_pref = user_facts.get('language', 'english').lower()
-        lang_map = {
-            'english': 'en', 'pidgin': 'en', 'yoruba': 'yo', 'yorùbá': 'yo',
-            'hausa': 'ha', 'igbo': 'ig'
-        }
-        whisper_lang = lang_map.get(lang_pref, 'en')
-
+        # Auto‑detect language – no fixed language parameter
         with open(temp_filename, "rb") as f:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
-                response_format="text",
+                response_format="text"
             )
 
         text = transcript.strip() if isinstance(transcript, str) else str(transcript).strip()
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
 
+        # ---- MULTILINGUAL SUPPORT ----
+        original_text = text
+        nigerian_lang_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
+        is_nigerian_lang = bool(nigerian_lang_pattern.search(text)) or any(
+            word in text.lower() for word in [
+                'ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá',
+                'kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe',
+                'sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya'
+            ]
+        )
+
+        if is_nigerian_lang:
+            try:
+                text = translate(text, 'en')
+            except Exception:
+                pass
+
         save_conversation(user_id, 'user', text)
 
         resp = process_user_command(user_id, text)
         resp_json = resp.get_json()
-        resp_json['transcription'] = text
+        resp_json['transcription'] = original_text
+
+        if is_nigerian_lang:
+            try:
+                resp_json['message'] = translate(resp_json['message'], 'yo')
+            except Exception:
+                pass
+
         return jsonify(resp_json)
 
     except openai.OpenAIError as e:

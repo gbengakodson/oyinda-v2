@@ -795,13 +795,13 @@ def login():
         if not user:
             return jsonify({"error": "Invalid credentials."}), 401
 
-        # Look up the business name for this user
+        # Fetch business name (never personal name)
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (user['id'],))
-        biz_name_row = cur.fetchone()
+        biz_row = cur.fetchone()
         conn.close()
-        display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else user['name'])
+        display_name = (biz_row[0] if biz_row and biz_row[0] else "My Business")
 
         token = create_access_token(identity=user['id'], expires_delta=timedelta(days=7))
         return jsonify({
@@ -810,7 +810,7 @@ def login():
             "token": token
         })
 
-    # --- Phone + PIN login (new accounts) ---
+    # --- Phone + PIN login ---
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s", (phone,))
@@ -824,13 +824,13 @@ def login():
     if not check_password(pin, password_hash):
         return jsonify({"error": "Incorrect PIN."}), 401
 
-    # Look up the business name for this user
+    # Fetch business name (never personal name)
     conn2 = get_conn()
     cur2 = conn2.cursor()
-    cur2.execute("SELECT facts->>'business_name', name FROM users WHERE id = %s", (str(user_id),))
-    biz_name_row = cur2.fetchone()
+    cur2.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (str(user_id),))
+    biz_row = cur2.fetchone()
     conn2.close()
-    display_name = (biz_name_row[0] if biz_name_row and biz_name_row[0] else biz_name_row[1]) if biz_name_row else name
+    display_name = (biz_row[0] if biz_row and biz_row[0] else "My Business")
 
     token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
     return jsonify({
@@ -1817,7 +1817,7 @@ def process_user_command(user_id, text):
                     # Get business name for the frontend header
                     from core import get_user_facts
                     facts = get_user_facts(user_id)
-                    display_name = facts.get('business_name') or facts.get('name') or name
+                    display_name = facts.get('business_name') or 'My Business'
 
                     pending_transaction.pop(user_id, None)
                     return jsonify({

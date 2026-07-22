@@ -855,6 +855,44 @@ def process_user_command(user_id, text):
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
+
+
+        # ---- FLEXIBLE MARKETPLACE OPENING (many natural phrases) ----
+        marketplace_phrases = [
+            'show marketplace', 'open marketplace', 'view marketplace',
+            'marketplace', 'show market', 'open market', 'view market',
+            'list suppliers', 'list all suppliers', 'list all businesses',
+            'list businesses', 'show suppliers', 'show businesses',
+            'search market', 'search marketplace', 'find suppliers',
+            'browse suppliers', 'browse market', 'browse marketplace',
+            'who dey sell', 'who dey market', 'show me market',
+            'take me to market', 'go to market', 'enter market',
+            'i want to see market', 'make i see market', 'make i check market',
+            'open cart', 'show cart', 'view cart', 'my cart',
+            'suppliers list', 'business list', 'businesses list',
+            'show all businesses', 'display businesses', 'display suppliers',
+            'see market', 'check market', 'see suppliers', 'check suppliers',
+            'who dey', 'who dey around', 'who dey sell for here',
+            'who dey this area', 'find seller', 'find business',
+            'connect me to supplier', 'connect me to seller',
+            'i need supplier', 'i need a supplier', 'i dey find supplier',
+            'i dey find who dey sell', 'which people dey sell',
+            'shey you fit show me suppliers', 'abeg show me market',
+            'oya show market', 'oya open market',
+            # Yoruba / Pidgin variations
+            'ṣe o le fi market han mi', 'fi market han mi',
+            'e lo ni mo le ri market', 'mo fe ri market',
+            'mo fe wo market', 'mo fe lo si market',
+            'kedu ebe ahia', 'gosi m ahia',
+            'nuna man kasuwa', 'nuna min kasuwa',
+        ]
+        if any(phrase in text_lower for phrase in marketplace_phrases):
+            return jsonify({
+                "action": "show_all_businesses",
+                "message": "Opening the marketplace for you…",
+                "tone": "neutral"
+            })
+
         # ---------- CONTINUE PENDING CONVERSATION ---
         if user_id in pending_transaction:
             p = pending_transaction[user_id]

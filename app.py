@@ -631,14 +631,18 @@ def ensure_wallet(user_id):
         conn.close()
         return wallet
 
-    account_number = user_facts.get('phone', '')
-    if not account_number:
+    # Wallet doesn't exist – create one
+    from core import get_user_facts
+    facts = get_user_facts(user_id)   # <-- this was the missing line
+    phone = facts.get('phone', '')
+    if not phone:
+        conn.close()
         raise Exception("You need to add your phone number first. Type 'verify my identity' to complete your profile.")
 
-    # Use a fixed system ID that represents our pooled Mono account
+    account_number = phone   # wallet account = phone number
     system_account_id = "oyinda_pool"
     bank_name = "Oyinda Vault"
-    bank_code = "000"  # Not a real bank code
+    bank_code = "000"
 
     cur.execute("""
         INSERT INTO user_wallets (user_id, mono_account_id, account_number, bank_name, bank_code, balance)
@@ -1732,6 +1736,7 @@ def process_user_command(user_id, text):
                     })
 
 
+
             elif state == "ask_id_number":
 
                 id_number = reply.strip()
@@ -1742,6 +1747,27 @@ def process_user_command(user_id, text):
                          "tone": "neutral"})
 
                 id_type = p["data"]["id_type"]
+
+                # Check if this NIN/BVN is already registered to another user
+
+                conn = get_conn()
+
+                cur = conn.cursor()
+
+                cur.execute("SELECT id FROM users WHERE facts->>%s = %s AND id != %s", (id_type, id_number, user_id))
+
+                if cur.fetchone():
+                    conn.close()
+
+                    return jsonify({
+
+                        "message": f"This {id_type.upper()} is already registered to another account. Please use a different one.",
+
+                        "tone": "warning"
+
+                    })
+
+                conn.close()
 
                 # Simulate verification (replace with real API later)
 
@@ -1768,19 +1794,29 @@ def process_user_command(user_id, text):
                         wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
 
                     pending_transaction.pop(user_id, None)
+
                     return jsonify({
+
                         "message": f"Identity verified! {wallet_msg}",
+
                         "tone": "income",
+
                         "feedback_prompt": {
+
                             "context": "after_wallet_activation",
+
                             "question": "How was the verification process?",
+
                             "options": ["Quick & easy 👍", "Okay, nothing bad", "Too stressful 😟"]
+
                         }
+
                     })
 
                 else:
 
                     return jsonify({"message": "Verification failed. Please check your number and try again."})
+
 
 
             elif state == "collecting_business_details":

@@ -72,11 +72,23 @@ def translate(text, target_lang='en'):
 
 def detect_nigerian_language(text):
     text_lower = text.lower()
-    if any(w in text_lower for w in ['ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá', 'mo', 'tí', 'ò', 'fẹ́', 'sé']):
+    # Yoruba (common words)
+    if any(w in text_lower for w in [
+        'mo', 'fe', 'ya', 'owo', 'bawo', 'ni', 'se', 'lo', 'wa', 'tun', 'le', 'si',
+        'pelu', 'nse', 'fẹ́', 'ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá', 'ò', 'sé', 'tí'
+    ]):
         return 'yo'
-    if any(w in text_lower for w in ['kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe', 'biko', 'nna', 'nne']):
+    # Igbo
+    if any(w in text_lower for w in [
+        'kedu', 'biko', 'nna', 'nne', 'ndi', 'eme', 'ihe', 'na', 'anya', 'afo',
+        'ego', 'ulo', 'nri', 'mmiri', 'ọkụ', 'ụbọchị'
+    ]):
         return 'ig'
-    if any(w in text_lower for w in ['sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya', 'nagode', 'zo', 'tafi']):
+    # Hausa
+    if any(w in text_lower for w in [
+        'sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya', 'nagode', 'zo',
+        'tafi', 'gida', 'abinci', 'ruwa', 'kudi', 'rana', 'dare', 'mutum'
+    ]):
         return 'ha'
     return 'en'
 
@@ -1949,7 +1961,7 @@ def process_user_command(user_id, text):
         # ---- CONVERSATIONAL LOAN ENTRY (now redirects to marketplace) ----
         past_borrowing = any(phrase in text_lower for phrase in [
             'i borrowed', 'i took a loan', 'i got a loan', 'i was given',
-            'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed'
+            'i lent', 'i gave a loan', 'i loaned', 'somebody borrowed', 'mo ya',
         ])
 
         borrow_trigger = any(phrase in text_lower for phrase in [
@@ -1957,7 +1969,9 @@ def process_user_command(user_id, text):
             'can i get a loan', 'how much loan', 'i need loan',
             'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
             'get a loan', 'how can i borrow', 'can i borrow',
-            'i want to borrow', 'i need to borrow', 'i would like to borrow'
+            'i want to borrow', 'i need to borrow', 'i would like to borrow',
+            'i wanna borrow', 'i gotta get a loan', 'i need money',
+            'i want money', 'mo fe ya', 'mo fe borrow', 'ya mi', 'ya owo'
         ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
         if borrow_trigger and not past_borrowing:
@@ -6787,14 +6801,10 @@ def handle_voice():
 
         # ---- MULTILINGUAL SUPPORT ----
         original_text = text
-        nigerian_lang_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
-        is_nigerian_lang = bool(nigerian_lang_pattern.search(text)) or any(
-            word in text.lower() for word in [
-                'ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá',
-                'kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe',
-                'sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya'
-            ]
-        )
+        # Use the broader detection function (defined at top of app.py)
+        detected_nigerian = detect_nigerian_language(text)
+        is_nigerian_lang = detected_nigerian != 'en'
+
         if is_nigerian_lang:
             try:
                 text = translate(text, 'en')  # translate to English for processing
@@ -6813,8 +6823,7 @@ def handle_voice():
         if is_nigerian_lang:
             resp_json = resp.get_json()
             try:
-                detected_lang = detect_nigerian_language(original_text)  # detect specific language
-                resp_json['message'] = translate(resp_json['message'], detected_lang)
+                resp_json['message'] = translate(resp_json['message'], detected_nigerian)
             except Exception:
                 pass
             return jsonify(resp_json)

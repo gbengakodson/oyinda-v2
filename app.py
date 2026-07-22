@@ -1956,7 +1956,8 @@ def process_user_command(user_id, text):
             'borrow', 'i want to borrow', 'i wan borrow', 'lend me',
             'can i get a loan', 'how much loan', 'i need loan',
             'borrow me', 'give me loan', 'i need a loan', 'i want a loan',
-            'get a loan', 'how can i borrow', 'can i borrow'
+            'get a loan', 'how can i borrow', 'can i borrow',
+            'i want to borrow', 'i need to borrow', 'i would like to borrow'
         ]) or re.search(r'\b(?:borrow|lend)\s+me\s+(\d[\d,]*\.?\d*)', text, re.IGNORECASE)
 
         if borrow_trigger and not past_borrowing:
@@ -6678,36 +6679,67 @@ def detect_nigerian_language(text):
 
 @app.route('/tts', methods=['POST'])
 @jwt_required()
-def tts():                         # <-- changed from text_to_speech
+def tts():
     data = request.get_json()
-    text = data.get('text', '')
+    text = data.get('text', '').strip()
     if not text:
-        return jsonify({"error": "No text provided"}), 400
+        return jsonify({"error": "No text"}), 400
+    text = text[:1000]
 
-    import requests
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    resp = requests.post(
-        f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={api_key}",
-        json={
-            "input": {"text": text},
-            "voice": {
-                "languageCode": "en-NG",
-                "name": "en-NG-Wavenet-A",   # female Nigerian voice
-                "ssmlGender": "FEMALE"
-            },
-            "audioConfig": {
-                "audioEncoding": "MP3",
-                "speakingRate": 0.9,          # slower, natural pace
-                "pitch": 0.0
-            }
-        }
-    )
-    data = resp.json()
-    if "audioContent" in data:
-        import base64
-        audio_bytes = base64.b64decode(data["audioContent"])
-        return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
-    return jsonify({"error": "TTS failed"}), 500
+    # --- Try Google Nigerian female voice first ---
+    google_key = os.environ.get("GOOGLE_API_KEY")
+    if google_key:
+        try:
+            import requests
+            resp = requests.post(
+                f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={google_key}",
+                json={
+                    "input": {"text": text},
+                    "voice": {
+                        "languageCode": "en-NG",
+                        "name": "en-NG-Wavenet-A",
+                        "ssmlGender": "FEMALE"
+                    },
+                    "audioConfig": {
+                        "audioEncoding": "MP3",
+                        "speakingRate": 0.9,
+                        "pitch": 0.0
+                    }
+                },
+                timeout=10
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if "audioContent" in result:
+                import base64
+                audio_bytes = base64.b64decode(result["audioContent"])
+                return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
+        except Exception:
+            pass   # fall through to next option
+
+    # --- Fallback 1: OpenAI natural female voice ---
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=openai_key)
+            response = client.audio.speech.create(
+                model="tts-1",
+                voice="nova",          # warm, natural female voice
+                input=text,
+                speed=0.90
+            )
+            return send_file(
+                io.BytesIO(response.content),
+                mimetype="audio/mpeg",
+                as_attachment=False,
+                download_name="speech.mp3"
+            )
+        except Exception:
+            pass   # fall through to final fallback
+
+    # --- Final fallback: tell the frontend to use browser speech ---
+    return jsonify({"fallback": True, "text": text})
 
 
 
@@ -6753,10 +6785,8 @@ def handle_voice():
         if not text:
             return jsonify({"message": "I didn't catch that. Please try again.", "tone": "neutral"})
 
-        # Save original text for display
+        # ---- MULTILINGUAL SUPPORT ----
         original_text = text
-
-        # Detect Nigerian language
         nigerian_lang_pattern = re.compile(r'[áàéèíìóòúùọṣẹịọń]', re.IGNORECASE)
         is_nigerian_lang = bool(nigerian_lang_pattern.search(text)) or any(
             word in text.lower() for word in [
@@ -6765,29 +6795,31 @@ def handle_voice():
                 'sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya'
             ]
         )
-
-        # Translate to English if needed
         if is_nigerian_lang:
             try:
-                text = translate(text, 'en')
+                text = translate(text, 'en')  # translate to English for processing
             except Exception:
                 pass
+        # ---- END MULTILINGUAL ----
 
-        save_conversation(user_id, 'user', text)
+        try:
+            resp = process_user_command(user_id, text)
+        except NameError as e:
+            import traceback
+            tb = traceback.format_exc()
+            return jsonify({"message": f"❌ NameError: {str(e)}\n\n```\n{tb}\n```", "tone": "warning"})
 
-        resp = process_user_command(user_id, text)
-        resp_json = resp.get_json()
-        resp_json['transcription'] = original_text
-
-        # Translate reply back if needed
+        # If the original was a Nigerian language, translate reply back
         if is_nigerian_lang:
+            resp_json = resp.get_json()
             try:
-                detected_lang = detect_nigerian_language(original_text)
+                detected_lang = detect_nigerian_language(original_text)  # detect specific language
                 resp_json['message'] = translate(resp_json['message'], detected_lang)
             except Exception:
                 pass
+            return jsonify(resp_json)
 
-        return jsonify(resp_json)
+        return resp
 
     except openai.OpenAIError as e:
         return jsonify({"message": f"Transcription service error. Please try again later.", "tone": "warning"})

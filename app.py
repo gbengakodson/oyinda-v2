@@ -7164,6 +7164,8 @@ def finalize_registration(token):
 
         # Auto‑list in marketplace
         products = user_data.get("products", [])
+        if not products:
+            products = ["General goods/servives"]  # fallback so listing is always created
         if products:
             city = user_data.get("city") or user_data.get("business_address", "")
             market = user_data.get("market_name", "")

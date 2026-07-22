@@ -6624,10 +6624,26 @@ def search_business():
             "last_price_update": str(r[14]) if r[14] else None
         })
     if not results:
-        return jsonify({
-            "results": [],
-            "message": f"I couldn't find any {q} in {city or 'your area'} yet. You could be the first! Just say 'I sell {q}'."
-        })
+        # Make the message friendlier and profession‑aware
+        profession_words = ['farmers', 'farmer', 'sellers', 'seller', 'suppliers', 'supplier',
+                            'vendors', 'vendor', 'dealers', 'dealer', 'agents', 'agent',
+                            'providers', 'provider', 'traders', 'trader']
+        cleaned_q = q
+        for word in profession_words:
+            if cleaned_q.endswith(' ' + word):
+                cleaned_q = cleaned_q[:-len(word) - 1].strip()
+                break
+        if cleaned_q != q:
+            friendly_msg = (
+                f"I couldn't find any {cleaned_q} suppliers in {city or 'your area'} yet. "
+                f"You could be the first! Just say 'I sell {cleaned_q}' or 'I am a {q}'."
+            )
+        else:
+            friendly_msg = (
+                f"I couldn't find any {q} in {city or 'your area'} yet. "
+                f"You could be the first! Just say 'I sell {q}'."
+            )
+        return jsonify({"results": [], "message": friendly_msg})
 
     return jsonify({"results": results})
 

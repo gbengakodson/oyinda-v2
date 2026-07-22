@@ -52,6 +52,34 @@ def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = handle_unhandled_exception
 
 
+def translate(text, target_lang='en'):
+    try:
+        import openai
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"Translate the following text to {target_lang}. Only return the translated text."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1,
+            max_tokens=200
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return text
+
+def detect_nigerian_language(text):
+    text_lower = text.lower()
+    if any(w in text_lower for w in ['ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá', 'mo', 'tí', 'ò', 'fẹ́', 'sé']):
+        return 'yo'
+    if any(w in text_lower for w in ['kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe', 'biko', 'nna', 'nne']):
+        return 'ig'
+    if any(w in text_lower for w in ['sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya', 'nagode', 'zo', 'tafi']):
+        return 'ha'
+    return 'en'
+
 
 
 SYSTEM_PROMPT = (

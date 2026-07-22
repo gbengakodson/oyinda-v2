@@ -3458,7 +3458,8 @@ def handle_command():
     if is_nigerian_lang:
         resp_json = resp.get_json()
         try:
-            resp_json['message'] = translate(resp_json['message'], 'yo')  # default to Yoruba; you can make this smarter later
+            detected_lang = detect_nigerian_language(original_text)
+            resp_json['message'] = translate(resp_json['message'], detected_lang)  # default to Yoruba; you can make this smarter later
         except Exception:
             pass
         return jsonify(resp_json)
@@ -6632,6 +6633,21 @@ def debug_groq_echo():
         return jsonify({"error": str(e)})
 
 
+def detect_nigerian_language(text):
+    """Return the ISO 639-1 code of the detected Nigerian language, or 'en' if none."""
+    text_lower = text.lower()
+    # Yoruba
+    if any(word in text_lower for word in ['ṣé', 'báwo', 'kí', 'ń', 'lọ', 'wá', 'mo', 'tí', 'ò', 'fẹ́', 'sé']):
+        return 'yo'
+    # Igbo
+    if any(word in text_lower for word in ['kedu', 'ị', 'ọ', 'ndị', 'na', 'eme', 'ihe', 'biko', 'nna', 'nne']):
+        return 'ig'
+    # Hausa
+    if any(word in text_lower for word in ['sannu', 'yaya', 'kake', 'aiki', 'ina', 'kwana', 'lahiya', 'nagode', 'zo', 'tafi']):
+        return 'ha'
+    return 'en'
+
+
 @app.route('/tts', methods=['POST'])
 @jwt_required()
 def text_to_speech():
@@ -6664,9 +6680,6 @@ def text_to_speech():
         audio_bytes = base64.b64decode(data["audioContent"])
         return send_file(io.BytesIO(audio_bytes), mimetype="audio/mp3")
     return jsonify({"error": "TTS failed"}), 500
-
-
-
 
 import openai
 
@@ -6733,7 +6746,8 @@ def handle_voice():
 
         if is_nigerian_lang:
             try:
-                resp_json['message'] = translate(resp_json['message'], 'yo')
+                detected_lang = detect_nigerian_language(original_text)
+                resp_json['message'] = translate(resp_json['message'], detected_lang)
             except Exception:
                 pass
 

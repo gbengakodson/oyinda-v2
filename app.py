@@ -7177,9 +7177,10 @@ def finalize_registration(token):
                 cur2 = conn2.cursor()
                 cur2.execute(
                     """INSERT INTO business_listings
-                       (user_id, name, products, category, market_name, city, phone, listing_type)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'user')""",
-                    (user_id, name, json.dumps(products), category, market, city, phone)
+                       (user_id, name, product, products, category, market_name, city, phone, listing_type)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'user')""",
+                    (user_id, name, (products or ["General goods"])[0], json.dumps(products or ["General goods"]),
+                     category, market, city, phone)
                 )
                 conn2.commit()
                 conn2.close()

@@ -6623,6 +6623,11 @@ def search_business():
             "price_update_count": r[13] or 0,
             "last_price_update": str(r[14]) if r[14] else None
         })
+    if not results:
+        return jsonify({
+            "results": [],
+            "message": f"I couldn't find any {q} in {city or 'your area'} yet. You could be the first! Just say 'I sell {q}'."
+        })
 
     return jsonify({"results": results})
 

@@ -885,10 +885,13 @@ def process_user_command(user_id, text):
 
         # ---- ADMIN CHECK (used by frontend to show admin button) ----
         if text_lower == 'am i admin':
-            from core import get_user_facts  # ← explicit import to avoid shadowing
-            facts = get_user_facts(user_id)
-            is_admin = facts.get('is_admin') == 'true'
-            display_name = facts.get('business_name') or facts.get('name') or 'My Business'
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT facts->>'is_admin', facts->>'business_name', name FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            conn.close()
+            is_admin = row[0] == 'true' if row and row[0] else False
+            display_name = (row[1] if row and row[1] else (row[2] if row else 'My Business'))
             return jsonify({
                 "message": "Profile synced.",
                 "is_admin": is_admin,

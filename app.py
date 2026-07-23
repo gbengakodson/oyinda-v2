@@ -887,7 +887,13 @@ def process_user_command(user_id, text):
         if text_lower == 'am i admin':
             facts = get_user_facts(user_id)
             is_admin = facts.get('is_admin') == 'true'
-            return jsonify({"message": "Admin status checked.", "is_admin": is_admin, "tone": "neutral"})
+            display_name = facts.get('business_name') or facts.get('name') or 'My Business'
+            return jsonify({
+                "message": "Profile synced.",
+                "is_admin": is_admin,
+                "display_name": display_name,
+                "tone": "neutral"
+            })
 
 
         # ---- FLEXIBLE MARKETPLACE OPENING (location‑aware) ----

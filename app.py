@@ -880,6 +880,13 @@ def process_user_command(user_id, text):
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
+        # ---- ADMIN CHECK (used by frontend to show admin button) ----
+        if text_lower == 'am i admin':
+            facts = get_user_facts(user_id)
+            is_admin = facts.get('is_admin') == 'true'
+            return jsonify({"message": "Admin status checked.", "is_admin": is_admin, "tone": "neutral"})
+
+
         # ---- FLEXIBLE MARKETPLACE OPENING (location‑aware) ----
         marketplace_phrases = [
             'show marketplace', 'open marketplace', 'view marketplace',
@@ -6457,9 +6464,11 @@ def daily_data_reward():
 
 
 @app.route('/admin/pending-loans', methods=['GET'])
+@jwt_required()
 def admin_pending_loans():
-    secret = request.args.get('secret', '')
-    if secret != ADMIN_CREDIT_SECRET:
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
         return jsonify({"error": "unauthorized"}), 403
 
     conn = get_conn()
@@ -6489,13 +6498,15 @@ def admin_pending_loans():
     return jsonify({"loans": loans})
 
 @app.route('/admin/confirm-loan', methods=['POST'])
+@jwt_required()
 def admin_confirm_loan():
-    data = request.get_json()
-    secret = data.get('secret', '')
-    loan_id = data.get('loan_id', '')
-
-    if secret != ADMIN_CREDIT_SECRET:
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
         return jsonify({"error": "unauthorized"}), 403
+
+    data = request.get_json()
+    loan_id = data.get('loan_id', '')
 
     conn = get_conn()
     cur = conn.cursor()
@@ -6505,9 +6516,9 @@ def admin_confirm_loan():
         conn.close()
         return jsonify({"error": "Loan not found or already processed"}), 404
 
-    user_id, supplier_id, product, amount, interest, total_repayable, daily_amount, dur_days, grace_days, supplier_name, supplier_phone = loan[1:12]
+    borrower_id, supplier_id, product, amount, interest, total_repayable, daily_amount, dur_days, grace_days, supplier_name, supplier_phone = loan[1:12]
 
-    # Credit supplier wallet (simulate disbursement)
+    # Credit supplier wallet
     cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s", (amount, supplier_id))
 
     # Create inventory loan record
@@ -6518,11 +6529,11 @@ def admin_confirm_loan():
         (user_id, supplier_id, product, principal, flat_fee, total_repayable,
          daily_amount, remaining_balance, start_date, end_date, status)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-    """, (user_id, supplier_id, product, amount, interest,
+    """, (borrower_id, supplier_id, product, amount, interest,
           total_repayable, daily_amount, total_repayable, start_date, end_date))
 
     # Log events
-    append_event(user_id, user_id, 'LoanTaken', {
+    append_event(borrower_id, borrower_id, 'LoanTaken', {
         "amount": amount,
         "supplier_id": str(supplier_id),
         "product": product,
@@ -6537,7 +6548,6 @@ def admin_confirm_loan():
         "source": "oyinda_loan"
     })
 
-    # Mark pending loan as approved
     cur.execute("UPDATE pending_loans SET status = 'approved' WHERE id = %s", (loan_id,))
     conn.commit()
     conn.close()
@@ -7066,17 +7076,18 @@ def admin_summary():
 
 
 
-ADMIN_CREDIT_SECRET = os.environ.get('ADMIN_CREDIT_SECRET', 'change-me-to-a-random-string')
-
 @app.route('/admin/credit-wallet', methods=['POST'])
+@jwt_required()
 def admin_credit_wallet():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
     data = request.get_json()
-    secret = data.get('secret', '')
     phone = data.get('phone', '').strip()
     amount = float(data.get('amount', 0))
 
-    if secret != ADMIN_CREDIT_SECRET:
-        return jsonify({"error": "unauthorized"}), 403
     if not re.fullmatch(r'\d{11}', phone):
         return jsonify({"error": "Invalid phone number"}), 400
     if amount <= 0:
@@ -7090,18 +7101,18 @@ def admin_credit_wallet():
     if not row:
         conn.close()
         return jsonify({"error": "User not found"}), 404
-    user_id = row[0]
+    target_user_id = row[0]
 
     # Credit wallet
     cur.execute("UPDATE user_wallets SET balance = balance + %s, last_balance_update = now() WHERE user_id = %s",
-                (amount, user_id))
+                (amount, target_user_id))
     # Log as income
-    append_event(user_id, user_id, 'IncomeReceived', {
+    append_event(target_user_id, target_user_id, 'IncomeReceived', {
         "amount": amount,
         "currency": "NGN",
         "description": "Customer payment (manual credit)"
     })
-    append_event(user_id, user_id, 'WalletCredited', {
+    append_event(target_user_id, target_user_id, 'WalletCredited', {
         "amount": amount,
         "source": "manual_credit"
     })

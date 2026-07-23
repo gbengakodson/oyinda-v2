@@ -791,36 +791,39 @@ def login():
         password = data.get('password', '')
         if not email or not password:
             return jsonify({"error": "Phone and PIN required."}), 400
+
         user = authenticate_user(email, password)
         if not user:
             return jsonify({"error": "Invalid credentials."}), 401
 
-        # Fetch business name (never personal name)
+        # Fetch business name and admin status in one query
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT facts->>'business_name' FROM users WHERE id = %s", (user['id'],))
-        biz_row = cur.fetchone()
+        cur.execute("SELECT facts->>'business_name', facts->>'is_admin' FROM users WHERE id = %s", (user['id'],))
+        biz_name, is_admin = cur.fetchone() or (None, None)
         conn.close()
-        display_name = (biz_row[0] if biz_row and biz_row[0] else "My Business")
 
+        display_name = biz_name if biz_name else "My Business"
         token = create_access_token(identity=user['id'], expires_delta=timedelta(days=7))
         return jsonify({
             "message": f"Welcome back, {display_name}!",
-            "user": {"id": user['id'], "name": display_name},
+            "user": {"id": user['id'], "name": display_name, "is_admin": is_admin == 'true'},
             "token": token
         })
 
     # --- Phone + PIN login ---
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, email, password_hash, account_type FROM users WHERE facts->>'phone' = %s", (phone,))
+    cur.execute(
+        "SELECT id, name, email, password_hash, account_type, facts->>'is_admin' AS is_admin FROM users WHERE facts->>'phone' = %s",
+        (phone,))
     row = cur.fetchone()
     conn.close()
 
     if not row:
         return jsonify({"error": "Phone number not found."}), 401
 
-    user_id, name, email, password_hash, account_type = row
+    user_id, name, email, password_hash, account_type, is_admin = row
     if not check_password(pin, password_hash):
         return jsonify({"error": "Incorrect PIN."}), 401
 
@@ -835,7 +838,7 @@ def login():
     token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
     return jsonify({
         "message": f"Welcome back, {display_name}!",
-        "user": {"id": str(user_id), "name": display_name},
+        "user": {"id": str(user_id), "name": display_name, "is_admin": is_admin == 'true'},
         "token": token
     })
 

@@ -885,6 +885,7 @@ def process_user_command(user_id, text):
 
         # ---- ADMIN CHECK (used by frontend to show admin button) ----
         if text_lower == 'am i admin':
+            from core import get_user_facts  # ← explicit import to avoid shadowing
             facts = get_user_facts(user_id)
             is_admin = facts.get('is_admin') == 'true'
             display_name = facts.get('business_name') or facts.get('name') or 'My Business'

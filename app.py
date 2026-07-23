@@ -7204,14 +7204,12 @@ def finalize_registration(token):
         cur.execute("DELETE FROM onboarding_sessions WHERE token = %s", (token,))
         conn.commit()
 
+        display_name = user_data.get("business_name") or user_data["name"]
         access_token = create_access_token(identity=str(user_id), expires_delta=timedelta(days=7))
         return jsonify({
             "jwt": access_token,
-            "user": {
-                "id": user_id,
-                "name": user_data.get("business_name") or user_data["name"]
-            },
-            "message": f"All set, {user_data['name']}! Your business is now registered and listed in the marketplace.",
+            "user": {"id": user_id, "name": display_name},
+            "message": f"All set, {display_name}! Your business is now registered and listed in the marketplace.",
             "tone": "income",
             "redirect": "/dashboard"
         })

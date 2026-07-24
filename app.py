@@ -2020,6 +2020,117 @@ def process_user_command(user_id, text):
             # If we didn't match any state, just finalise to avoid hanging
             return finalise_transaction(user_id)
 
+        # ---- SHORT LOAN SUMMARY (concrete Naira examples) ----
+        if text_lower == 'get a loan':
+            credit = get_credit_score(user_id)
+            score = credit['score']
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.15, 100),
+                (101000, 200000, 90, 21, 0.15, 250),
+                (201000, 500000, 180, 30, 0.20, 350),
+                (501000, 1000000, 240, 60, 0.20, 500),
+                (1100000, 5000000, 365, 90, 0.25, 700),
+            ]
+
+            # Find current tier
+            current_tier = None
+            next_min_score = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if score >= min_score:
+                    current_tier = (min_amt, max_amt, dur, grace, rate)
+                elif next_min_score is None:
+                    next_min_score = min_score
+
+            if not current_tier:
+                return jsonify({
+                    "message": "Your credit score is still low. Keep telling me your daily expenses and income. Once you reach score 20, you fit borrow from ₦5,000. Ask me 'loan tiers' to see full details.",
+                    "tone": "neutral"
+                })
+
+            min_amt, max_amt, dur, grace, rate = current_tier
+            # Pick a clear example: the minimum amount in this tier
+            example_loan = min_amt
+            total_interest = example_loan * rate
+            total_repayable = example_loan + total_interest
+            repay_days = dur - grace
+            daily_repay = round(total_repayable / repay_days, 2)
+
+            # Determine if weekly or daily
+            if dur > 90:
+                weeks = repay_days // 7
+                repayment_str = f"₦{round(total_repayable / weeks, 2):,.2f} per week for {weeks} weeks"
+            else:
+                repayment_str = f"₦{daily_repay:,.2f} daily for {repay_days} days"
+
+            msg = f"Ma/Sir, your credit score is **{score}/850**.\n\n"
+            msg += f"Right now you fit borrow **₦{min_amt:,} to ₦{max_amt:,}**.\n"
+            msg += "The money goes straight to your supplier — you no go touch cash.\n\n"
+
+            msg += f"For example, if you borrow **₦{example_loan:,}**:\n"
+            msg += f"• You go pay back **₦{total_repayable:,.0f}** in total.\n"
+            msg += f"• That's **{repayment_str}**.\n"
+            msg += f"• First **{grace} days** na free — you no pay anything.\n\n"
+
+            msg += "The interest na small — e dey different for how long you take the loan.\n"
+            msg += "Longer time get small extra charge.\n\n"
+
+            if next_min_score:
+                msg += f"🔓 Reach score **{next_min_score}** to unlock the next level.\n"
+            else:
+                msg += "🎉 You don reach the top level! Well done!\n"
+
+            msg += "Keep telling me your sales and expenses — your score go grow.\n"
+            msg += "Ask **'loan tiers'** if you wan see full details."
+
+            return jsonify({"message": msg, "tone": "income"})
+
+        # ---- FULL LOAN TIERS BREAKDOWN (for detailed queries) ----
+        if any(phrase in text_lower for phrase in [
+            'loan tiers', 'loan details', 'loan breakdown',
+            'full loan info', 'all loan levels', 'how do loans work'
+        ]):
+            credit = get_credit_score(user_id)
+            score = credit['score']
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.15, 100),
+                (101000, 200000, 90, 21, 0.15, 250),
+                (201000, 500000, 180, 30, 0.20, 350),
+                (501000, 1000000, 240, 60, 0.20, 500),
+                (1100000, 5000000, 365, 90, 0.25, 700),
+            ]
+
+            msg = f"📊 **Oyinda Loan Tiers** (Your score: {score}/850)\n\n"
+            current_tier = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                emoji = "✅" if score >= min_score else "🔒"
+                if score >= min_score and current_tier is None:
+                    current_tier = (min_amt, max_amt)
+                weeks_total = dur // 7
+                weeks_grace = grace // 7
+                weeks_repay = (dur - grace) // 7
+                msg += (
+                    f"{emoji} **₦{min_amt:,} – ₦{max_amt:,}**\n"
+                    f"   {weeks_total} weeks (grace: {weeks_grace} wk, repay: {weeks_repay} wks)\n"
+                    f"   Interest: {int(rate * 100)}% flat | Score needed: {min_score}\n\n"
+                )
+
+            if current_tier:
+                msg += f"🎉 You qualify for ₦{current_tier[0]:,} – ₦{current_tier[1]:,}.\n"
+            else:
+                msg += "🔒 Keep logging to reach score 20.\n"
+
+            msg += "\n💡 All loans go to your supplier, you repay daily/weekly.\n"
+            msg += "Ask **'get a loan'** for a simple summary."
+
+            return jsonify({"message": msg, "tone": "neutral"})
+
+
+
+
         # ---- DIRECT LOAN FROM MARKETPLACE (tapped "Pay with Loan" on a business card) ----
         loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
         if loan_from_match:
@@ -3381,8 +3492,8 @@ def process_user_command(user_id, text):
                     "message": (
                         f"Your credit score is {score}/850. "
                         f"You can borrow between ₦{min_eligible:,} and ₦{max_eligible:,}, "
-                        f"but the exact amount depends on your monthly business turnover.\n"
-                        "Tap the cart icon 🛒 to browse suppliers and start a loan."
+                        f"but the exact amount depends on your business turnover.\n"
+                        "Ask 'loan info' for a full breakdown of all tiers."
                     ),
                     "tone": "income"
                 })

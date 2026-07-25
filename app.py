@@ -1275,6 +1275,33 @@ def process_user_command(user_id, text):
                         })
                 # (if total_income_amount is 0, we can skip the cap or set a default minimum – we'll allow up to the tier minimum)
 
+                # ---- TAX SOFT‑REQUIREMENT (for loans ≥ 200k) ----
+                if amount >= 200000:
+                    # Check if user has filed tax (look for TaxPaid event or fact)
+                    from core import get_user_facts
+                    facts = get_user_facts(user_id)
+                    has_filed_tax = facts.get('tax_filed') == 'true'
+                    if not has_filed_tax:
+                        p["state"] = "tax_warning_for_large_loan"
+                        p["data"]["amount"] = amount
+                        p["data"]["interest_rate"] = interest_rate
+                        p["data"]["duration_days"] = dur_days
+                        p["data"]["grace_days"] = grace_days
+                        return jsonify({
+                            "message": (
+                                f"Just so you know, for loans of ₦200,000 and above, "
+                                "you'll need to file your tax. You can still proceed, "
+                                "but I recommend filing your tax soon.\n\n"
+                                "Tap **'Continue'** to proceed with the loan, or **'File my tax'** to do it now."
+                            ),
+                            "tone": "warning",
+                            "feedback_prompt": {
+                                "context": "tax_warning",
+                                "question": "What would you like to do?",
+                                "options": ["Continue", "File my tax"]
+                            }
+                        })
+
                 # Store and move on
 
                 total_interest = amount * interest_rate
@@ -2397,6 +2424,38 @@ def process_user_command(user_id, text):
                         "tone": "income"})
             except Exception as e:
                 return jsonify({"error": f"P2P trade failed: {str(e)}"}), 500
+
+        # ---- CREDIT HISTORY CHART ----
+        if any(phrase in text_lower for phrase in [
+            'show my credit history', 'credit history', 'credit score history',
+            'how has my credit score changed', 'credit progress'
+        ]):
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT score, updated_at::date as date
+                FROM credit_scores
+                WHERE user_id = %s
+                ORDER BY updated_at ASC
+                LIMIT 90
+            """, (user_id,))
+            rows = cur.fetchall()
+            conn.close()
+
+            if not rows:
+                return jsonify(
+                    {"message": "No credit score history yet. Start logging transactions!", "tone": "neutral"})
+
+            points = [{"score": r[0], "date": str(r[1])} for r in rows]
+
+            return jsonify({
+                "message": f"📈 Your credit score over the last {len(points)} days",
+                "tone": "neutral",
+                "component": "CreditHistory",
+                "props": {
+                    "data": points
+                }
+            })
 
 
         # ---------- IDENTITY VERIFICATION ----------
@@ -7066,6 +7125,17 @@ def tts():
     # --- Final fallback: tell the frontend to use browser speech ---
     return jsonify({"fallback": True, "text": text})
 
+
+@app.route('/messages/unread-count', methods=['GET'])
+@jwt_required()
+def unread_message_count():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM messages WHERE receiver_id = %s AND read = false", (user_id,))
+    count = cur.fetchone()[0]
+    conn.close()
+    return jsonify({"count": count})
 
 
 @app.route('/voice', methods=['POST'])

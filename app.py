@@ -1129,6 +1129,24 @@ def process_user_command(user_id, text):
                                        "message": "Please enter a valid number for the amount, or tell me about income/expense you want to log.",
                                        "tone": "neutral"})
 
+                # ---- RELAXED TIER 1: Allow any user with score ≥20 to borrow up to 10k without ratio checks ----
+                if amount <= 10000 and get_credit_score(user_id)['score'] >= 20:
+                    # Skip all ratio, spread, turnover checks
+                    # Set default tier parameters for 5k-10k
+                    dur_days, grace_days, interest_rate = 21, 3, 0.10
+                    total_interest = amount * interest_rate
+                    total_repayable = amount + total_interest
+                    daily_amount = round(total_repayable / (dur_days - grace_days), 2)
+                    p["data"]["amount"] = amount
+                    p["data"]["interest_rate"] = interest_rate
+                    p["data"]["total_repayable"] = total_repayable
+                    p["data"]["daily_amount"] = daily_amount
+                    p["data"]["duration_days"] = dur_days
+                    p["data"]["grace_days"] = grace_days
+                    p["state"] = "direct_loan_product"
+                    return jsonify(
+                        {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+
                 # Check expense/income ratio using the tier's duration
 
                 try:

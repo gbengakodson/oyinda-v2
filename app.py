@@ -2479,6 +2479,40 @@ def process_user_command(user_id, text):
                 "props": {"data": points}
             })
 
+        # In process_user_command, add this handler
+        if text_lower in ['loan status', 'my loans', 'loan progress', 'active loans']:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT product, principal, total_repayable, remaining_balance, 
+                       daily_amount, start_date, end_date, status
+                FROM inventory_loans
+                WHERE user_id = %s AND status = 'active'
+                ORDER BY created_at DESC
+            """, (user_id,))
+            loans = cur.fetchall()
+            conn.close()
+
+            if not loans:
+                return jsonify({"message": "You have no active loans. Well done! 🎉", "tone": "income"})
+
+            msg = "📋 **Your Active Loans**\n\n"
+            for loan in loans:
+                product, principal, total_repayable, remaining, daily, start, end, status = loan
+                progress = ((total_repayable - remaining) / total_repayable * 100) if total_repayable > 0 else 0
+                msg += (
+                    f"📦 **{product}**\n"
+                    f"   Principal: ₦{principal:,.2f}\n"
+                    f"   Total repayable: ₦{total_repayable:,.2f}\n"
+                    f"   Remaining: ₦{remaining:,.2f}\n"
+                    f"   Daily repayment: ₦{daily:,.2f}\n"
+                    f"   Progress: {progress:.0f}% repaid\n"
+                    f"   Period: {start} → {end}\n\n"
+                )
+            msg += "Keep logging your sales—your wallet will be auto‑debited. Ask **'repay 500'** to make a manual payment."
+
+            return jsonify({"message": msg, "tone": "neutral"})
+
 
         # ---------- IDENTITY VERIFICATION ----------
         if any(phrase in text.lower() for phrase in ['verify my identity', 'verify my account', 'activate wallet', 'link bvn', 'link nin', 'add bvn', 'add nin', 'i want to verify']):
@@ -6602,6 +6636,45 @@ def redeem_data():
     })
 
 
+
+@app.route('/loan/repayment-streak', methods=['GET'])
+@jwt_required()
+def repayment_streak():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get the last 60 days of repayments, ordered by date descending
+    cur.execute("""
+        SELECT DISTINCT repayment_date
+        FROM loan_repayments
+        WHERE loan_id IN (SELECT id FROM inventory_loans WHERE user_id = %s)
+        ORDER BY repayment_date DESC
+        LIMIT 60
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return jsonify({"streak": 0, "message": "No repayments yet. Start repaying your loan!"})
+
+    # Count consecutive days ending today (or yesterday)
+    today = datetime.utcnow().date()
+    streak = 0
+    expected_date = today
+    for (repay_date,) in rows:
+        if repay_date == expected_date:
+            streak += 1
+            expected_date -= timedelta(days=1)
+        elif repay_date == expected_date - timedelta(days=1):
+            # Allowed one day gap? For simplicity, require exact consecutive days
+            break
+        else:
+            break
+
+    return jsonify({"streak": streak, "message": f"{streak} days repayment streak 🔥"})
+
+
 @app.route('/streak', methods=['GET'])
 @jwt_required()
 def streak():
@@ -6769,6 +6842,8 @@ def admin_confirm_loan():
         "amount": amount,
         "source": "oyinda_loan"
     })
+
+    update_credit_score(conn, borrower_id)
 
     cur.execute("UPDATE pending_loans SET status = 'approved' WHERE id = %s", (loan_id,))
     conn.commit()

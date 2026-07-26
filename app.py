@@ -2469,9 +2469,7 @@ def process_user_command(user_id, text):
                 "message": f"📈 Your credit score since you started using Oyinda",
                 "tone": "neutral",
                 "component": "CreditHistory",
-                "props": {
-                    "data": points
-                }
+                "props": {"data": points}
             })
 
 

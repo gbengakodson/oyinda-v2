@@ -844,6 +844,7 @@ def login():
 
 
 def process_user_command(user_id, text):
+    from core import get_user_facts
     text_lower = text.lower().strip()
     # --- MULTILINGUAL SUPPORT: translate non-English messages to English ---
     original_text = text
@@ -1296,7 +1297,7 @@ def process_user_command(user_id, text):
                 # ---- TAX SOFT‑REQUIREMENT (for loans ≥ 200k) ----
                 if amount >= 200000:
                     # Check if user has filed tax (look for TaxPaid event or fact)
-                    from core import get_user_facts
+
                     facts = get_user_facts(user_id)
                     has_filed_tax = facts.get('tax_filed') == 'true'
                     if not has_filed_tax:
@@ -1880,7 +1881,7 @@ def process_user_command(user_id, text):
                         wallet_msg = f"Wallet creation failed: {str(e)}. You can try again later."
 
                     # Get business name for the frontend header
-                    from core import get_user_facts
+
                     facts = get_user_facts(user_id)
                     display_name = facts.get('business_name') or 'My Business'
 

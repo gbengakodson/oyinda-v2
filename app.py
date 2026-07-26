@@ -1351,6 +1351,8 @@ def process_user_command(user_id, text):
             elif state == "direct_loan_product":
 
                 p["data"]["product"] = reply.strip()
+                product = p["data"]["product"]
+                supplier_name = p["data"]["supplier_name"]
 
                 amount = p["data"]["amount"]
 

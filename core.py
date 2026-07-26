@@ -648,7 +648,9 @@ def update_credit_score(conn, user_id):
     # Logo: <40 butterfly, 40‑69 transition, ≥70 eagle
     logo = 'butterfly' if score < 40 else ('eagle' if score >= 70 else 'transition')
 
-    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score, logo = EXCLUDED.logo, updated_at = now()",
-                (user_id, score, logo))
+    cur.execute(
+        "INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now())",
+        (user_id, score, logo)
+    )
     conn.commit()
     cur.close()

@@ -3836,29 +3836,30 @@ def handle_query(text, user_id):
     query_info = classify_query_intent(text)
     text_lower = text.lower()
 
-    # ---------- PRODUCT KNOWLEDGE – NEVER SEND THESE TO THE LLM ----------
-    if any(w in text_lower for w in [
-        'credit score', 'health score', 'butterfly', 'eagle', 'what is my score',
-        'financial health', 'how am i doing financially', 'my financial health',
-        'how healthy are my finances', 'financial wellbeing', 'my finances'
-    ]):
+    if text_lower in ['credit score', 'my credit score', 'what is my credit score', 'credit score check']:
         score_data = get_credit_score(user_id)
-        score = score_data["score"]
-        logo = score_data["logo"]
+        score = score_data['score']
+        logo = score_data['logo']
 
-        # Simple explanation of the scale
-        if score < 580:
-            status = "just starting out. Log more transactions and pay back loans to improve."
+        if score < 300:
+            encouragement = "You're progressing. Every expense and income you tell me helps build your score."
+            future_hint = "Once you reach 600, you can access up to ₦5,000,000 to grow your business."
+        elif score < 600:
+            encouragement = "You're making progress! Your score is enough to get a business loan."
+            future_hint = "Build your score to 600 and you can quickly receive up to ₦5,000,000."
         elif score < 740:
-            status = "doing well. Regular saving and paying debts on time will boost it further."
+            encouragement = "You're doing great! Lenders trust your consistent logging."
+            future_hint = "Reach 740 for the best rates on large business loans."
         else:
-            status = "excellent. You're a financial eagle!"
+            encouragement = "Outstanding! You're in the top tier. Your financial discipline is paying off."
+            future_hint = "You can access the largest loans at the best rates."
 
-        return jsonify({
-            "answer": f"Your Oyinda credit score is {score}/850 ({logo}). That means you're {status}\n"
-                      f"Score range: 300‑579 (Butterfly 🦋), 580‑739 (Transition), 740‑850 (Eagle 🦅).",
-            "tone": "neutral"
-        })
+        return jsonify({"answer": (
+            f"Your credit score is **{score}/850**.\n\n"
+            f"{encouragement}\n\n"
+            f"💡 {future_hint}\n\n"
+            "Tell me what you spent or earned today and your score will keep improving."
+        ), "tone": "income"})
 
     # Greeting
     if query_info and query_info.get('intent') == 'greeting':

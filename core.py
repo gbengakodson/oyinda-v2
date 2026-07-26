@@ -260,7 +260,10 @@ def update_credit_score(conn, user_id):
         }
     }
 
-    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now())", (user_id, fico, logo))
+    cur.execute(
+        "INSERT INTO credit_scores (id, user_id, score, logo, updated_at) VALUES (gen_random_uuid(), %s, %s, %s, now())",
+        (user_id, fico, logo)
+    )
     conn.commit()
     cur.close()
     return breakdown   # so it can be used by the query handler

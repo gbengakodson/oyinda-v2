@@ -6227,7 +6227,7 @@ def select_supplier():
     })
 
 
-@app.route('/cron/deduct-loans', methods=['POST'])
+@app.route('/cron/deduct-loans', methods=['GET', 'POST'])
 def deduct_loans():
     secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
     if secret != CRON_SECRET:
@@ -6254,7 +6254,6 @@ def deduct_loans():
 
         # Determine the deduction amount and whether to deduct today
         if freq == 'weekly':
-            # Deduct only if today is exactly 0, 7, 14, ... days after grace_end
             days_after_grace = (today - grace_end).days
             if days_after_grace % 7 != 0:
                 continue
@@ -6284,7 +6283,6 @@ def deduct_loans():
             "loan_id": str(loan_id),
             "amount": deduction,
             "method": "auto"
-
         })
         update_credit_score(conn, user_id)
 

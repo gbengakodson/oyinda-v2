@@ -884,6 +884,34 @@ def process_user_command(user_id, text):
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
+        # ---- WITHDRAWAL REQUEST ----
+        withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+([a-zA-Z\s]+)\s+(\d{10})', text, re.IGNORECASE)
+        if withdraw_match:
+            amount = float(withdraw_match.group(1))
+            bank_name = withdraw_match.group(2).strip()
+            account_number = withdraw_match.group(3)
+
+            # Check wallet balance
+            wallet = ensure_wallet(user_id)
+            if wallet['balance'] < amount:
+                return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
+
+            # Save withdrawal request
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO pending_withdrawals (user_id, amount, bank_name, account_number, status)
+                VALUES (%s, %s, %s, %s, 'pending')
+            """, (user_id, amount, bank_name, account_number))
+            conn.commit()
+            conn.close()
+
+            # Notify user
+            return jsonify({
+                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) has been submitted. The admin will process it shortly.",
+                "tone": "income"
+            })
+
         # ---- ADMIN CHECK (used by frontend to show admin button) ----
         if text_lower == 'am i admin':
             conn = get_conn()
@@ -6018,6 +6046,77 @@ def health():
         "description": desc,
         "scale": "300‑850"
     })
+
+
+@app.route('/admin/pending-withdrawals', methods=['GET'])
+@jwt_required()
+def admin_pending_withdrawals():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT pw.id, u.name, pw.amount, pw.bank_name, pw.account_number, pw.created_at
+        FROM pending_withdrawals pw
+        JOIN users u ON pw.user_id = u.id
+        WHERE pw.status = 'pending'
+        ORDER BY pw.created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    withdrawals = [{
+        "id": r[0],
+        "user": r[1],
+        "amount": r[2],
+        "bank": r[3],
+        "account": r[4],
+        "requested_at": str(r[5])
+    } for r in rows]
+
+    return jsonify({"withdrawals": withdrawals})
+
+
+
+@app.route('/admin/confirm-withdrawal', methods=['POST'])
+@jwt_required()
+def admin_confirm_withdrawal():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
+    data = request.get_json()
+    withdrawal_id = data.get('withdrawal_id', '')
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM pending_withdrawals WHERE id = %s AND status = 'pending'", (withdrawal_id,))
+    withdrawal = cur.fetchone()
+    if not withdrawal:
+        conn.close()
+        return jsonify({"error": "Withdrawal not found or already processed"}), 404
+
+    wd_user_id, amount = withdrawal[1], withdrawal[2]
+
+    # Deduct wallet
+    cur.execute("UPDATE user_wallets SET balance = balance - %s WHERE user_id = %s", (amount, wd_user_id))
+    # Log event
+    append_event(wd_user_id, wd_user_id, 'WalletDebited', {
+        "amount": amount,
+        "type": "withdrawal",
+        "bank": withdrawal[3],
+        "account": withdrawal[4]
+    })
+    # Mark as approved
+    cur.execute("UPDATE pending_withdrawals SET status = 'approved' WHERE id = %s", (withdrawal_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": f"Withdrawal of ₦{amount:,.2f} approved and wallet debited."})
 
 
 

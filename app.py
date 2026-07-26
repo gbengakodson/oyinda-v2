@@ -2455,7 +2455,6 @@ def process_user_command(user_id, text):
                 FROM credit_scores
                 WHERE user_id = %s
                 ORDER BY updated_at ASC
-                LIMIT 90
             """, (user_id,))
             rows = cur.fetchall()
             conn.close()
@@ -2466,15 +2465,8 @@ def process_user_command(user_id, text):
 
             points = [{"score": r[0], "date": str(r[1])} for r in rows]
 
-            # If only 1 data point, show a friendly message with the score
-            if len(points) == 1:
-                return jsonify({
-                    "message": f"📈 Your credit score is currently **{points[0]['score']}/850**. You need more history to see a trend. Keep logging your daily expenses and income!",
-                    "tone": "neutral"
-                })
-
             return jsonify({
-                "message": f"📈 Your credit score over the last {len(points)} days",
+                "message": f"📈 Your credit score since you started using Oyinda",
                 "tone": "neutral",
                 "component": "CreditHistory",
                 "props": {

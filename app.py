@@ -4014,8 +4014,24 @@ def handle_query(text, user_id):
 
     # Credit score
     if 'credit score' in text_lower or 'health score' in text_lower:
-        score = get_credit_score(user_id)
-        return jsonify({"answer": f"Your financial health score is {score['score']}/100. You're a {score['logo']}.", "tone": "neutral"})
+        score_data = get_credit_score(user_id)
+        score = score_data['score']
+
+        if score < 300:
+            encouragement = "You're just starting out. Every expense and income you tell me helps build your score."
+        elif score < 600:
+            encouragement = "You're making progress! This score is enough to get a business loan."
+        elif score < 740:
+            encouragement = "You're doing great! Lenders trust your consistent logging."
+        else:
+            encouragement = "Outstanding! You're in the top tier."
+
+        return jsonify({"answer": (
+            f"Your credit score is **{score}/850**.\n\n"
+            f"{encouragement}\n\n"
+            "💡 Build your score to 600 and you can quickly receive up to ₦5,000,000 to expand your business.\n\n"
+            "Tell me what you spent or earned today to keep improving!"
+        ), "tone": "income"})
 
 
     if 'breakdown' in text_lower or 'pillar' in text_lower or 'why is my score' in text_lower or 'what affects' in text_lower:

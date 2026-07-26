@@ -1387,15 +1387,19 @@ def process_user_command(user_id, text):
 
                 return jsonify({
                     "message": (
-                        f"📦 **Loan Summary**\n\n"
-                        f"• Amount: ₦{amount:,.2f}\n"
-                        f"• Product: {product}\n"
-                        f"• Supplier: {supplier_name}\n"
-                        f"• Interest ({int(interest_rate * 100)}%): ₦{total_interest:,.2f}\n"
-                        f"• Total to repay: ₦{total_repayable:,.2f}\n"
-                        f"• Duration: {dur_days} days (grace: {grace_days} days)\n"
-                        f"{repayment_msg}\n"
-                        f"Reply **'yes'** to confirm and I'll pay the supplier directly."
+                        f"```loan\n"
+                        f"💰  **LOAN SUMMARY**\n"
+                        f"──────────────────────────\n"
+                        f"📦  Product        {product}\n"
+                        f"🏪  Supplier       {supplier_name}\n"
+                        f"💰  Amount         ₦{amount:,.2f}\n"
+                        f"📊  Interest ({int(interest_rate * 100)}%)   ₦{total_interest:,.2f}\n"
+                        f"💵  Total to repay ₦{total_repayable:,.2f}\n"
+                        f"⏳  Duration       {dur_days} days (grace: {grace_days} days)\n"
+                        f"{'📆' if is_weekly else '🗓️'}  Repayment      {repayment_msg.strip()}\n"
+                        f"──────────────────────────\n"
+                        f"Reply **'yes'** to confirm and I'll pay the supplier directly.\n"
+                        f"```"
                     ),
                     "tone": "neutral"
                 })

@@ -260,7 +260,7 @@ def update_credit_score(conn, user_id):
         }
     }
 
-    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now()) ON CONFLICT (user_id) DO UPDATE SET score=EXCLUDED.score, logo=EXCLUDED.logo, updated_at=now()", (user_id, fico, logo))
+    cur.execute("INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now())", (user_id, fico, logo))
     conn.commit()
     cur.close()
     return breakdown   # so it can be used by the query handler

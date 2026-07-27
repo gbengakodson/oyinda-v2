@@ -67,8 +67,12 @@ def parse_intent_groq(text, user_id=None):
         "{...}\n"
         "```\n\n"
         "FIELDS in the JSON object:\n"
-        '- "intent": one of "expense", "income", "loan_taken", "loan_repaid", "investment", "savings", "correction", "question"\n'
-        '  - "correction" means the user is correcting a previous statement (e.g., "no, I meant 5000 not 500").\n'
+        '- "intent": one of "expense", "income", "loan_taken", "loan_repaid", "investment", "savings", "correction","withdrawal", "question"\n'
+        '- "account_number": string of digits, min 10, the bank account number.\n'
+        '- "bank_name": the bank name (e.g., Zenith, GTBank).\n'
+        '- "account_type": "savings", "current", or "corporate" if mentioned.\n'
+        '- "account_name": the name on the bank account, if provided.\n'
+        '- "correction" means the user is correcting a previous statement (e.g., "no, I meant 5000 not 500").\n'
         '- "product": the specific goods or service involved (e.g., "cooking gas", "data", "transport").\n'
         '- "amount": the monetary amount as a number (e.g., 5100).\n'
         '- "currency": three-letter code (NGN, USD, etc.) or null.\n'
@@ -94,6 +98,8 @@ def parse_intent_groq(text, user_id=None):
         'Response: intent=income, product=old phone, amount=50000, currency=NGN, category=other, confidence=high\n\n'
         'User: "hello"\n'
         'Response: intent=question, confidence=low\n\n'
+        'User: "send 5000 to 2176411819 zenith bank savings, Gbenga Odeyale"\n'
+        'Response: intent=withdrawal, amount=5000, account_number=2176411819, bank_name=zenith bank, account_type=savings, account_name=Gbenga Odeyale\n\n'
         'User: "no, gas #5100"\n'
         'Response: intent=correction, product=gas, amount=5100, currency=NGN, confidence=medium, correction_target=amount\n\n'
         'User: "i borrow 10k from my friend"\n'

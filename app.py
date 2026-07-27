@@ -943,9 +943,9 @@ def process_user_command(user_id, text):
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO pending_withdrawals (user_id, amount, bank_name, account_number, status)
-                VALUES (%s, %s, %s, %s, 'pending')
-            """, (user_id, amount, bank_name, account_number))
+                INSERT INTO pending_withdrawals (user_id, amount, bank_name, account_number, account_type, account_name, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+            """, (user_id, amount, bank_name, account_number, account_type, account_name))
             conn.commit()
             conn.close()
 
@@ -2678,43 +2678,7 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-        # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
-        swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)', text, re.IGNORECASE)
-        if swap_match:
-            amount = float(swap_match.group(1))
-            token_in = swap_match.group(2).upper()
-            token_out = swap_match.group(3).upper()
-            wallet_name = swap_match.group(4).strip().lower() or 'metamask'
 
-            accounts = get_user_connected_accounts(user_id)
-            wallet_account = None
-            for acc in accounts:
-                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
-                    wallet_account = acc
-                    break
-            if not wallet_account:
-                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
-            if not wallet_account:
-                return jsonify({"error": "No connected wallet found."}), 400
-
-            swap_payload = {
-                "token_in": token_in,
-                "token_out": token_out,
-                "amount": amount,
-                "wallet": wallet_account['id'],
-                "wallet_address": wallet_account['wallet_address'],
-                "network": wallet_account['network'],
-                "description": text
-            }
-            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
-            save_conversation(user_id, 'user', text)
-            return jsonify({
-                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
-                "tone": "neutral",
-                "event_id": event['event_id'],
-                "requires_confirmation": True,
-                "swap_payload": swap_payload
-            })
 
         # ---- DIRECT LOAN FROM SUPPLIER (triggered by marketplace button) ----
         loan_from_match = re.match(r'loan\s+from\s+(\S+)', text_lower)
@@ -3222,98 +3186,129 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
+        # ---- UNIFIED WITHDRAWAL / TRANSFER (AI‑first, then guided) ----
+        # Try to extract withdrawal details using Groq
+        groq_withdrawal = parse_intent_groq(text, user_id) if re.search(r'\d', text) else None
+        if groq_withdrawal and groq_withdrawal.get('intent') == 'withdrawal':
+            # Extract all fields the AI found
+            amount = groq_withdrawal.get('amount')
+            account_number = groq_withdrawal.get('account_number')
+            bank_name = groq_withdrawal.get('bank_name', '')
+            account_type = groq_withdrawal.get('account_type', '')
+            account_name = groq_withdrawal.get('account_name', '')
 
+            # If the account number looks like a phone number, treat as internal transfer
+            if account_number and len(account_number) == 11 and account_number.startswith('0'):
+                recipient_phone = account_number
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+                recip_row = cur.fetchone()
+                if not recip_row:
+                    conn.close()
+                    return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
+                recip_id = recip_row[0]
+                cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+                recip_wallet_row = cur.fetchone()
+                if not recip_wallet_row:
+                    conn.close()
+                    return jsonify({"message": "Recipient doesn't have an active wallet yet."})
+                sender_wallet = ensure_wallet(user_id)
+                if sender_wallet['balance'] < amount:
+                    conn.close()
+                    return jsonify({"message": "Insufficient wallet balance."})
 
-        # Internal transfer
-        send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
-        if send_match:
-            amount = float(send_match.group(1))
-            recipient_phone = send_match.group(2)
+                new_sender_balance = sender_wallet['balance'] - amount
+                new_recip_balance = float(recip_wallet_row[0]) + amount
+                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                            (new_sender_balance, user_id))
+                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                            (new_recip_balance, recip_id))
+                conn.commit()
+                conn.close()
+
+                sender_phone = get_user_facts(user_id).get('phone', '')
+                append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
+                append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+                    "tone": "income"
+                })
+
+            # Otherwise, it's a bank withdrawal – check required fields
+            missing_fields = []
+            if not amount: missing_fields.append('amount')
+            if not account_number: missing_fields.append('account number')
+            if not bank_name: missing_fields.append('bank name')
+
+            if missing_fields:
+                return jsonify({
+                    "message": f"I need a bit more info. Please provide: {', '.join(missing_fields)}.",
+                    "tone": "neutral"
+                })
+
+            # All required fields present – save the withdrawal request
+            wallet = ensure_wallet(user_id)
+            if wallet['balance'] < amount:
+                return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
+
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
-            recip_row = cur.fetchone()
-            if not recip_row:
-                conn.close()
-                return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
-            recip_id = recip_row[0]
-            cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
-            recip_wallet_row = cur.fetchone()
-            if not recip_wallet_row:
-                conn.close()
-                return jsonify(
-                    {"message": "Recipient doesn't have an active wallet yet. They need to verify their identity."})
-            sender_wallet = ensure_wallet(user_id)
-            if sender_wallet['balance'] < amount:
-                conn.close()
-                return jsonify({"message": "Insufficient wallet balance."})
-
-            new_sender_balance = sender_wallet['balance'] - amount
-            new_recip_balance = float(recip_wallet_row[0]) + amount
-            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                        (new_sender_balance, user_id))
-            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                        (new_recip_balance, recip_id))
+            cur.execute("""
+                INSERT INTO pending_withdrawals
+                (user_id, amount, bank_name, account_number, account_type, account_name, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+            """, (user_id, amount, bank_name, account_number, account_type, account_name))
             conn.commit()
             conn.close()
 
-            sender_phone = get_user_facts(user_id).get('phone', '')
-            append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
-            append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
-            save_conversation(user_id, 'user', text)
             return jsonify({
-                "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
                 "tone": "income"
             })
 
-        # External withdrawal
-        withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+(\d{3})\s+(\d{10})', text, re.IGNORECASE)
-        if withdraw_match:
-            amount = float(withdraw_match.group(1))
-            bank_code = withdraw_match.group(2)
-            account_number = withdraw_match.group(3)
-            wallet = ensure_wallet(user_id)
-            if wallet['balance'] < amount:
-                return jsonify({"message": "Insufficient wallet balance."})
 
-            mono = MonoReservedAccount()
-            try:
-                result = mono.payout(amount, bank_code, account_number, f"Oyinda withdrawal for {user_id}")
-                if result.get('status') == 'success':
-                    new_balance = wallet['balance'] - amount
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                                (new_balance, user_id))
-                    conn.commit()
-                    conn.close()
-                    append_event(user_id, user_id, 'WalletDebited',
-                                 {"amount": amount, "bank_code": bank_code, "account_number": account_number,
-                                  "type": "withdrawal"})
-                    save_conversation(user_id, 'user', text)
-                    return jsonify({
-                        "message": f"🏦 Withdrawal of ₦{amount:,.2f} to {bank_code}/{account_number} initiated. New balance: ₦{new_balance:,.2f}",
-                        "tone": "income"
-                    })
-                else:
-                    return jsonify({"message": f"Payout failed: {result.get('message', 'unknown error')}"})
-            except Exception as e:
-                return jsonify({"message": f"Withdrawal error: {str(e)}"})
+        # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)
+        swap_match = re.match(r'swap\s+(\d+\.?\d*)\s*(\w+)\s+(?:for|to)\s+(\w+)\s+(?:on|in|using|from)?\s*(.*)',
+                              text, re.IGNORECASE)
+        if swap_match:
+            amount = float(swap_match.group(1))
+            token_in = swap_match.group(2).upper()
+            token_out = swap_match.group(3).upper()
+            wallet_name = swap_match.group(4).strip().lower() or 'metamask'
 
+            accounts = get_user_connected_accounts(user_id)
+            wallet_account = None
+            for acc in accounts:
+                if acc['type'] == 'wallet' and wallet_name in acc['label'].lower():
+                    wallet_account = acc
+                    break
+            if not wallet_account:
+                wallet_account = next((acc for acc in accounts if acc['type'] == 'wallet'), None)
+            if not wallet_account:
+                return jsonify({"error": "No connected wallet found."}), 400
 
-
-
-
-        if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
-            append_event(user_id, user_id, 'PowerStatusChanged', {
-                "status": "off",
-                "timestamp": datetime.utcnow().isoformat(),
-                "description": "Electricity went off"
-            })
+            swap_payload = {
+                "token_in": token_in,
+                "token_out": token_out,
+                "amount": amount,
+                "wallet": wallet_account['id'],
+                "wallet_address": wallet_account['wallet_address'],
+                "network": wallet_account['network'],
+                "description": text
+            }
+            event = append_event(user_id, wallet_account['id'], 'SwapRequested', swap_payload)
+            save_conversation(user_id, 'user', text)
             return jsonify({
-                "message": "I don record am. Light don go. I dey track how many hours you get this month.",
-                "tone": "neutral"
+                "message": f"Swapping {amount} {token_in} for {token_out} on {wallet_account['label']}. Confirm in your wallet.",
+                "tone": "neutral",
+                "event_id": event['event_id'],
+                "requires_confirmation": True,
+                "swap_payload": swap_payload
             })
+
+
 
 
         send_match = re.match(r'send\s+(\d+\.?\d*)\s+to\s+(\d{11})', text, re.IGNORECASE)
@@ -3439,6 +3434,18 @@ def process_user_command(user_id, text):
             })
 
 
+        if any(phrase in text_lower for phrase in ['light don go', 'light go', 'power don go', 'nepa take light']):
+            append_event(user_id, user_id, 'PowerStatusChanged', {
+                "status": "off",
+                "timestamp": datetime.utcnow().isoformat(),
+                "description": "Electricity went off"
+            })
+            return jsonify({
+                "message": "I don record am. Light don go. I dey track how many hours you get this month.",
+                "tone": "neutral"
+            })
+
+
         if any(phrase in text_lower for phrase in ['loan status', 'my loan', 'check my loan']):
             conn = get_conn()
             cur = conn.cursor()
@@ -3465,6 +3472,8 @@ def process_user_command(user_id, text):
                 })
             else:
                 return jsonify({"message": "You have no active inventory loan."})
+
+
 
         # ---------- MANUAL LOAN REPAYMENT ----------
         # Catch "repay 5000" or "repay my loan" etc.
@@ -6102,7 +6111,8 @@ def admin_pending_withdrawals():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT pw.id, u.name, pw.amount, pw.bank_name, pw.account_number, pw.created_at
+        SELECT pw.id, u.name, pw.amount, pw.bank_name, pw.account_number, 
+               pw.account_type, pw.account_name, pw.created_at
         FROM pending_withdrawals pw
         JOIN users u ON pw.user_id = u.id
         WHERE pw.status = 'pending'

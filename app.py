@@ -927,33 +927,95 @@ def process_user_command(user_id, text):
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
-        # ---- WITHDRAWAL REQUEST ----
-        withdraw_match = re.match(r'withdraw\s+(\d+\.?\d*)\s+to\s+([a-zA-Z\s]+)\s+(\d{10})', text, re.IGNORECASE)
-        if withdraw_match:
-            amount = float(withdraw_match.group(1))
-            bank_name = withdraw_match.group(2).strip()
-            account_number = withdraw_match.group(3)
 
-            # Check wallet balance
+
+        # ---- UNIFIED WITHDRAWAL / TRANSFER (AI‑first, then guided) ----
+        # Try to extract withdrawal details using Groq
+        groq_withdrawal = parse_intent_groq(text, user_id) if re.search(r'\d', text) else None
+        if groq_withdrawal and groq_withdrawal.get('intent') == 'withdrawal':
+            # Extract all fields the AI found
+            amount = groq_withdrawal.get('amount')
+            account_number = groq_withdrawal.get('account_number')
+            bank_name = groq_withdrawal.get('bank_name', '')
+            account_type = groq_withdrawal.get('account_type', '')
+            account_name = groq_withdrawal.get('account_name', '')
+
+            # If the account number looks like a phone number, treat as internal transfer
+            if account_number and len(account_number) == 11 and account_number.startswith('0'):
+                recipient_phone = account_number
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
+                recip_row = cur.fetchone()
+                if not recip_row:
+                    conn.close()
+                    return jsonify(
+                        {"message": "User with that phone number not found. Ask them to join Oyinda first."})
+                recip_id = recip_row[0]
+                cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
+                recip_wallet_row = cur.fetchone()
+                if not recip_wallet_row:
+                    conn.close()
+                    return jsonify({"message": "Recipient doesn't have an active wallet yet."})
+                sender_wallet = ensure_wallet(user_id)
+                if sender_wallet['balance'] < amount:
+                    conn.close()
+                    return jsonify({"message": "Insufficient wallet balance."})
+
+                new_sender_balance = sender_wallet['balance'] - amount
+                new_recip_balance = float(recip_wallet_row[0]) + amount
+                cur.execute(
+                    "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_sender_balance, user_id))
+                cur.execute(
+                    "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_recip_balance, recip_id))
+                conn.commit()
+                conn.close()
+
+                sender_phone = get_user_facts(user_id).get('phone', '')
+                append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
+                append_event(recip_id, recip_id, 'WalletCredited',
+                             {"amount": amount, "from_phone": sender_phone})
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
+                    "tone": "income"
+                })
+
+            # Otherwise, it's a bank withdrawal – check required fields
+            missing_fields = []
+            if not amount: missing_fields.append('amount')
+            if not account_number: missing_fields.append('account number')
+            if not bank_name: missing_fields.append('bank name')
+
+            if missing_fields:
+                return jsonify({
+                    "message": f"I need a bit more info. Please provide: {', '.join(missing_fields)}.",
+                    "tone": "neutral"
+                })
+
+            # All required fields present – save the withdrawal request
             wallet = ensure_wallet(user_id)
             if wallet['balance'] < amount:
                 return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
 
-            # Save withdrawal request
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO pending_withdrawals (user_id, amount, bank_name, account_number, account_type, account_name, status)
+                INSERT INTO pending_withdrawals
+                (user_id, amount, bank_name, account_number, account_type, account_name, status)
                 VALUES (%s, %s, %s, %s, %s, %s, 'pending')
             """, (user_id, amount, bank_name, account_number, account_type, account_name))
             conn.commit()
             conn.close()
 
-            # Notify user
             return jsonify({
-                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) has been submitted. The admin will process it shortly.",
+                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
                 "tone": "income"
             })
+
+
 
         # ---- ADMIN CHECK (used by frontend to show admin button) ----
         if text_lower == 'am i admin':
@@ -3186,87 +3248,7 @@ def process_user_command(user_id, text):
                 "tone": "neutral"
             })
 
-        # ---- UNIFIED WITHDRAWAL / TRANSFER (AI‑first, then guided) ----
-        # Try to extract withdrawal details using Groq
-        groq_withdrawal = parse_intent_groq(text, user_id) if re.search(r'\d', text) else None
-        if groq_withdrawal and groq_withdrawal.get('intent') == 'withdrawal':
-            # Extract all fields the AI found
-            amount = groq_withdrawal.get('amount')
-            account_number = groq_withdrawal.get('account_number')
-            bank_name = groq_withdrawal.get('bank_name', '')
-            account_type = groq_withdrawal.get('account_type', '')
-            account_name = groq_withdrawal.get('account_name', '')
 
-            # If the account number looks like a phone number, treat as internal transfer
-            if account_number and len(account_number) == 11 and account_number.startswith('0'):
-                recipient_phone = account_number
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
-                recip_row = cur.fetchone()
-                if not recip_row:
-                    conn.close()
-                    return jsonify({"message": "User with that phone number not found. Ask them to join Oyinda first."})
-                recip_id = recip_row[0]
-                cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
-                recip_wallet_row = cur.fetchone()
-                if not recip_wallet_row:
-                    conn.close()
-                    return jsonify({"message": "Recipient doesn't have an active wallet yet."})
-                sender_wallet = ensure_wallet(user_id)
-                if sender_wallet['balance'] < amount:
-                    conn.close()
-                    return jsonify({"message": "Insufficient wallet balance."})
-
-                new_sender_balance = sender_wallet['balance'] - amount
-                new_recip_balance = float(recip_wallet_row[0]) + amount
-                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                            (new_sender_balance, user_id))
-                cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                            (new_recip_balance, recip_id))
-                conn.commit()
-                conn.close()
-
-                sender_phone = get_user_facts(user_id).get('phone', '')
-                append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
-                append_event(recip_id, recip_id, 'WalletCredited', {"amount": amount, "from_phone": sender_phone})
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
-                    "tone": "income"
-                })
-
-            # Otherwise, it's a bank withdrawal – check required fields
-            missing_fields = []
-            if not amount: missing_fields.append('amount')
-            if not account_number: missing_fields.append('account number')
-            if not bank_name: missing_fields.append('bank name')
-
-            if missing_fields:
-                return jsonify({
-                    "message": f"I need a bit more info. Please provide: {', '.join(missing_fields)}.",
-                    "tone": "neutral"
-                })
-
-            # All required fields present – save the withdrawal request
-            wallet = ensure_wallet(user_id)
-            if wallet['balance'] < amount:
-                return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
-
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO pending_withdrawals
-                (user_id, amount, bank_name, account_number, account_type, account_name, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, amount, bank_name, account_number, account_type, account_name))
-            conn.commit()
-            conn.close()
-
-            return jsonify({
-                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
-                "tone": "income"
-            })
 
 
         # 4. Swap (crypto) – (a duplicate here is okay, but we already caught it above; keep for safety)

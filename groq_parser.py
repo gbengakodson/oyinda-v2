@@ -59,43 +59,45 @@ def parse_intent_groq(text, user_id=None):
         return None
 
     prompt = (
-        "You are a compassionate, emotionally intelligent financial interpreter for an African user. "
-        "The user may speak in English, Nigerian Pidgin, Yoruba, Igbo, Hausa, or a mix. "
-        "They could be sharing a simple expense, expressing worry about money, or just making small talk.\n\n"
-        "Your task is to extract structured financial information ONLY if the user is clearly recording a money event. "
-        "If the message is a greeting, a question, an emotion, or just chat, return a simple question marker. "
-        "Do NOT force a transaction where there is none.\n\n"
+        "You are a highly accurate financial data extraction AI for Nigerian users. "
+        "The user may speak English, Pidgin, Yoruba, Igbo, or Hausa. "
+        "Extract the user's financial intent and details from their message. "
         "Return ONLY a valid JSON object wrapped in a markdown code block:\n"
         "```json\n"
         "{...}\n"
-        "```\n"
-        "Do not include any other text.\n\n"
-        "FIELDS:\n"
-        '- "type": one of "expense", "income", "transfer", "liability", "asset", "intention", "swap", "send_token", "question"\n'
-        '  - "question" is for any non‑financial chat: greetings, "how are you", "I\'m tired", "thank you", etc.\n'
-        '  - Use "expense" if they spent money on goods or services.\n'
-        '  - Use "income" if they received money.\n'
-        '  - Use "liability" if they borrowed money.\n'
-        '  - Use "asset" if they lent money or sold something they owned.\n'
-        '  - "intention" if they plan to save or buy something.\n'
-        '  - "swap" / "send_token" only for clear crypto commands.\n'
-        '- "amount": number or null\n'
-        '- "currency": three‑letter code (e.g., NGN, USD) or null\n'
-        '- "category": one of food, transport, housing, utilities, entertainment, health, clothing, education, income, loan, investment, other\n'
-        '- "description": a short, caring summary (e.g., "bought rice for the family")\n'
-        '- "has_amount": true/false\n\n'
-        "EMOTIONAL CUES:\n"
-        "If the user sounds stressed (e.g., 'I don\'t know how I will pay school fees'), still extract the type as 'intention' or 'question', but include a note in description about their emotion.\n"
-        "If they are just sharing a feeling without a specific money event, use type: 'question'.\n\n"
+        "```\n\n"
+        "FIELDS in the JSON object:\n"
+        '- "intent": one of "expense", "income", "loan_taken", "loan_repaid", "investment", "savings", "correction", "question"\n'
+        '  - "correction" means the user is correcting a previous statement (e.g., "no, I meant 5000 not 500").\n'
+        '- "product": the specific goods or service involved (e.g., "cooking gas", "data", "transport").\n'
+        '- "amount": the monetary amount as a number (e.g., 5100).\n'
+        '- "currency": three-letter code (NGN, USD, etc.) or null.\n'
+        '- "quantity": the numerical quantity of goods purchased (e.g., 3) or null.\n'
+        '- "unit": the unit of measure (e.g., "kg", "litres", "mudu", "derica") or null.\n'
+        '- "category": one of "food", "transport", "housing", "utilities", "health", "education", "investment", "savings", "loan", "income", "entertainment", "clothing", "personal care", "gift", "tax", "insurance", "subscription", "other".\n'
+        '- "location": city or market where the transaction happened (e.g., "ibadan", "dugbe") or null.\n'
+        '- "description": a short, clean summary of the transaction (e.g., "bought cooking gas 3kg").\n'
+        '- "confidence": "high", "medium", or "low" based on how certain you are about all the extracted fields.\n'
+        '- "correction_target": if intent is "correction", include a brief description of what is being corrected (e.g., "amount", "product").\n\n'
+        "CRITICAL RULES:\n"
+        "- For phrases like 'i buy cooking gas 5100 for 3kg', extract: intent=expense, product=cooking gas, amount=5100, currency=NGN, quantity=3, unit=kg, category=utilities.\n"
+        "- Ignore numbers that are clearly quantities or units (e.g., '3kg', '2 litres') when extracting the monetary amount.\n"
+        "- For corrections ('no, gas #5100'), set intent=correction.\n"
+        "- If the user is asking a question, greeting, or not describing a transaction, set confidence=low and intent=question.\n"
+        "- Use common sense: 'gas' alone could be cooking gas (utilities) or car fuel (transport). If the user says 'cooking gas', always use utilities. If they just say 'gas', use context or default to utilities.\n\n"
         "EXAMPLES:\n"
-        'User: "I dey happy today, I sell all my goods"\n'
-        '→ type: income, amount: null, description: "sold all goods, feeling happy"\n'
-        'User: "omo, I tire for this country"\n'
-        '→ type: question, description: "expressing frustration"\n'
-        'User: "I buy rice 2k for market"\n'
-        '→ type: expense, amount: 2000, category: food\n'
+        'User: "i buy cooking gas 5100 for 3kg"\n'
+        'Response: intent=expense, product=cooking gas, amount=5100, currency=NGN, quantity=3, unit=kg, category=utilities, confidence=high\n\n'
+        'User: "i drop 5k for data"\n'
+        'Response: intent=expense, product=data, amount=5000, currency=NGN, category=utilities, confidence=high\n\n'
+        'User: "i sell my old phone 50k"\n'
+        'Response: intent=income, product=old phone, amount=50000, currency=NGN, category=other, confidence=high\n\n'
         'User: "hello"\n'
-        '→ type: question\n\n'
+        'Response: intent=question, confidence=low\n\n'
+        'User: "no, gas #5100"\n'
+        'Response: intent=correction, product=gas, amount=5100, currency=NGN, confidence=medium, correction_target=amount\n\n'
+        'User: "i borrow 10k from my friend"\n'
+        'Response: intent=loan_taken, amount=10000, currency=NGN, category=loan, confidence=high\n\n'
         f'User message: "{text}"\n'
         "JSON:"
     )

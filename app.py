@@ -846,6 +846,49 @@ def login():
 def process_user_command(user_id, text):
     from core import get_user_facts
     text_lower = text.lower().strip()
+
+    # ---- AI‑FIRST PARSING (for any text with a number) ----
+    if re.search(r'\d', text):
+        groq_result = parse_intent_groq(text, user_id)
+        if groq_result and groq_result.get('confidence') == 'high' and groq_result.get('intent') != 'question':
+            # Direct logging based on intent
+            intent = groq_result.get('intent')
+            if intent == 'expense':
+                payload = {
+                    "amount": groq_result.get('amount'),
+                    "currency": groq_result.get('currency', 'NGN'),
+                    "category": groq_result.get('category', 'other'),
+                    "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                    "description": groq_result.get('description', text),
+                    "quantity": groq_result.get('quantity'),
+                    "unit": groq_result.get('unit'),
+                    "location": groq_result.get('location'),
+                }
+                payload = {k: v for k, v in payload.items() if v is not None}
+                event = append_event(user_id, user_id, 'ExpenseLogged', payload)
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"Logged expense: {groq_result.get('product', 'purchase')} – ₦{groq_result.get('amount'):,.2f} ({groq_result.get('category', 'other')})",
+                    "tone": "neutral"
+                })
+            elif intent == 'income':
+                payload = {
+                    "amount": groq_result.get('amount'),
+                    "currency": groq_result.get('currency', 'NGN'),
+                    "category": 'income',
+                    "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                    "description": groq_result.get('description', text),
+                }
+                event = append_event(user_id, user_id, 'IncomeReceived', payload)
+                save_conversation(user_id, 'user', text)
+                return jsonify({
+                    "message": f"Logged income: {groq_result.get('product', 'income')} – ₦{groq_result.get('amount'):,.2f}",
+                    "tone": "income"
+                })
+            # … other intents can be added here …
+
+        # If Groq returns low/medium confidence, fall through to rule‑based system
+
     # --- MULTILINGUAL SUPPORT: translate non-English messages to English ---
     original_text = text
     # Simple detection: if text contains Yoruba, Igbo, or Hausa characters, translate

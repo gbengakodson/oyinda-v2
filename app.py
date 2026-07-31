@@ -1439,10 +1439,8 @@ def process_user_command(user_id, text):
 
                     """, (user_id, lookback_start))
 
-                    total_income_amount = cur_turnover.fetchone()[0] or 0
-
+                    total_income_amount = float(cur_turnover.fetchone()[0] or 0)
                     if total_income_amount > 0:
-
                         avg_monthly = total_income_amount / (dur_days / 30.0)
 
                         max_by_turnover = avg_monthly * 2

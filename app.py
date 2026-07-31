@@ -1668,6 +1668,22 @@ def process_user_command(user_id, text):
                     return jsonify({"message": "Loan cancelled."})
 
 
+            elif state == "tax_warning_for_large_loan":
+                reply_lower = reply.lower()
+                if any(w in reply_lower for w in ['continue', 'proceed', 'go ahead', 'ok']):
+                    # Move to product step
+                    p["state"] = "direct_loan_product"
+                    return jsonify(
+                        {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+                elif any(w in reply_lower for w in ['file my tax', 'tax', 'file tax']):
+                    # Redirect to tax filing
+                    pending_transaction.pop(user_id, None)
+                    return jsonify(
+                        {"message": "Let's file your tax. How much did you earn last year?", "tone": "neutral"})
+                else:
+                    return jsonify({"message": "Please tap 'Continue' or 'File my tax'.", "tone": "neutral"})
+
+
 
             elif state == "external_supplier_phone":
                 phone = reply.strip()

@@ -1356,51 +1356,52 @@ def process_user_command(user_id, text):
                     })
 
                 # ---- SPREAD REQUIREMENT (with loyalty grace) ----
-                credit_score = get_credit_score(user_id)['score']
+                # Open a fresh connection that lives only for this check
+                conn_spread = get_conn()
+                cur_spread = conn_spread.cursor()
+                try:
+                    credit_score = get_credit_score(user_id)['score']
 
-                # Minimum total transactions – relaxed for trusted users
-                if credit_score > 300:
-                    if total_logs < 5:
-                        conn.close()
+                    # Minimum total transactions – relaxed for trusted users
+                    if credit_score > 300:
+                        if total_logs < 5:
+                            return jsonify({
+                                "message": f"Even as a trusted user, you need at least 5 transactions in the last {dur_days} days. Keep logging!",
+                                "tone": "warning"
+                            })
+                        # Relaxed spread: need only ceil(lookback_days / 14) distinct income days
+                        min_income_days = max(1, int(dur_days / 14))
+                    else:
+                        if total_logs < 10:
+                            return jsonify({
+                                "message": f"You need at least 10 transactions in the last {dur_days} days. Keep logging!",
+                                "tone": "warning"
+                            })
+                        # Normal spread: need ceil(lookback_days / 7) distinct income days
+                        min_income_days = max(1, int(dur_days / 7))
+
+                    # Fetch distinct income days (conn still open from ratio query)
+                    cur_spread.execute("""
+                        SELECT COUNT(DISTINCT created_at::date)
+                        FROM events
+                        WHERE user_id = %s
+                          AND event_type = 'IncomeReceived'
+                          AND created_at::date >= %s
+                    """, (user_id, lookback_start))
+                    distinct_income_days = cur_spread.fetchone()[0]
+
+                    if distinct_income_days < min_income_days:
+                        needed_days = min_income_days - distinct_income_days
                         return jsonify({
-                            "message": f"Even as a trusted user, you need at least 5 transactions in the last {dur_days} days. Keep logging!",
+                            "message": (
+                                f"Your income entries appear on only {distinct_income_days} separate day(s). "
+                                f"They need to be spread over at least {min_income_days} different days in the last {dur_days} days. "
+                                f"Try logging income on {needed_days} more separate day(s)."
+                            ),
                             "tone": "warning"
                         })
-                    # Relaxed spread: need only ceil(lookback_days / 14) distinct income days
-                    min_income_days = max(1, int(dur_days / 14))
-                else:
-                    if total_logs < 10:
-                        conn.close()
-                        return jsonify({
-                            "message": f"You need at least 10 transactions in the last {dur_days} days. Keep logging!",
-                            "tone": "warning"
-                        })
-                    # Normal spread: need ceil(lookback_days / 7) distinct income days
-                    min_income_days = max(1, int(dur_days / 7))
-
-                # Fetch distinct income days (conn still open from ratio query)
-                cur.execute("""
-                    SELECT COUNT(DISTINCT created_at::date)
-                    FROM events
-                    WHERE user_id = %s
-                      AND event_type = 'IncomeReceived'
-                      AND created_at::date >= %s
-                """, (user_id, lookback_start))
-                distinct_income_days = cur.fetchone()[0]
-
-                if distinct_income_days < min_income_days:
-                    needed_days = min_income_days - distinct_income_days
-                    conn.close()
-                    return jsonify({
-                        "message": (
-                            f"Your income entries appear on only {distinct_income_days} separate day(s). "
-                            f"They need to be spread over at least {min_income_days} different days in the last {dur_days} days. "
-                            f"Try logging income on {needed_days} more separate day(s)."
-                        ),
-                        "tone": "warning"
-                    })
-
-                conn.close()
+                finally:
+                    conn_spread.close()
 
 
                 # ---- TURNOVER‑BASED CAP (2× average monthly revenue) ----

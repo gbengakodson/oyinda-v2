@@ -1126,6 +1126,7 @@ def process_user_command(user_id, text):
 
 
 
+
             elif state == "direct_loan_amount":
 
                 reply_lower = reply.lower()
@@ -1135,40 +1136,18 @@ def process_user_command(user_id, text):
                 income_keywords = ['earned', 'received', 'made', 'got paid', 'income']
 
                 expense_keywords = ['spent', 'bought', 'paid', 'expense']
-                # ---- Friendly exit if the user is confused or wants to stop ----
-                exit_words = [
-                    'ok', 'okay', 'cancel', 'stop', 'no', 'never mind', 'forget',
-                    'what', 'how', 'help', 'menu', 'balance', 'credit score',
-                    'i don\'t know', 'i dont know', 'nothing'
-                ]
-                if any(w in reply_lower for w in exit_words) or len(reply_lower) < 3:
-                    pending_transaction.pop(user_id, None)
-                    return jsonify({
-                        "message": "No problem! How can I help you instead?",
-                        "tone": "neutral"
-                    })
 
                 if any(w in reply_lower for w in income_keywords) or any(w in reply_lower for w in expense_keywords):
-
-                    # Temporarily remove ourselves so the main command handler can log this entry
 
                     saved_state = pending_transaction[user_id]
 
                     pending_transaction.pop(user_id, None)
 
-                    resp = process_user_command(user_id, reply)  # this will log the transaction
-
-                    # Restore the loan state
+                    resp = process_user_command(user_id, reply)
 
                     pending_transaction[user_id] = saved_state
 
-                    # Re‑check ratio with the same duration that will be used for this loan
-
-                    # (we already have supplier info, but we need a tentative amount to get the tier duration)
-
-                    # Use a temporary amount of 5000 to get a default duration (21 days) for the re‑check.
-
-                    # If the user hasn't told us an amount yet, we use the lowest tier duration (21 days).
+                    # Re‑check ratio with a tentative amount
 
                     tentative_amount = 5000
 
@@ -1179,7 +1158,7 @@ def process_user_command(user_id, text):
 
                     except ValueError:
 
-                        dur_days = 21  # fallback
+                        dur_days = 21
 
                     lookback_start = (datetime.utcnow().date() - timedelta(days=dur_days)).strftime('%Y-%m-%d')
 
@@ -1237,8 +1216,6 @@ def process_user_command(user_id, text):
 
                     else:
 
-                        # Ratio satisfied – move to product step
-
                         saved_state["state"] = "direct_loan_product"
 
                         return jsonify({
@@ -1264,24 +1241,34 @@ def process_user_command(user_id, text):
                                        "tone": "neutral"})
 
                 # ---- RELAXED TIER 1: Allow any user with score ≥20 to borrow up to 10k without ratio checks ----
+
                 if amount <= 10000 and get_credit_score(user_id)['score'] >= 20:
-                    # Skip all ratio, spread, turnover checks
-                    # Set default tier parameters for 5k-10k
                     dur_days, grace_days, interest_rate = 21, 3, 0.10
+
                     total_interest = amount * interest_rate
+
                     total_repayable = amount + total_interest
+
                     daily_amount = round(total_repayable / (dur_days - grace_days), 2)
+
                     p["data"]["amount"] = amount
+
                     p["data"]["interest_rate"] = interest_rate
+
                     p["data"]["total_repayable"] = total_repayable
+
                     p["data"]["daily_amount"] = daily_amount
+
                     p["data"]["duration_days"] = dur_days
+
                     p["data"]["grace_days"] = grace_days
+
                     p["state"] = "direct_loan_product"
+
                     return jsonify(
                         {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
 
-                # Check expense/income ratio using the tier's duration
+                # Get loan terms and validate
 
                 try:
 
@@ -1290,6 +1277,8 @@ def process_user_command(user_id, text):
                 except ValueError as e:
 
                     return jsonify({"message": str(e), "tone": "warning"})
+
+                # ---- RATIO CHECK (fresh connection) ----
 
                 lookback_start = (datetime.utcnow().date() - timedelta(days=dur_days)).strftime('%Y-%m-%d')
 
@@ -1324,9 +1313,7 @@ def process_user_command(user_id, text):
                 if total_logs < 10:
                     return jsonify({
 
-                        "message": f"You need at least 10 transactions in the last {dur_days} days to apply. "
-
-                                   "Keep telling me your expenses and income!",
+                        "message": f"You need at least 10 transactions in the last {dur_days} days to apply. Keep logging!",
 
                         "tone": "warning"
 
@@ -1355,107 +1342,182 @@ def process_user_command(user_id, text):
 
                     })
 
-                # ---- SPREAD REQUIREMENT (with loyalty grace) ----
-                # Open a fresh connection that lives only for this check
+                # ---- SPREAD REQUIREMENT (fresh connection) ----
+
                 conn_spread = get_conn()
+
                 cur_spread = conn_spread.cursor()
+
                 try:
+
                     credit_score = get_credit_score(user_id)['score']
 
-                    # Minimum total transactions – relaxed for trusted users
                     if credit_score > 300:
+
                         if total_logs < 5:
                             return jsonify({
+
                                 "message": f"Even as a trusted user, you need at least 5 transactions in the last {dur_days} days. Keep logging!",
+
                                 "tone": "warning"
+
                             })
-                        # Relaxed spread: need only ceil(lookback_days / 14) distinct income days
+
                         min_income_days = max(1, int(dur_days / 14))
+
                     else:
+
                         if total_logs < 10:
                             return jsonify({
+
                                 "message": f"You need at least 10 transactions in the last {dur_days} days. Keep logging!",
+
                                 "tone": "warning"
+
                             })
-                        # Normal spread: need ceil(lookback_days / 7) distinct income days
+
                         min_income_days = max(1, int(dur_days / 7))
 
-                    # Fetch distinct income days (conn still open from ratio query)
                     cur_spread.execute("""
+
                         SELECT COUNT(DISTINCT created_at::date)
+
                         FROM events
+
                         WHERE user_id = %s
+
                           AND event_type = 'IncomeReceived'
+
                           AND created_at::date >= %s
+
                     """, (user_id, lookback_start))
+
                     distinct_income_days = cur_spread.fetchone()[0]
 
                     if distinct_income_days < min_income_days:
                         needed_days = min_income_days - distinct_income_days
+
                         return jsonify({
+
                             "message": (
+
                                 f"Your income entries appear on only {distinct_income_days} separate day(s). "
+
                                 f"They need to be spread over at least {min_income_days} different days in the last {dur_days} days. "
+
                                 f"Try logging income on {needed_days} more separate day(s)."
+
                             ),
+
                             "tone": "warning"
+
                         })
+
                 finally:
+
                     conn_spread.close()
 
+                # ---- TURNOVER CAP (fresh connection) ----
 
-                # ---- TURNOVER‑BASED CAP (2× average monthly revenue) ----
-                cur.execute("""
-                    SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)
-                    FROM events
-                    WHERE user_id = %s
-                      AND event_type = 'IncomeReceived'
-                      AND created_at::date >= %s
-                """, (user_id, lookback_start))
-                total_income_amount = cur.fetchone()[0] or 0
-                if total_income_amount > 0:
-                    avg_monthly = total_income_amount / (dur_days / 30.0)
-                    max_by_turnover = avg_monthly * 2
-                    if amount > max_by_turnover:
-                        conn.close()
-                        return jsonify({
-                            "message": (
-                                f"Your average monthly revenue in the last {dur_days} days is ₦{avg_monthly:,.2f}, "
-                                f"so you can borrow up to ₦{max_by_turnover:,.2f} (2× your monthly turnover). "
-                                f"Try a smaller amount or continue logging income to increase your turnover."
-                            ),
-                            "tone": "warning"
-                        })
-                # (if total_income_amount is 0, we can skip the cap or set a default minimum – we'll allow up to the tier minimum)
+                conn_turnover = get_conn()
+
+                cur_turnover = conn_turnover.cursor()
+
+                try:
+
+                    cur_turnover.execute("""
+
+                        SELECT COALESCE(SUM((payload->>'amount')::numeric), 0)
+
+                        FROM events
+
+                        WHERE user_id = %s
+
+                          AND event_type = 'IncomeReceived'
+
+                          AND created_at::date >= %s
+
+                    """, (user_id, lookback_start))
+
+                    total_income_amount = cur_turnover.fetchone()[0] or 0
+
+                    if total_income_amount > 0:
+
+                        avg_monthly = total_income_amount / (dur_days / 30.0)
+
+                        max_by_turnover = avg_monthly * 2
+
+                        if amount > max_by_turnover:
+                            return jsonify({
+
+                                "message": (
+
+                                    f"Your average monthly revenue in the last {dur_days} days is ₦{avg_monthly:,.2f}, "
+
+                                    f"so you can borrow up to ₦{max_by_turnover:,.2f} (2× your monthly turnover). "
+
+                                    f"Try a smaller amount or continue logging income to increase your turnover."
+
+                                ),
+
+                                "tone": "warning"
+
+                            })
+
+                finally:
+
+                    conn_turnover.close()
 
                 # ---- TAX SOFT‑REQUIREMENT (for loans ≥ 200k) ----
+
                 if amount >= 200000:
-                    # Check if user has filed tax (look for TaxPaid event or fact)
+
+                    from core import get_user_facts
 
                     facts = get_user_facts(user_id)
+
                     has_filed_tax = facts.get('tax_filed') == 'true'
+
                     if not has_filed_tax:
                         p["state"] = "tax_warning_for_large_loan"
+
                         p["data"]["amount"] = amount
+
                         p["data"]["interest_rate"] = interest_rate
+
                         p["data"]["duration_days"] = dur_days
+
                         p["data"]["grace_days"] = grace_days
+
                         return jsonify({
+
                             "message": (
+
                                 f"Just so you know, for loans of ₦200,000 and above, "
+
                                 "you'll need to file your tax. You can still proceed, "
+
                                 "but I recommend filing your tax soon.\n\n"
+
                                 "Tap **'Continue'** to proceed with the loan, or **'File my tax'** to do it now."
+
                             ),
+
                             "tone": "warning",
+
                             "feedback_prompt": {
+
                                 "context": "tax_warning",
+
                                 "question": "What would you like to do?",
+
                                 "options": ["Continue", "File my tax"]
+
                             }
+
                         })
 
-                # Store and move on
+                # ---- STORE AND MOVE ON ----
 
                 total_interest = amount * interest_rate
 

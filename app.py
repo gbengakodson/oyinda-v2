@@ -1163,47 +1163,208 @@ def process_user_command(user_id, text):
                 p["data"]["amount"] = amount
                 p["state"] = "collect_withdrawal_details"
                 return jsonify({
-                    "message": "Enter the bank name, account number, and account type. For example: '2176411819, zenith bank, savings'",
+                    "message": "Enter the bank name, account number, and account type.",
                     "tone": "neutral"
                 })
 
-            elif state == "collect_withdrawal_details":
-                # Extract details from the user's reply
-                parts = reply.split(',')
-                account_number = ''
-                bank_name = ''
-                account_type = ''
-                for part in parts:
-                    part = part.strip()
-                    if re.fullmatch(r'\d{10,}', part):
-                        account_number = part
-                    elif any(word in part.lower() for word in
-                             ['zenith', 'gtb', 'access', 'first', 'uba', 'union', 'wema', 'polaris', 'sterling', 'kuda',
-                              'opay', 'palmpay', 'moniepoint']):
-                        bank_name = part
-                    elif any(word in part.lower() for word in ['savings', 'current', 'corporate']):
-                        account_type = part
 
-                if not account_number or not bank_name:
+            elif state == "collect_withdrawal_details":
+
+                # Extract details from the user's reply
+
+                reply_lower = reply.lower()
+
+                # Common bank names and their misspellings
+
+                bank_names = [
+
+                    'zenith', 'zinith', 'zenth', 'zenit',
+
+                    'gtb', 'gtbank', 'guaranty', 'guarantee',
+
+                    'access', 'acces', 'acess',
+
+                    'first bank', 'firstbank', 'first',
+
+                    'uba', 'union bank', 'union',
+
+                    'wema', 'polaris', 'sterling', 'kuda',
+
+                    'opay', 'palmpay', 'moniepoint', 'moni point',
+
+                    'fidelity', 'fcmb', 'ecobank', 'eco bank',
+
+                    'heritage', 'stanbic', 'standard',
+
+                ]
+
+                # Find account number (longest sequence of digits)
+
+                numbers = re.findall(r'\d+', reply)
+
+                account_number = ''
+
+                for num in numbers:
+
+                    if len(num) >= 10:
+                        account_number = num
+
+                        break
+
+                if not account_number and numbers:
+                    account_number = numbers[0]  # fallback to first number
+
+                # Find bank name
+
+                bank_name = ''
+
+                for bank in bank_names:
+
+                    if bank in reply_lower:
+
+                        bank_name = bank.capitalize()
+
+                        if 'gtb' in bank or 'guaranty' in bank:
+
+                            bank_name = 'GTBank'
+
+                        elif 'access' in bank:
+
+                            bank_name = 'Access Bank'
+
+                        elif 'zenith' in bank or 'zinith' in bank:
+
+                            bank_name = 'Zenith Bank'
+
+                        elif 'first' in bank:
+
+                            bank_name = 'First Bank'
+
+                        elif 'uba' in bank:
+
+                            bank_name = 'UBA'
+
+                        elif 'union' in bank:
+
+                            bank_name = 'Union Bank'
+
+                        elif 'wema' in bank:
+
+                            bank_name = 'Wema Bank'
+
+                        elif 'polaris' in bank:
+
+                            bank_name = 'Polaris Bank'
+
+                        elif 'sterling' in bank:
+
+                            bank_name = 'Sterling Bank'
+
+                        elif 'kuda' in bank:
+
+                            bank_name = 'Kuda'
+
+                        elif 'opay' in bank:
+
+                            bank_name = 'Opay'
+
+                        elif 'palmpay' in bank:
+
+                            bank_name = 'PalmPay'
+
+                        elif 'moniepoint' in bank or 'moni point' in bank:
+
+                            bank_name = 'Moniepoint'
+
+                        elif 'fidelity' in bank:
+
+                            bank_name = 'Fidelity Bank'
+
+                        elif 'fcmb' in bank:
+
+                            bank_name = 'FCMB'
+
+                        elif 'ecobank' in bank or 'eco bank' in bank:
+
+                            bank_name = 'Ecobank'
+
+                        elif 'heritage' in bank:
+
+                            bank_name = 'Heritage Bank'
+
+                        elif 'stanbic' in bank or 'standard' in bank:
+
+                            bank_name = 'Stanbic IBTC'
+
+                        break
+
+                # If no bank name found via list, check if any word looks like a bank
+
+                if not bank_name:
+
+                    words = reply_lower.replace(',', '').split()
+
+                    for word in words:
+
+                        if any(b in word for b in ['bank', 'gt', 'uba', 'wema', 'kuda', 'opay', 'palmpay']):
+                            bank_name = word.capitalize()
+
+                            break
+
+                # Find account type
+
+                account_type = ''
+
+                if 'savings' in reply_lower:
+
+                    account_type = 'savings'
+
+                elif 'current' in reply_lower:
+
+                    account_type = 'current'
+
+                elif 'corporate' in reply_lower:
+
+                    account_type = 'corporate'
+
+                if not account_number:
                     return jsonify({
-                                       "message": "I need at least the account number and bank name. Please provide them like: '2176411819, zenith bank, savings'",
+                                       "message": "I couldn't find the account number. Please provide a valid 10‑digit account number.",
                                        "tone": "neutral"})
 
-                # Save withdrawal request (reuse the existing logic from the full phrase handler)
+                if not bank_name:
+                    return jsonify(
+                        {"message": "Which bank is that? Please provide the bank name (e.g., Zenith, GTB, Access).",
+                         "tone": "neutral"})
+
+                # Save withdrawal request
+
                 conn = get_conn()
+
                 cur = conn.cursor()
+
                 cur.execute("""
+
                     INSERT INTO pending_withdrawals
+
                     (user_id, amount, bank_name, account_number, account_type, account_name, status)
+
                     VALUES (%s, %s, %s, %s, %s, '', 'pending')
+
                 """, (user_id, p["data"]["amount"], bank_name, account_number, account_type))
+
                 conn.commit()
+
                 conn.close()
 
                 pending_transaction.pop(user_id, None)
+
                 return jsonify({
-                    "message": f"Withdrawal request of ₦{p['data']['amount']:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
+
+                    "message": f"Withdrawal request of ₦{p['data']['amount']:,.2f} to {bank_name} ({account_number}) submitted",
+
                     "tone": "income"
+
                 })
 
 

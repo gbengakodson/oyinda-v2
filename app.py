@@ -850,44 +850,58 @@ def process_user_command(user_id, text):
     # ---- AI‑FIRST PARSING (for any text with a number) ----
     if re.search(r'\d', text):
         groq_result = parse_intent_groq(text, user_id)
-        if groq_result and groq_result.get('confidence') == 'high' and groq_result.get('intent') != 'question':
-            # Direct logging based on intent
-            intent = groq_result.get('intent')
-            if intent == 'expense':
-                payload = {
-                    "amount": groq_result.get('amount'),
-                    "currency": groq_result.get('currency', 'NGN'),
-                    "category": groq_result.get('category', 'other'),
-                    "date": datetime.utcnow().strftime('%Y-%m-%d'),
-                    "description": groq_result.get('description', text),
-                    "quantity": groq_result.get('quantity'),
-                    "unit": groq_result.get('unit'),
-                    "location": groq_result.get('location'),
-                }
-                payload = {k: v for k, v in payload.items() if v is not None}
-                event = append_event(user_id, user_id, 'ExpenseLogged', payload)
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"Logged expense: {groq_result.get('product', 'purchase')} – ₦{groq_result.get('amount'):,.2f} ({groq_result.get('category', 'other')})",
-                    "tone": "neutral"
-                })
-            elif intent == 'income':
-                payload = {
-                    "amount": groq_result.get('amount'),
-                    "currency": groq_result.get('currency', 'NGN'),
-                    "category": 'income',
-                    "date": datetime.utcnow().strftime('%Y-%m-%d'),
-                    "description": groq_result.get('description', text),
-                }
-                event = append_event(user_id, user_id, 'IncomeReceived', payload)
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"Logged income: {groq_result.get('product', 'income')} – ₦{groq_result.get('amount'):,.2f}",
-                    "tone": "income"
-                })
-            # … other intents can be added here …
+        if groq_result:
+            # Normalize to a list of transactions
+            if isinstance(groq_result, list):
+                items = groq_result
+            elif isinstance(groq_result, dict):
+                items = [groq_result]
+            else:
+                items = []
 
-        # If Groq returns low/medium confidence, fall through to rule‑based system
+            # Only auto‑log if ALL items have high confidence and are not questions
+            if items and all(
+                    it.get('confidence') == 'high' and it.get('intent') not in ('question', 'correction')
+                    for it in items
+            ):
+                logged = []
+                for item in items:
+                    intent = item.get('intent')
+                    if intent == 'expense':
+                        payload = {
+                            "amount": item.get('amount'),
+                            "currency": item.get('currency', 'NGN'),
+                            "category": item.get('category', 'other'),
+                            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                            "description": item.get('description', item.get('product', 'purchase')),
+                            "quantity": item.get('quantity'),
+                            "unit": item.get('unit'),
+                            "location": item.get('location'),
+                        }
+                        payload = {k: v for k, v in payload.items() if v is not None}
+                        append_event(user_id, user_id, 'ExpenseLogged', payload)
+                        logged.append(f"{item.get('product', 'item')} – ₦{item.get('amount'):,.2f}")
+                    elif intent == 'income':
+                        payload = {
+                            "amount": item.get('amount'),
+                            "currency": item.get('currency', 'NGN'),
+                            "category": 'income',
+                            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                            "description": item.get('description', item.get('product', 'income')),
+                        }
+                        payload = {k: v for k, v in payload.items() if v is not None}
+                        append_event(user_id, user_id, 'IncomeReceived', payload)
+                        logged.append(f"{item.get('product', 'income')} – ₦{item.get('amount'):,.2f}")
+
+                if logged:
+                    save_conversation(user_id, 'user', text)
+                    return jsonify({
+                        "message": f"Logged {len(logged)} item(s):\n" + "\n".join(logged),
+                        "tone": "neutral"
+                    })
+
+        # If AI didn't give high confidence or no items, fall through to rule‑based system
+
 
     # --- MULTILINGUAL SUPPORT: translate non-English messages to English ---
     original_text = text
@@ -931,6 +945,18 @@ def process_user_command(user_id, text):
 
         # ---- UNIFIED WITHDRAWAL / TRANSFER (AI‑first, then guided) ----
         # Try to extract withdrawal details using Groq
+        # If the user just says "withdraw" (no amount/details yet), start a guided flow
+        if text_lower.strip() == 'withdraw':
+            pending_transaction[user_id] = {
+                "state": "collect_withdrawal_amount",
+                "data": {},
+                "category": None
+            }
+            return jsonify({
+                "message": "How much do you want to withdraw? (e.g., 5000)",
+                "tone": "neutral"
+            })
+
         groq_withdrawal = parse_intent_groq(text, user_id) if re.search(r'\d', text) else None
         if groq_withdrawal and groq_withdrawal.get('intent') == 'withdrawal':
             # Extract all fields the AI found
@@ -1123,6 +1149,62 @@ def process_user_command(user_id, text):
                     })
                 p["state"] = "collecting_category"
                 return ask_next_question(user_id)
+
+
+
+            elif state == "collect_withdrawal_amount":
+                try:
+                    amount = float(reply.strip().replace(',', ''))
+                except ValueError:
+                    return jsonify({"message": "Please enter a valid number for the amount.", "tone": "neutral"})
+                wallet = ensure_wallet(user_id)
+                if wallet['balance'] < amount:
+                    return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
+                p["data"]["amount"] = amount
+                p["state"] = "collect_withdrawal_details"
+                return jsonify({
+                    "message": "Enter the bank name, account number, and account type. For example: '2176411819, zenith bank, savings'",
+                    "tone": "neutral"
+                })
+
+            elif state == "collect_withdrawal_details":
+                # Extract details from the user's reply
+                parts = reply.split(',')
+                account_number = ''
+                bank_name = ''
+                account_type = ''
+                for part in parts:
+                    part = part.strip()
+                    if re.fullmatch(r'\d{10,}', part):
+                        account_number = part
+                    elif any(word in part.lower() for word in
+                             ['zenith', 'gtb', 'access', 'first', 'uba', 'union', 'wema', 'polaris', 'sterling', 'kuda',
+                              'opay', 'palmpay', 'moniepoint']):
+                        bank_name = part
+                    elif any(word in part.lower() for word in ['savings', 'current', 'corporate']):
+                        account_type = part
+
+                if not account_number or not bank_name:
+                    return jsonify({
+                                       "message": "I need at least the account number and bank name. Please provide them like: '2176411819, zenith bank, savings'",
+                                       "tone": "neutral"})
+
+                # Save withdrawal request (reuse the existing logic from the full phrase handler)
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO pending_withdrawals
+                    (user_id, amount, bank_name, account_number, account_type, account_name, status)
+                    VALUES (%s, %s, %s, %s, %s, '', 'pending')
+                """, (user_id, p["data"]["amount"], bank_name, account_number, account_type))
+                conn.commit()
+                conn.close()
+
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"Withdrawal request of ₦{p['data']['amount']:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
+                    "tone": "income"
+                })
 
 
 

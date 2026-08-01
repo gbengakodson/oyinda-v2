@@ -181,33 +181,24 @@ _live_rates_cache = {"data": {}, "last_fetched": None}
 
 def get_loan_terms(amount, credit_score):
     """
-    Returns (duration_days, grace_days, interest_rate, min_score, max_amount)
+    Returns (max_duration_days, grace_days, monthly_interest_rate)
     or raises ValueError if the amount is not in any tier.
     """
     tiers = [
-        # (min_amount, max_amount, duration_days, grace_days, min_score)
-        (5000, 10000, 21, 3, 20),
-        (10001, 50000, 28, 7, 50),
-        (51000, 100000, 56, 14, 100),
-        (101000, 200000, 90, 21, 250),
-        (201000, 500000, 180, 30, 350),
-        (501000, 1000000, 240, 60, 500),
-        (1100000, 5000000, 365, 90, 700),
+        # (min_amount, max_amount, max_dur_days, grace_days, monthly_rate, min_score)
+        (5000, 10000, 21, 3, 0.133, 20),
+        (10001, 50000, 30, 7, 0.10, 50),
+        (51000, 100000, 60, 14, 0.075, 100),
+        (101000, 200000, 90, 21, 0.05, 250),
+        (201000, 500000, 180, 30, 0.0333, 350),
+        (501000, 1000000, 240, 60, 0.025, 500),
+        (1100000, 5000000, 365, 90, 0.0208, 700),
     ]
-    for min_amt, max_amt, dur, grace, min_score in tiers:
+    for min_amt, max_amt, max_dur, grace, rate, min_score in tiers:
         if min_amt <= amount <= max_amt:
             if credit_score < min_score:
                 raise ValueError(f"You need a credit score of at least {min_score} to borrow ₦{amount:,}. Your score is {credit_score}.")
-            # Determine interest rate based on duration
-            if dur <= 30:
-                rate = 0.10
-            elif dur <= 90:
-                rate = 0.15
-            elif dur <= 180:
-                rate = 0.20
-            else:
-                rate = 0.25
-            return dur, grace, rate
+            return max_dur, grace, rate
     raise ValueError(f"Loan amount ₦{amount:,} is not within any available tier.")
 
 
@@ -1368,6 +1359,64 @@ def process_user_command(user_id, text):
                 })
 
 
+            elif state == "direct_loan_duration":
+                # Parse the user's duration input
+                weeks_match = re.search(r'(\d+)\s*(?:week|wk)s?', reply, re.IGNORECASE)
+                days_match = re.search(r'(\d+)\s*(?:day|d)s?', reply, re.IGNORECASE)
+                months_match = re.search(r'(\d+)\s*(?:month|mon)s?', reply, re.IGNORECASE)
+
+                chosen_days = None
+                if weeks_match:
+                    chosen_days = int(weeks_match.group(1)) * 7
+                elif days_match:
+                    chosen_days = int(days_match.group(1))
+                elif months_match:
+                    chosen_days = int(months_match.group(1)) * 30
+
+                if not chosen_days:
+                    return jsonify({
+                        "message": "I didn't understand that. Please say something like '4 weeks' or '1 month'.",
+                        "tone": "neutral"
+                    })
+
+                max_dur = p["data"]["max_dur_days"]
+                grace = p["data"]["grace_days"]
+                monthly_rate = p["data"]["monthly_rate"]
+                amount = p["data"]["amount"]
+
+                # Minimum 14 days (grace + 1 week), maximum = max_dur
+                min_dur = grace + 14
+                if chosen_days < min_dur:
+                    return jsonify({
+                        "message": f"The minimum duration for this loan is {min_dur // 7} weeks. Please choose a longer time.",
+                        "tone": "neutral"
+                    })
+                if chosen_days > max_dur:
+                    return jsonify({
+                        "message": f"The maximum duration for this amount is {max_dur // 7} weeks. Please choose a shorter time.",
+                        "tone": "neutral"
+                    })
+
+                # Calculate interest based on chosen duration (in months)
+                months = chosen_days / 30.0
+                total_interest = round(amount * monthly_rate * months, 2)
+                total_repayable = amount + total_interest
+                repay_days = chosen_days - grace
+                daily_amount = round(total_repayable / repay_days, 2)
+                weekly_amount = round(total_repayable / (repay_days / 7), 2)
+
+                p["data"]["total_interest"] = total_interest
+                p["data"]["total_repayable"] = total_repayable
+                p["data"]["daily_amount"] = daily_amount
+                p["data"]["weekly_amount"] = weekly_amount
+                p["data"]["duration_days"] = chosen_days
+                p["state"] = "direct_loan_product"
+                return jsonify({
+                    "message": "What exactly do you want to buy? (e.g., 'bags of rice')",
+                    "tone": "neutral"
+                })
+
+
 
 
             elif state == "direct_loan_amount":
@@ -1760,28 +1809,20 @@ def process_user_command(user_id, text):
 
                 # ---- STORE AND MOVE ON ----
 
-                total_interest = amount * interest_rate
-
-                total_repayable = amount + total_interest
-
-                daily_amount = round(total_repayable / (dur_days - grace_days), 2)
-
+                # Store tier info and ask for duration
                 p["data"]["amount"] = amount
-
-                p["data"]["interest_rate"] = interest_rate
-
-                p["data"]["total_repayable"] = total_repayable
-
-                p["data"]["daily_amount"] = daily_amount
-
-                p["data"]["duration_days"] = dur_days
-
+                p["data"]["monthly_rate"] = monthly_rate  # now returned by get_loan_terms
+                p["data"]["max_dur_days"] = max_dur_days  # max_dur_days is the tier's default max
                 p["data"]["grace_days"] = grace_days
-
-                p["state"] = "direct_loan_product"
-
-                return jsonify(
-                    {"message": "What exactly do you want to buy? (e.g., 'bags of rice')", "tone": "neutral"})
+                p["state"] = "direct_loan_duration"
+                return jsonify({
+                    "message": (
+                        f"For this amount, the standard maximum duration is {max_dur_days // 7} weeks, "
+                        f"but you can choose any shorter time from 2 weeks up to {max_dur_days // 7} weeks. "
+                        f"How many weeks would you like? (e.g., '4 weeks')"
+                    ),
+                    "tone": "neutral"
+                })
 
 
 

@@ -6200,37 +6200,6 @@ def emergency_data():
     return jsonify({"emergency_sent": sent})
 
 
-@app.route('/messages/send', methods=['POST'])
-@jwt_required()
-def send_message():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    receiver_id = data.get('receiver_id')
-    room_id = data.get('room_id')
-    content = data.get('content', '').strip()
-
-    if not content:
-        return jsonify({"error": "content required"}), 400
-
-    # For direct chats, room_id is the partner's user ID → use as receiver_id
-    if not receiver_id and room_id:
-        # Check if it's a UUID (direct chat) vs a group room
-        import uuid
-        try:
-            uuid.UUID(room_id)
-            receiver_id = room_id  # Direct chat – partner ID
-        except ValueError:
-            pass  # Group room – no single receiver
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO messages (sender_id, receiver_id, room_id, content) VALUES (%s, %s, %s, %s)",
-        (user_id, receiver_id, room_id, content)
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"message": "Message sent"})
 
 
 

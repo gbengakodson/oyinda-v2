@@ -6257,16 +6257,18 @@ def search_users():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, name, facts->>'phone' as phone, facts->>'business_name' as business_name
+        SELECT id, COALESCE(facts->>'business_name', name) as display_name,
+               facts->>'phone' as phone,
+               facts->>'rc_number' as rc
         FROM users
-        WHERE (facts->>'phone' LIKE %s OR name ILIKE %s)
+        WHERE (facts->>'phone' LIKE %s OR name ILIKE %s OR facts->>'business_name' ILIKE %s)
           AND id != %s
         LIMIT 20
-    """, (f'%{phone}%', f'%{phone}%', user_id))
+    """, (f'%{phone}%', f'%{phone}%', f'%{phone}%', user_id))
     rows = cur.fetchall()
     conn.close()
 
-    users = [{"id": r[0], "name": r[2] or r[1], "phone": r[2], "business": r[3]} for r in rows]
+    users = [{"id": r[0], "name": r[1], "phone": r[2], "rc": r[3] or ""} for r in rows]
     return jsonify({"users": users})
 
 
@@ -8006,43 +8008,40 @@ def list_chats():
     user_id = get_jwt_identity()
     conn = get_conn()
     cur = conn.cursor()
-
-    # Get all unique conversation partners (both sent and received)
     cur.execute("""
-        SELECT DISTINCT
-            CASE WHEN m.sender_id = %s THEN m.receiver_id ELSE m.sender_id END AS partner_id
-        FROM messages m
-        WHERE m.sender_id = %s OR m.receiver_id = %s
+        SELECT partner_id, display_name, rc, last_msg, last_time
+        FROM (
+            SELECT DISTINCT ON (partner_id)
+                partner_id,
+                u.facts->>'business_name' AS display_name,
+                u.facts->>'rc_number' AS rc,
+                m.content AS last_msg,
+                m.created_at AS last_time
+            FROM (
+                SELECT
+                    CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
+                    content,
+                    created_at
+                FROM messages
+                WHERE sender_id = %s OR receiver_id = %s
+                ORDER BY created_at DESC
+            ) m
+            JOIN users u ON u.id = m.partner_id
+            ORDER BY partner_id, m.created_at DESC
+        ) sub
+        ORDER BY last_time DESC
     """, (user_id, user_id, user_id))
-    partners = [r[0] for r in cur.fetchall()]
-
-    chats = []
-    for partner_id in partners:
-        # Get partner name
-        cur.execute("SELECT name FROM users WHERE id = %s", (partner_id,))
-        name_row = cur.fetchone()
-        partner_name = name_row[0] if name_row else "Unknown"
-
-        # Get last message
-        cur.execute("""
-            SELECT content, created_at
-            FROM messages
-            WHERE (sender_id = %s AND receiver_id = %s)
-               OR (sender_id = %s AND receiver_id = %s)
-            ORDER BY created_at DESC LIMIT 1
-        """, (user_id, partner_id, partner_id, user_id))
-        last_msg = cur.fetchone()
-        last_message = last_msg[0] if last_msg else ""
-        last_time = str(last_msg[1]) if last_msg else ""
-
-        chats.append({
-            "id": partner_id,
-            "name": partner_name,
-            "lastMessage": last_message,
-            "time": last_time
-        })
-
+    rows = cur.fetchall()
     conn.close()
+
+    chats = [{
+        "id": r[0],
+        "name": r[1] or "Unknown",
+        "rc": r[2] or "",
+        "lastMessage": r[3] or "",
+        "time": r[4].strftime('%I:%M %p') if r[4] else ""
+    } for r in rows]
+
     return jsonify({"chats": chats})
 
 
@@ -8071,9 +8070,11 @@ def get_chat_messages(room_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    # Fetch messages for this room, ordered by time
     cur.execute("""
-        SELECT m.content, m.sender_id, u.name, m.created_at
+        SELECT m.content, m.sender_id,
+               COALESCE(u.facts->>'business_name', u.name) as display_name,
+               u.facts->>'rc_number' as rc,
+               m.created_at
         FROM messages m
         JOIN users u ON m.sender_id = u.id
         WHERE m.room_id = %s
@@ -8087,10 +8088,11 @@ def get_chat_messages(room_id):
         "content": r[0],
         "sender_id": r[1],
         "sender_name": r[2],
-        "time": str(r[3])
+        "sender_rc": r[3] or "",
+        "time": r[4].strftime('%I:%M %p') if r[4] else ""
     } for r in rows]
 
-    return jsonify({"messages": messages})
+    return jsonify({"messages": messages, "current_user_id": user_id})
 
 
 

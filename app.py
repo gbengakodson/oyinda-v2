@@ -6245,6 +6245,161 @@ def get_messages(other_user_id):
     return jsonify({"messages": msgs})
 
 
+# ---- SEARCH USERS BY PHONE ----
+@app.route('/api/users/search', methods=['GET'])
+@jwt_required()
+def search_users():
+    user_id = get_jwt_identity()
+    phone = request.args.get('phone', '').strip()
+    if not phone or len(phone) < 3:
+        return jsonify({"users": []})
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, facts->>'phone' as phone, facts->>'business_name' as business_name
+        FROM users
+        WHERE (facts->>'phone' LIKE %s OR name ILIKE %s)
+          AND id != %s
+        LIMIT 20
+    """, (f'%{phone}%', f'%{phone}%', user_id))
+    rows = cur.fetchall()
+    conn.close()
+
+    users = [{"id": r[0], "name": r[2] or r[1], "phone": r[2], "business": r[3]} for r in rows]
+    return jsonify({"users": users})
+
+
+# ---- CREATE PRIVATE GROUP ----
+@app.route('/api/groups/create', methods=['POST'])
+@jwt_required()
+def create_group():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    member_ids = data.get('member_ids', [])
+
+    if not name:
+        return jsonify({"error": "Group name required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Create the room
+    cur.execute("""
+        INSERT INTO chat_rooms (name, creator_id, is_public, is_private)
+        VALUES (%s, %s, false, true)
+        RETURNING id
+    """, (name, user_id))
+    room_id = cur.fetchone()[0]
+
+    # Add creator as member
+    cur.execute("INSERT INTO chat_members (room_id, user_id) VALUES (%s, %s)", (room_id, user_id))
+
+    # Add other members
+    for mid in member_ids:
+        if mid != user_id:
+            cur.execute("INSERT INTO chat_members (room_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (room_id, mid))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"id": room_id, "name": name, "message": "Group created"})
+
+
+# ---- ADD MEMBERS TO GROUP ----
+@app.route('/api/groups/<room_id>/add-members', methods=['POST'])
+@jwt_required()
+def add_group_members(room_id):
+    data = request.get_json()
+    member_ids = data.get('member_ids', [])
+
+    conn = get_conn()
+    cur = conn.cursor()
+    for mid in member_ids:
+        cur.execute("INSERT INTO chat_members (room_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (room_id, mid))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Members added"})
+
+
+# ---- GET MY GROUPS ----
+@app.route('/api/my-groups', methods=['GET'])
+@jwt_required()
+def my_groups():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT cr.id, cr.name, cr.is_private,
+               COALESCE((SELECT content FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1), '') as last_msg,
+               (SELECT COUNT(*) FROM chat_members WHERE room_id = cr.id) as member_count
+        FROM chat_rooms cr
+        JOIN chat_members cm ON cr.id = cm.room_id
+        WHERE cm.user_id = %s
+        ORDER BY cr.created_at DESC
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    groups = [{"id": r[0], "name": r[1], "is_private": r[2], "last_msg": r[3], "members": r[4]} for r in rows]
+    return jsonify({"groups": groups})
+
+
+# ---- CREATE BROADCAST LIST ----
+@app.route('/api/broadcast/create', methods=['POST'])
+@jwt_required()
+def create_broadcast():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    member_ids = data.get('member_ids', [])
+
+    if not name:
+        return jsonify({"error": "Name required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO broadcast_lists (creator_id, name) VALUES (%s, %s) RETURNING id", (user_id, name))
+    list_id = cur.fetchone()[0]
+
+    for mid in member_ids:
+        cur.execute("INSERT INTO broadcast_members (list_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (list_id, mid))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"id": list_id, "message": "Broadcast list created"})
+
+
+# ---- SEND BROADCAST ----
+@app.route('/api/broadcast/send', methods=['POST'])
+@jwt_required()
+def send_broadcast():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    list_id = data.get('list_id')
+    content = data.get('content', '').strip()
+
+    if not list_id or not content:
+        return jsonify({"error": "list_id and content required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Get all members of this broadcast list
+    cur.execute("SELECT user_id FROM broadcast_members WHERE list_id = %s", (list_id,))
+    members = [r[0] for r in cur.fetchall()]
+
+    # Send message to each member individually
+    for member_id in members:
+        cur.execute("INSERT INTO messages (sender_id, receiver_id, content) VALUES (%s, %s, %s)",
+                    (user_id, member_id, content))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"message": f"Broadcast sent to {len(members)} people"})
+
+
 
 @app.route('/credit/share/<token>', methods=['GET'])
 def share_credit_report(token):

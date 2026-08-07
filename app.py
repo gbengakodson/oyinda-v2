@@ -6211,8 +6211,16 @@ def send_message():
 
     if not content:
         return jsonify({"error": "content required"}), 400
-    if not receiver_id and not room_id:
-        return jsonify({"error": "receiver_id or room_id required"}), 400
+
+    # For direct chats, room_id is the partner's user ID → use as receiver_id
+    if not receiver_id and room_id:
+        # Check if it's a UUID (direct chat) vs a group room
+        import uuid
+        try:
+            uuid.UUID(room_id)
+            receiver_id = room_id  # Direct chat – partner ID
+        except ValueError:
+            pass  # Group room – no single receiver
 
     conn = get_conn()
     cur = conn.cursor()
@@ -8008,27 +8016,32 @@ def list_chats():
     user_id = get_jwt_identity()
     conn = get_conn()
     cur = conn.cursor()
+
+    # Get all unique partners from direct messages
     cur.execute("""
-        SELECT partner_id, display_name, rc, last_msg, last_time
+        SELECT 
+            partner_id,
+            u.facts->>'business_name' AS display_name,
+            u.facts->>'rc_number' AS rc,
+            last_msg.content AS last_message,
+            last_msg.created_at AS last_time
         FROM (
             SELECT DISTINCT ON (partner_id)
                 partner_id,
-                u.facts->>'business_name' AS display_name,
-                u.facts->>'rc_number' AS rc,
-                m.content AS last_msg,
-                m.created_at AS last_time
+                content,
+                created_at
             FROM (
-                SELECT
+                SELECT 
                     CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
                     content,
                     created_at
                 FROM messages
-                WHERE sender_id = %s OR receiver_id = %s
+                WHERE (sender_id = %s OR receiver_id = %s)
+                  AND receiver_id IS NOT NULL
                 ORDER BY created_at DESC
-            ) m
-            JOIN users u ON u.id = m.partner_id
-            ORDER BY partner_id, m.created_at DESC
-        ) sub
+            ) sub
+        ) last_msg
+        JOIN users u ON u.id = last_msg.partner_id
         ORDER BY last_time DESC
     """, (user_id, user_id, user_id))
     rows = cur.fetchall()

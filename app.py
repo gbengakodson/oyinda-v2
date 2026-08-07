@@ -7837,6 +7837,52 @@ def landing():
     return send_from_directory('webapp', 'landing.html')
 
 
+@app.route('/api/chats', methods=['GET'])
+@jwt_required()
+def list_chats():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get all unique conversation partners (both sent and received)
+    cur.execute("""
+        SELECT DISTINCT
+            CASE WHEN m.sender_id = %s THEN m.receiver_id ELSE m.sender_id END AS partner_id
+        FROM messages m
+        WHERE m.sender_id = %s OR m.receiver_id = %s
+    """, (user_id, user_id, user_id))
+    partners = [r[0] for r in cur.fetchall()]
+
+    chats = []
+    for partner_id in partners:
+        # Get partner name
+        cur.execute("SELECT name FROM users WHERE id = %s", (partner_id,))
+        name_row = cur.fetchone()
+        partner_name = name_row[0] if name_row else "Unknown"
+
+        # Get last message
+        cur.execute("""
+            SELECT content, created_at
+            FROM messages
+            WHERE (sender_id = %s AND receiver_id = %s)
+               OR (sender_id = %s AND receiver_id = %s)
+            ORDER BY created_at DESC LIMIT 1
+        """, (user_id, partner_id, partner_id, user_id))
+        last_msg = cur.fetchone()
+        last_message = last_msg[0] if last_msg else ""
+        last_time = str(last_msg[1]) if last_msg else ""
+
+        chats.append({
+            "id": partner_id,
+            "name": partner_name,
+            "lastMessage": last_message,
+            "time": last_time
+        })
+
+    conn.close()
+    return jsonify({"chats": chats})
+
+
 
 @app.route('/admin/summary', methods=['GET'])
 @jwt_required()

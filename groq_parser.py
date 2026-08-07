@@ -87,9 +87,12 @@ def parse_intent_groq(text, user_id=None):
         "- For phrases like 'i buy cooking gas 5100 for 3kg', extract: intent=expense, product=cooking gas, amount=5100, currency=NGN, quantity=3, unit=kg, category=utilities.\n"
         "- Ignore numbers that are clearly quantities or units (e.g., '3kg', '2 litres') when extracting the monetary amount.\n"
         "- For corrections ('no, gas #5100'), set intent=correction.\n"
+        "- If the user lists multiple expenses in one message (e.g., 'i spent 300 on oil, 500 on bread'), return a JSON array of objects, one for each expense. If there is only one expense, return a single object (not an array)\n."
         "- If the user is asking a question, greeting, or not describing a transaction, set confidence=low and intent=question.\n"
         "- Use common sense: 'gas' alone could be cooking gas (utilities) or car fuel (transport). If the user says 'cooking gas', always use utilities. If they just say 'gas', use context or default to utilities.\n\n"
         "EXAMPLES:\n"
+        'User: "i spent 300 on groundnut oil, 500 on bread"\n'
+        'Response: [{"intent":"expense","amount":300,"product":"groundnut oil","category":"food","confidence":"high"},{"intent":"expense","amount":500,"product":"bread","category":"food","confidence":"high"}]\n\n'
         'User: "i buy cooking gas 5100 for 3kg"\n'
         'Response: intent=expense, product=cooking gas, amount=5100, currency=NGN, quantity=3, unit=kg, category=utilities, confidence=high\n\n'
         'User: "i drop 5k for data"\n'

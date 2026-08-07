@@ -8010,52 +8010,45 @@ def landing():
     return send_from_directory('webapp', 'landing.html')
 
 
-@app.route('/api/chats', methods=['GET'])
+@app.route('/messages/send', methods=['POST'])
 @jwt_required()
-def list_chats():
+def send_message():
     user_id = get_jwt_identity()
-    conn = get_conn()
-    cur = conn.cursor()
+    data = request.get_json()
+    receiver_id = data.get('receiver_id')
+    room_id = data.get('room_id')
+    content = data.get('content', '').strip()
 
-    # Get all unique partners from direct messages
-    cur.execute("""
-        SELECT 
-            partner_id,
-            u.facts->>'business_name' AS display_name,
-            u.facts->>'rc_number' AS rc,
-            last_msg.content AS last_message,
-            last_msg.created_at AS last_time
-        FROM (
-            SELECT DISTINCT ON (partner_id)
-                partner_id,
-                content,
-                created_at
-            FROM (
-                SELECT 
-                    CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
-                    content,
-                    created_at
-                FROM messages
-                WHERE (sender_id = %s OR receiver_id = %s)
-                  AND receiver_id IS NOT NULL
-                ORDER BY created_at DESC
-            ) sub
-        ) last_msg
-        JOIN users u ON u.id = last_msg.partner_id
-        ORDER BY last_time DESC
-    """, (user_id, user_id, user_id))
-    rows = cur.fetchall()
-    conn.close()
+    if not content:
+        return jsonify({"error": "content required"}), 400
 
-    chats = [{
-        "id": r[0],
-        "name": r[1] or "Unknown",
-        "rc": r[2] or "",
-        "lastMessage": r[3] or "",
-        "time": r[4].strftime('%I:%M %p') if r[4] else ""
-    } for r in rows]
+    # For direct chats: room_id is the partner's user ID → use as receiver_id
+    if not receiver_id and room_id:
+        import uuid as uuid_check
+        try:
+            uuid_check.UUID(room_id)
+            receiver_id = room_id   # it's a valid UUID, treat as direct chat
+        except (ValueError, AttributeError):
+            pass   # it's a group room name or other, leave receiver_id as None
 
-    return jsonify({"chats": chats})
+    if not receiver_id and not room_id:
+        return jsonify({"error": "receiver_id or room_id required"}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO messages (sender_id, receiver_id, room_id, content, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, now(), now())""",
+            (user_id, receiver_id, room_id, content)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "Message sent"})
+    except Exception as e:
+        print(f"ERROR sending message: {str(e)}")   # will appear in Render logs
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
 
 
 @app.route('/api/public-chats', methods=['GET'])

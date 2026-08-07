@@ -6206,17 +6206,25 @@ def send_message():
     user_id = get_jwt_identity()
     data = request.get_json()
     receiver_id = data.get('receiver_id')
+    room_id = data.get('room_id')
     content = data.get('content', '').strip()
-    if not receiver_id or not content:
-        return jsonify({"error": "receiver_id and content required"}), 400
+
+    if not content:
+        return jsonify({"error": "content required"}), 400
+    if not receiver_id and not room_id:
+        return jsonify({"error": "receiver_id or room_id required"}), 400
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("INSERT INTO messages (sender_id, receiver_id, content) VALUES (%s, %s, %s)",
-                (user_id, receiver_id, content))
+    cur.execute(
+        "INSERT INTO messages (sender_id, receiver_id, room_id, content) VALUES (%s, %s, %s, %s)",
+        (user_id, receiver_id, room_id, content)
+    )
     conn.commit()
     conn.close()
     return jsonify({"message": "Message sent"})
+
+
 
 @app.route('/messages/<other_user_id>', methods=['GET'])
 @jwt_required()
@@ -7889,16 +7897,45 @@ def public_chats():
     cur = conn.cursor()
     cur.execute("""
         SELECT cr.id, cr.name, 
-               COALESCE((SELECT content FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1), '') as last_message,
+               COALESCE((SELECT content FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1), 'No messages yet') as last_message,
                COALESCE((SELECT created_at FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1)::text, '') as last_time
         FROM chat_rooms cr
         WHERE cr.is_public = true
-        ORDER BY last_time DESC
+        ORDER BY cr.created_at DESC
     """)
     rows = cur.fetchall()
     conn.close()
     chats = [{"id": r[0], "name": r[1], "lastMessage": r[2], "time": r[3]} for r in rows]
     return jsonify({"chats": chats})
+
+
+@app.route('/api/chats/<room_id>/messages', methods=['GET'])
+@jwt_required()
+def get_chat_messages(room_id):
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Fetch messages for this room, ordered by time
+    cur.execute("""
+        SELECT m.content, m.sender_id, u.name, m.created_at
+        FROM messages m
+        JOIN users u ON m.sender_id = u.id
+        WHERE m.room_id = %s
+        ORDER BY m.created_at ASC
+        LIMIT 100
+    """, (room_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    messages = [{
+        "content": r[0],
+        "sender_id": r[1],
+        "sender_name": r[2],
+        "time": str(r[3])
+    } for r in rows]
+
+    return jsonify({"messages": messages})
 
 
 

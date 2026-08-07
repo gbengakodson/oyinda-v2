@@ -8019,8 +8019,61 @@ def send_message():
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 
+@app.route('/api/chats', methods=['GET', 'OPTIONS'])
+@cross_origin()
+@jwt_required(optional=True)
+def list_chats():
+    user_id = get_jwt_identity()
+    if not user_id:
+        return jsonify({"chats": []})
 
-@app.route('/api/public-chats', methods=['GET'])
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get all unique conversation partners from direct messages
+    cur.execute("""
+        SELECT 
+            partner_id,
+            u.facts->>'business_name' AS display_name,
+            u.facts->>'rc_number' AS rc,
+            last_msg.content AS last_message,
+            last_msg.created_at AS last_time
+        FROM (
+            SELECT DISTINCT ON (partner_id)
+                partner_id,
+                content,
+                created_at
+            FROM (
+                SELECT 
+                    CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
+                    content,
+                    created_at
+                FROM messages
+                WHERE (sender_id = %s OR receiver_id = %s)
+                  AND receiver_id IS NOT NULL
+                ORDER BY created_at DESC
+            ) sub
+        ) last_msg
+        JOIN users u ON u.id = last_msg.partner_id
+        ORDER BY last_time DESC
+    """, (user_id, user_id, user_id))
+    rows = cur.fetchall()
+    conn.close()
+
+    chats = [{
+        "id": r[0],
+        "name": r[1] or "Unknown",
+        "rc": r[2] or "",
+        "lastMessage": r[3] or "",
+        "time": r[4].strftime('%I:%M %p') if r[4] else ""
+    } for r in rows]
+
+    return jsonify({"chats": chats})
+
+
+
+@app.route('/api/public-chats', methods=['GET', 'OPTIONS'])
+@cross_origin()
 def public_chats():
     conn = get_conn()
     cur = conn.cursor()
@@ -8038,10 +8091,14 @@ def public_chats():
     return jsonify({"chats": chats})
 
 
-@app.route('/api/chats/<room_id>/messages', methods=['GET'])
-@jwt_required()
+@app.route('/api/chats/<room_id>/messages', methods=['GET', 'OPTIONS'])
+@cross_origin()
+@jwt_required(optional=True)
 def get_chat_messages(room_id):
     user_id = get_jwt_identity()
+    if not user_id:
+        return jsonify({"messages": [], "current_user_id": ""})
+
     conn = get_conn()
     cur = conn.cursor()
 

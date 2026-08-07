@@ -7979,7 +7979,8 @@ def landing():
     return send_from_directory('webapp', 'landing.html')
 
 
-@app.route('/messages/send', methods=['POST'])
+@app.route('/messages/send', methods=['POST', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
 def send_message():
     user_id = get_jwt_identity()
@@ -7991,14 +7992,14 @@ def send_message():
     if not content:
         return jsonify({"error": "content required"}), 400
 
-    # For direct chats: room_id is the partner's user ID → use as receiver_id
+    # For direct chats, room_id is the partner's user ID → use as receiver_id
     if not receiver_id and room_id:
         import uuid as uuid_check
         try:
             uuid_check.UUID(room_id)
-            receiver_id = room_id   # it's a valid UUID, treat as direct chat
+            receiver_id = room_id
         except (ValueError, AttributeError):
-            pass   # it's a group room name or other, leave receiver_id as None
+            pass   # it's a group room – leave receiver_id as None
 
     if not receiver_id and not room_id:
         return jsonify({"error": "receiver_id or room_id required"}), 400
@@ -8015,7 +8016,9 @@ def send_message():
         conn.close()
         return jsonify({"message": "Message sent"})
     except Exception as e:
-        print(f"ERROR sending message: {str(e)}")   # will appear in Render logs
+        import traceback
+        tb = traceback.format_exc()
+        print(f"SEND ERROR: {tb}")   # shows in Render logs
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 

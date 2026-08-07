@@ -7883,6 +7883,24 @@ def list_chats():
     return jsonify({"chats": chats})
 
 
+@app.route('/api/public-chats', methods=['GET'])
+def public_chats():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT cr.id, cr.name, 
+               COALESCE((SELECT content FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1), '') as last_message,
+               COALESCE((SELECT created_at FROM messages WHERE room_id = cr.id ORDER BY created_at DESC LIMIT 1)::text, '') as last_time
+        FROM chat_rooms cr
+        WHERE cr.is_public = true
+        ORDER BY last_time DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    chats = [{"id": r[0], "name": r[1], "lastMessage": r[2], "time": r[3]} for r in rows]
+    return jsonify({"chats": chats})
+
+
 
 @app.route('/admin/summary', methods=['GET'])
 @jwt_required()

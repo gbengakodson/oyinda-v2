@@ -7992,23 +7992,24 @@ def send_message():
     if not content:
         return jsonify({"error": "content required"}), 400
 
-    # Ensure at least one of receiver_id or room_id is present
-    if not receiver_id and not room_id:
-        return jsonify({"error": "receiver_id or room_id required"}), 400
-
-    # For direct chats where room_id is the partner's UUID, set receiver_id
+    # For direct chats, room_id is the partner's user ID → use as receiver_id, leave room_id null
+    is_direct = False
     if not receiver_id and room_id:
         import uuid as uuid_check
         try:
             uuid_check.UUID(room_id)
             receiver_id = room_id
+            room_id = None   # keep it null for direct chats, matching old messages
+            is_direct = True
         except (ValueError, AttributeError):
-            # It's a group chat room (not a UUID), receiver_id stays None
-            pass
+            pass   # it's a group room name
 
-    # If still no receiver_id, use a fallback (e.g., the sender) to satisfy NOT NULL
+    if not receiver_id and not room_id:
+        return jsonify({"error": "receiver_id or room_id required"}), 400
+
+    # Always have a receiver_id (fallback to sender for groups)
     if not receiver_id:
-        receiver_id = user_id   # or a specific system user ID
+        receiver_id = user_id
 
     try:
         conn = get_conn()
@@ -8039,7 +8040,6 @@ def list_chats():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Get all unique partners from direct messages (ignoring room_id)
     cur.execute("""
         WITH direct_msgs AS (
             SELECT
@@ -8047,8 +8047,7 @@ def list_chats():
                 content,
                 created_at
             FROM messages
-            WHERE (sender_id = %s OR receiver_id = %s)
-              AND room_id IS NULL   -- only direct chats (no group room)
+            WHERE sender_id = %s OR receiver_id = %s
         ),
         latest AS (
             SELECT DISTINCT ON (partner_id)

@@ -17,6 +17,9 @@ from core import calculate_net_worth
 import json
 from collections import defaultdict
 import io
+import hmac
+import time
+import uuid as uuid_lib
 import openai
 import hashlib
 try:
@@ -26,6 +29,12 @@ except ImportError:
 
 import sys
 import traceback
+
+
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")          # e.g. https://abcdefg.supabase.co
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+
 
 def safe_parse_products(val):
     if val is None:
@@ -8156,6 +8165,61 @@ def get_chat_messages(room_id):
     } for r in rows]
 
     return jsonify({"messages": messages, "current_user_id": user_id})
+
+
+
+   # service_role key
+
+@app.route('/signed-url', methods=['POST'])
+@jwt_required()
+def signed_url():
+    data = request.get_json()
+    file_path = data.get('path')
+    if not file_path:
+        return jsonify({"error": "path required"}), 400
+
+    # Generate a signed URL using Supabase's /storage/v1/object/sign route
+    resp = requests.post(
+        f"{SUPABASE_URL}/storage/v1/object/sign/chat-media/{file_path}",
+        headers={
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={"expiresIn": 3600}   # URL valid for 1 hour
+    )
+    if resp.status_code != 200:
+        return jsonify({"error": "Could not generate signed URL"}), 500
+
+    signed = resp.json()
+    return jsonify({"signedUrl": signed.get("signedURL") or signed.get("url")})
+
+
+
+@app.route('/upload', methods=['POST'])
+@jwt_required()
+def upload_file():
+    user_id = get_jwt_identity()
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'bin'
+    filename = f"{user_id}/{uuid_lib.uuid4().hex}.{ext}"
+
+    resp = requests.post(
+        f"{SUPABASE_URL}/storage/v1/object/chat-media/{filename}",
+        headers={
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": file.mimetype
+        },
+        data=file.read()
+    )
+
+    if resp.status_code not in (200, 201):
+        return jsonify({"error": "Upload failed"}), 500
+
+    # Return only the relative path – the frontend will use /signed-url to get a signed link
+    return jsonify({"path": filename})
 
 
 

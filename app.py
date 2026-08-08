@@ -8028,7 +8028,7 @@ def send_message():
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 
-@app.route('/api/chats', methods=['GET', 'OPTIONS'])
+@app.route('/api/chats', methods=['GET'])
 @cross_origin()
 @jwt_required(optional=True)
 def list_chats():
@@ -8039,32 +8039,34 @@ def list_chats():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Get all unique conversation partners from direct messages
+    # Get all unique partners from direct messages (ignoring room_id)
     cur.execute("""
-        SELECT 
-            partner_id,
-            u.facts->>'business_name' AS display_name,
-            u.facts->>'rc_number' AS rc,
-            last_msg.content AS last_message,
-            last_msg.created_at AS last_time
-        FROM (
+        WITH direct_msgs AS (
+            SELECT
+                CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
+                content,
+                created_at
+            FROM messages
+            WHERE (sender_id = %s OR receiver_id = %s)
+              AND room_id IS NULL   -- only direct chats (no group room)
+        ),
+        latest AS (
             SELECT DISTINCT ON (partner_id)
                 partner_id,
                 content,
                 created_at
-            FROM (
-                SELECT 
-                    CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS partner_id,
-                    content,
-                    created_at
-                FROM messages
-                WHERE (sender_id = %s OR receiver_id = %s)
-                  AND receiver_id IS NOT NULL
-                ORDER BY created_at DESC
-            ) sub
-        ) last_msg
-        JOIN users u ON u.id = last_msg.partner_id
-        ORDER BY last_time DESC
+            FROM direct_msgs
+            ORDER BY partner_id, created_at DESC
+        )
+        SELECT
+            l.partner_id,
+            COALESCE(u.facts->>'business_name', u.name) AS display_name,
+            u.facts->>'rc_number' AS rc,
+            l.content AS last_message,
+            l.created_at AS last_time
+        FROM latest l
+        JOIN users u ON u.id = l.partner_id
+        ORDER BY l.created_at DESC
     """, (user_id, user_id, user_id))
     rows = cur.fetchall()
     conn.close()
@@ -8111,17 +8113,38 @@ def get_chat_messages(room_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT m.content, m.sender_id,
-               COALESCE(u.facts->>'business_name', u.name) as display_name,
-               u.facts->>'rc_number' as rc,
-               m.created_at
-        FROM messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE m.room_id = %s
-        ORDER BY m.created_at ASC
-        LIMIT 100
-    """, (room_id,))
+    # Check if room_id belongs to a group chat
+    cur.execute("SELECT id FROM chat_rooms WHERE id = %s", (room_id,))
+    is_group = cur.fetchone() is not None
+
+    if is_group:
+        # Group chat – fetch messages by room_id
+        cur.execute("""
+            SELECT m.content, m.sender_id,
+                   COALESCE(u.facts->>'business_name', u.name) as display_name,
+                   u.facts->>'rc_number' as rc,
+                   m.created_at
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE m.room_id = %s
+            ORDER BY m.created_at ASC
+            LIMIT 100
+        """, (room_id,))
+    else:
+        # Direct chat – fetch messages between the two users, ignoring room_id
+        cur.execute("""
+            SELECT m.content, m.sender_id,
+                   COALESCE(u.facts->>'business_name', u.name) as display_name,
+                   u.facts->>'rc_number' as rc,
+                   m.created_at
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE ((m.sender_id = %s AND m.receiver_id = %s)
+                   OR (m.sender_id = %s AND m.receiver_id = %s))
+            ORDER BY m.created_at ASC
+            LIMIT 100
+        """, (user_id, room_id, room_id, user_id))
+
     rows = cur.fetchall()
     conn.close()
 

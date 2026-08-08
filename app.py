@@ -7998,8 +7998,8 @@ def send_message():
     room_id = data.get('room_id')
     content = data.get('content', '').strip()
 
-    if not content:
-        return jsonify({"error": "content required"}), 400
+    if not content and not data.get('media_url'):
+        return jsonify({"error": "content or media_url required"}), 400
 
     # For direct chats, room_id is the partner's user ID → use as receiver_id, leave room_id null
     is_direct = False
@@ -8203,6 +8203,11 @@ def upload_file():
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files['file']
+    # Limit to 10 MB
+    file_content = file.read()
+    if len(file_content) > 10 * 1024 * 1024:
+        return jsonify({"error": "File too large (max 10 MB)"}), 400
+
     ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'bin'
     filename = f"{user_id}/{uuid_lib.uuid4().hex}.{ext}"
 
@@ -8210,15 +8215,15 @@ def upload_file():
         f"{SUPABASE_URL}/storage/v1/object/chat-media/{filename}",
         headers={
             "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": file.mimetype
+            "Content-Type": file.mimetype or "application/octet-stream"
         },
-        data=file.read()
+        data=file.read(),
+        timeout=30
     )
 
     if resp.status_code not in (200, 201):
-        return jsonify({"error": "Upload failed"}), 500
+        return jsonify({"error": f"Upload failed: {resp.text}"}), 500
 
-    # Return only the relative path – the frontend will use /signed-url to get a signed link
     return jsonify({"path": filename})
 
 

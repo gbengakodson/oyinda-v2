@@ -7992,17 +7992,23 @@ def send_message():
     if not content:
         return jsonify({"error": "content required"}), 400
 
-    # For direct chats, room_id is the partner's user ID → use as receiver_id
+    # Ensure at least one of receiver_id or room_id is present
+    if not receiver_id and not room_id:
+        return jsonify({"error": "receiver_id or room_id required"}), 400
+
+    # For direct chats where room_id is the partner's UUID, set receiver_id
     if not receiver_id and room_id:
         import uuid as uuid_check
         try:
             uuid_check.UUID(room_id)
             receiver_id = room_id
         except (ValueError, AttributeError):
-            pass   # it's a group room – leave receiver_id as None
+            # It's a group chat room (not a UUID), receiver_id stays None
+            pass
 
-    if not receiver_id and not room_id:
-        return jsonify({"error": "receiver_id or room_id required"}), 400
+    # If still no receiver_id, use a fallback (e.g., the sender) to satisfy NOT NULL
+    if not receiver_id:
+        receiver_id = user_id   # or a specific system user ID
 
     try:
         conn = get_conn()
@@ -8018,7 +8024,7 @@ def send_message():
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        print(f"SEND ERROR: {tb}")   # shows in Render logs
+        print(f"SEND ERROR: {tb}")
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 

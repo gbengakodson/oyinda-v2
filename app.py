@@ -7994,6 +7994,8 @@ def landing():
 def send_message():
     user_id = get_jwt_identity()
     data = request.get_json()
+    print("SEND RECEIVED:", data)   # will appear in Render logs
+
     receiver_id = data.get('receiver_id')
     room_id = data.get('room_id')
     content = data.get('content', '').strip()
@@ -8003,19 +8005,17 @@ def send_message():
     if not content and not media_url:
         return jsonify({"error": "content or media_url required"}), 400
 
-    # For direct chats, room_id is the partner's user ID → use as receiver_id, leave room_id null
     if not receiver_id and room_id:
-        import uuid as uuid_check
         try:
+            import uuid as uuid_check
             uuid_check.UUID(room_id)
             receiver_id = room_id
             room_id = None
         except (ValueError, AttributeError):
-            pass   # it's a group room
+            pass
 
     if not receiver_id and not room_id:
         return jsonify({"error": "receiver_id or room_id required"}), 400
-
     if not receiver_id:
         receiver_id = user_id
 
@@ -8025,17 +8025,24 @@ def send_message():
         cur.execute(
             """INSERT INTO messages
                (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, now(), now())""",
+               VALUES (%s, %s, %s, %s, %s, %s, now(), now())
+               RETURNING media_url, media_type""",
             (user_id, receiver_id, room_id, content, media_url, media_type)
         )
+        inserted = cur.fetchone()
         conn.commit()
         conn.close()
-        return jsonify({"message": "Message sent"})
+        print(f"STORED: media_url={inserted[0]}, media_type={inserted[1]}")   # Render log
+        return jsonify({
+            "message": "Message sent",
+            "stored_media_url": inserted[0],
+            "stored_media_type": inserted[1]
+        })
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
         print(f"SEND ERROR: {tb}")
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/debug/send-test', methods=['GET'])
@@ -8134,6 +8141,7 @@ def public_chats():
     return jsonify({"chats": chats})
 
 
+
 @app.route('/api/chats/<room_id>/messages', methods=['GET', 'OPTIONS'])
 @cross_origin()
 @jwt_required(optional=True)
@@ -8145,14 +8153,14 @@ def get_chat_messages(room_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    # Check if room_id belongs to a group chat
+    # Check if room_id is a group chat
     cur.execute("SELECT id FROM chat_rooms WHERE id = %s", (room_id,))
     is_group = cur.fetchone() is not None
 
     if is_group:
         # Group chat – fetch messages by room_id
         cur.execute("""
-            SELECT m.content, m.sender_id,
+            SELECT m.content, m.sender_id, m.media_url, m.media_type,
                    COALESCE(u.facts->>'business_name', u.name) as display_name,
                    u.facts->>'rc_number' as rc,
                    m.created_at
@@ -8165,7 +8173,7 @@ def get_chat_messages(room_id):
     else:
         # Direct chat – fetch messages between the two users, ignoring room_id
         cur.execute("""
-            SELECT m.content, m.sender_id,
+            SELECT m.content, m.sender_id, m.media_url, m.media_type,
                    COALESCE(u.facts->>'business_name', u.name) as display_name,
                    u.facts->>'rc_number' as rc,
                    m.created_at
@@ -8181,11 +8189,13 @@ def get_chat_messages(room_id):
     conn.close()
 
     messages = [{
-        "content": r[0],
+        "content": r[0] or "",
         "sender_id": r[1],
-        "sender_name": r[2],
-        "sender_rc": r[3] or "",
-        "time": r[4].strftime('%I:%M %p') if r[4] else ""
+        "media_url": r[2],
+        "media_type": r[3],
+        "sender_name": r[4],
+        "sender_rc": r[5] or "",
+        "time": r[6].strftime('%I:%M %p') if r[6] else ""
     } for r in rows]
 
     return jsonify({"messages": messages, "current_user_id": user_id})

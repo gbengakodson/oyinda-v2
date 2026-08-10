@@ -8212,20 +8212,29 @@ def signed_url():
     if not file_path:
         return jsonify({"error": "path required"}), 400
 
-    # Generate a signed URL using Supabase's /storage/v1/object/sign route
-    resp = requests.post(
-        f"{SUPABASE_URL}/storage/v1/object/sign/chat-media/{file_path}",
-        headers={
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={"expiresIn": 3600}   # URL valid for 1 hour
-    )
-    if resp.status_code != 200:
-        return jsonify({"error": "Could not generate signed URL"}), 500
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/storage/v1/object/sign/chat-media/{file_path}",
+            headers={
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={"expiresIn": 3600}
+        )
+        # Log the status and response for debugging
+        print(f"SIGNED-URL STATUS: {resp.status_code}, RESPONSE: {resp.text}")
+        if resp.status_code != 200:
+            return jsonify({"error": f"Supabase error: {resp.text}"}), 500
 
-    signed = resp.json()
-    return jsonify({"signedUrl": signed.get("signedURL") or signed.get("url")})
+        result = resp.json()
+        signed = result.get("signedURL") or result.get("url")
+        if not signed:
+            return jsonify({"error": "No signedURL in Supabase response"}), 500
+
+        return jsonify({"signedUrl": signed})
+    except Exception as e:
+        print(f"SIGNED-URL EXCEPTION: {e}")
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 
 
@@ -8237,8 +8246,9 @@ def upload_file():
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files['file']
-    # Limit to 10 MB
     file_content = file.read()
+
+    # Limit to 10 MB
     if len(file_content) > 10 * 1024 * 1024:
         return jsonify({"error": "File too large (max 10 MB)"}), 400
 
@@ -8251,7 +8261,7 @@ def upload_file():
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": file.mimetype or "application/octet-stream"
         },
-        data=file.read(),
+        data=file_content,
         timeout=30
     )
 

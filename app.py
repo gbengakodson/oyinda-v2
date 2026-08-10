@@ -8023,10 +8023,12 @@ def send_message():
     try:
         conn = get_conn()
         cur = conn.cursor()
+        media_url = data.get('media_url')
+        media_type = data.get('media_type')
         cur.execute(
-            """INSERT INTO messages (sender_id, receiver_id, room_id, content, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, now(), now())""",
-            (user_id, receiver_id, room_id, content)
+            """INSERT INTO messages (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, now(), now())""",
+            (user_id, receiver_id, room_id, content, media_url, media_type)
         )
         conn.commit()
         conn.close()

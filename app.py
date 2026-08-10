@@ -8037,6 +8037,29 @@ def send_message():
         print(f"SEND ERROR: {tb}")
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
+@app.route('/debug/send-test', methods=['GET'])
+def debug_send_test():
+    user_id = '26793e53-d482-4f93-b31e-9d2b94530866'   # Gbenga's ID
+    receiver_id = 'd019f879-0354-43dc-8dc1-60a258f13382' # the partner ID you gave
+    content = ''
+    media_url = 'test/path.jpg'
+    media_type = 'image'
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """INSERT INTO messages (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
+               VALUES (%s, %s, NULL, %s, %s, %s, now(), now())""",
+            (user_id, receiver_id, content, media_url, media_type)
+        )
+        conn.commit()
+        return jsonify({"message": "Inserted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @app.route('/api/chats', methods=['GET'])
 @cross_origin()

@@ -8222,7 +8222,7 @@ def signed_url():
             json={"expiresIn": 3600}
         )
         # Log the status and response for debugging
-        print(f"SIGNED-URL STATUS: {resp.status_code}, RESPONSE: {resp.text}")
+        print(f"SIGNED-URL PATH: {file_path}, STATUS: {resp.status_code}, RESPONSE: {resp.text}")
         if resp.status_code != 200:
             return jsonify({"error": f"Supabase error: {resp.text}"}), 500
 

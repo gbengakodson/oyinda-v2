@@ -8246,9 +8246,8 @@ def upload_file():
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files['file']
-    file_content = file.read()
+    file_content = file.read()   # read once
 
-    # Limit to 10 MB
     if len(file_content) > 10 * 1024 * 1024:
         return jsonify({"error": "File too large (max 10 MB)"}), 400
 
@@ -8266,8 +8265,10 @@ def upload_file():
     )
 
     if resp.status_code not in (200, 201):
+        print(f"UPLOAD ERROR: {resp.status_code} – {resp.text}")
         return jsonify({"error": f"Upload failed: {resp.text}"}), 500
 
+    print(f"UPLOAD SUCCESS: {filename}")
     return jsonify({"path": filename})
 
 

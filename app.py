@@ -7997,19 +7997,19 @@ def send_message():
     receiver_id = data.get('receiver_id')
     room_id = data.get('room_id')
     content = data.get('content', '').strip()
+    media_url = data.get('media_url')
+    media_type = data.get('media_type')
 
-    if not content and not data.get('media_url'):
+    if not content and not media_url:
         return jsonify({"error": "content or media_url required"}), 400
 
     # For direct chats, room_id is the partner's user ID → use as receiver_id, leave room_id null
-    is_direct = False
     if not receiver_id and room_id:
         import uuid as uuid_check
         try:
             uuid_check.UUID(room_id)
             receiver_id = room_id
             room_id = None   # keep it null for direct chats, matching old messages
-            is_direct = True
         except (ValueError, AttributeError):
             pass   # it's a group room name
 
@@ -8023,8 +8023,6 @@ def send_message():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        media_url = data.get('media_url')
-        media_type = data.get('media_type')
         cur.execute(
             """INSERT INTO messages (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
                VALUES (%s, %s, %s, %s, %s, %s, now(), now())""",

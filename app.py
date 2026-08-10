@@ -8009,14 +8009,13 @@ def send_message():
         try:
             uuid_check.UUID(room_id)
             receiver_id = room_id
-            room_id = None   # keep it null for direct chats, matching old messages
+            room_id = None
         except (ValueError, AttributeError):
-            pass   # it's a group room name
+            pass   # it's a group room
 
     if not receiver_id and not room_id:
         return jsonify({"error": "receiver_id or room_id required"}), 400
 
-    # Always have a receiver_id (fallback to sender for groups)
     if not receiver_id:
         receiver_id = user_id
 
@@ -8024,7 +8023,8 @@ def send_message():
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO messages (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
+            """INSERT INTO messages
+               (sender_id, receiver_id, room_id, content, media_url, media_type, created_at, updated_at)
                VALUES (%s, %s, %s, %s, %s, %s, now(), now())""",
             (user_id, receiver_id, room_id, content, media_url, media_type)
         )
@@ -8036,6 +8036,7 @@ def send_message():
         tb = traceback.format_exc()
         print(f"SEND ERROR: {tb}")
         return jsonify({"error": f"Database error: {str(e)}"}), 500
+
 
 @app.route('/debug/send-test', methods=['GET'])
 def debug_send_test():

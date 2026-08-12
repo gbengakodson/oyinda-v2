@@ -6320,6 +6320,69 @@ def bank_transfer():
         return jsonify({"error": str(e)}), 500
 
 
+
+@app.route('/webhook/breet', methods=['POST'])
+def breet_webhook():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    # In mock mode, we accept either tx_hash or disbursement_id to find the log
+    tx_hash = data.get('tx_hash')
+    disbursement_id = data.get('disbursement_id')
+
+    if not tx_hash and not disbursement_id:
+        return jsonify({"error": "tx_hash or disbursement_id required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if tx_hash:
+            cur.execute("""
+                SELECT id, user_id, amount_ngn, status
+                FROM disbursement_logs
+                WHERE tx_hash = %s AND status = 'pending'
+                LIMIT 1
+            """, (tx_hash,))
+        else:
+            cur.execute("""
+                SELECT id, user_id, amount_ngn, status
+                FROM disbursement_logs
+                WHERE id = %s AND status = 'pending'
+                LIMIT 1
+            """, (disbursement_id,))
+
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "No pending disbursement found"}), 404
+
+        log_id, user_id, amount_ngn, _ = row
+
+        # Mark completed
+        cur.execute("""
+            UPDATE disbursement_logs
+            SET status = 'completed', completed_at = now()
+            WHERE id = %s
+        """, (log_id,))
+
+        # Optional: log event
+        try:
+            append_event(user_id, user_id, 'OfframpCompleted', {
+                "amount_ngn": amount_ngn,
+                "disbursement_log_id": str(log_id)
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")
+
+        conn.commit()
+        return jsonify({"message": "Disbursement marked as completed"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route('/tax/receipt', methods=['POST'])
 @jwt_required()
 def tax_receipt():

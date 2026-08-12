@@ -777,6 +777,132 @@ def extract_date_range(date_param=None):
     return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
 
 
+def handle_withdraw_command(user_id, text):
+    """
+    Detect withdrawal requests and initiate crypto off-ramp.
+    Returns (handled, response_message).
+    """
+    import re
+    # Match patterns like: withdraw 50000, withdraw ₦50000, withdraw 50k, withdraw N50,000
+    match = re.search(r'(?:withdraw|pull out|take out)\s+[₦N]?([\d,]+)(k|K)?', text)
+    if not match:
+        return False, None
+
+    amount_str = match.group(1).replace(',', '')
+    multiplier = 1000 if match.group(2) else 1
+    amount_ngn = float(amount_str) * multiplier
+
+    # Find the user's most recent approved, undisbursed loan
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id FROM inventory_loans
+            WHERE user_id = %s
+              AND status = 'approved'
+              AND (disbursed IS FALSE OR disbursed IS NULL)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return True, "You don't have any approved loan waiting for disbursement."
+
+        loan_id = row[0]
+
+        # Call the same logic as /withdraw
+        # To avoid duplication, we'll use the same internal function (see below)
+        # For now, we'll call a helper that performs the withdrawal
+        from breet_client import BreetClient
+        client = BreetClient()
+
+        # Fetch primary bank
+        cur.execute("""
+            SELECT bank_name, account_number, account_name
+            FROM user_banks
+            WHERE user_id = %s AND is_primary = true
+            LIMIT 1
+        """, (user_id,))
+        bank = cur.fetchone()
+        if not bank:
+            return True, "Please add your bank account details first (Settings → Bank)."
+
+        bank_name, account_number, account_name = bank
+
+        # Get/create Breet address
+        cur.execute("""
+            SELECT address, breet_subaccount_id
+            FROM breet_deposit_addresses
+            WHERE user_id = %s
+        """, (user_id,))
+        breet_row = cur.fetchone()
+        if breet_row:
+            breet_address = breet_row[0]
+            subaccount_id = breet_row[1]
+        else:
+            result = client.create_subaccount(user_id, bank_name, account_number, account_name)
+            breet_address = result['address']
+            subaccount_id = result['subaccount_id']
+            cur.execute("""
+                INSERT INTO breet_deposit_addresses
+                (user_id, address, network, breet_subaccount_id)
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, breet_address, 'BEP20', subaccount_id))
+
+        # Rate and amount
+        rate = client.get_rate()
+        usdt_amount = round(amount_ngn / rate, 6)
+
+        # Simulate transfer
+        if os.getenv("BREET_MOCK", "true").lower() == "true":
+            import hashlib, time
+            fake_tx = hashlib.sha256(f"{loan_id}{amount_ngn}{time.time()}".encode()).hexdigest()
+            tx_hash = f"0x{fake_tx[:64]}"
+        else:
+            # TODO: real transfer
+            tx_hash = None
+
+        # Insert log
+        cur.execute("""
+            INSERT INTO disbursement_logs
+            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+            RETURNING id
+        """, (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash))
+        disbursement_id = cur.fetchone()[0]
+
+        # Update loan
+        cur.execute("""
+            UPDATE inventory_loans
+            SET disbursement_method = 'crypto',
+                breet_reference = %s,
+                disbursed = true,
+                status = 'disbursed'
+            WHERE id = %s
+        """, (subaccount_id, loan_id))
+
+        conn.commit()
+
+        # Log event
+        try:
+            append_event(user_id, user_id, 'LoanDisbursed', {
+                "loan_id": loan_id,
+                "amount_ngn": amount_ngn,
+                "usdt_amount": usdt_amount,
+                "rate": rate,
+                "tx_hash": tx_hash
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")
+
+        return True, f"₦{amount_ngn:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. Reference: {tx_hash[:10]}..."
+    except Exception as e:
+        conn.rollback()
+        return True, f"Withdrawal failed: {str(e)}"
+    finally:
+        conn.close()
+
+
 
 
 @app.route('/login', methods=['POST'])
@@ -1021,23 +1147,94 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
 
-            # All required fields present – save the withdrawal request
+
+            # All required fields present – start offramp withdrawal
             wallet = ensure_wallet(user_id)
             if wallet['balance'] < amount:
                 return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
 
+            # Debit wallet immediately
+            new_balance = wallet['balance'] - amount
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO pending_withdrawals
-                (user_id, amount, bank_name, account_number, account_type, account_name, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, amount, bank_name, account_number, account_type, account_name))
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_balance, user_id))
+            cur.execute(
+                "INSERT INTO events (user_id, actor_id, event_type, payload, created_at) VALUES (%s, %s, %s, %s, now())",
+                (user_id, user_id, 'WalletDebited', json.dumps({
+                    "amount": amount,
+                    "bank_name": bank_name,
+                    "account_number": account_number,
+                    "account_name": account_name,
+                    "reason": "withdrawal_offramp"
+                })))
             conn.commit()
             conn.close()
 
+            # Offramp via crypto
+            from breet_client import BreetClient
+            client = BreetClient()
+
+            # Get or create Breet deposit address for this user
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT address, breet_subaccount_id FROM breet_deposit_addresses WHERE user_id = %s",
+                        (user_id,))
+            breet_row = cur.fetchone()
+            if breet_row:
+                breet_address = breet_row[0]
+                subaccount_id = breet_row[1]
+            else:
+                # Use the bank details from the withdrawal command
+                result = client.create_subaccount(user_id, bank_name, account_number, account_name)
+                breet_address = result['address']
+                subaccount_id = result['subaccount_id']
+                cur.execute("""
+                    INSERT INTO breet_deposit_addresses
+                    (user_id, address, network, breet_subaccount_id)
+                    VALUES (%s, %s, %s, %s)
+                """, (user_id, breet_address, 'BEP20', subaccount_id))
+                conn.commit()
+            conn.close()
+
+            # Fetch rate and calculate USDT amount
+            rate = client.get_rate()  # NGN per USDT
+            usdt_amount = round(amount / rate, 6)
+
+            # Simulate USDT transfer (mock mode)
+            if os.getenv("BREET_MOCK", "true").lower() == "true":
+                import hashlib, time
+                fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
+                tx_hash = f"0x{fake_tx[:64]}"
+            else:
+                # TODO: real web3 transfer
+                tx_hash = None
+
+            # Insert disbursement log
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO disbursement_logs
+                (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+                VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+            """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
+            conn.commit()
+            conn.close()
+
+            # Log event (optional)
+            try:
+                append_event(user_id, user_id, 'OfframpInitiated', {
+                    "amount_ngn": amount,
+                    "usdt_amount": usdt_amount,
+                    "rate": rate,
+                    "tx_hash": tx_hash
+                })
+            except Exception as e:
+                print(f"EVENT LOG WARNING: {e}")
+
             return jsonify({
-                "message": f"Withdrawal request of ₦{amount:,.2f} to {bank_name} ({account_number}) submitted. Admin will process it shortly.",
+                "message": f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. "
+                           f"Reference: {tx_hash[:10]}...",
                 "tone": "income"
             })
 

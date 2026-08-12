@@ -974,7 +974,11 @@ def process_user_command(user_id, text):
     text_lower = text.lower().strip()
 
     # ---- AI‑FIRST PARSING (for any text with a number) ----
-    if re.search(r'\d', text):
+    # ===== SKIP AI PARSING FOR WITHDRAWAL / TRANSFER COMMANDS =====
+    text_lower = text.lower()
+    skip_ai = any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal'])
+
+    if re.search(r'\d', text) and not skip_ai:
         groq_result = parse_intent_groq(text, user_id)
         if groq_result:
             # Normalize to a list of transactions
@@ -1025,6 +1029,9 @@ def process_user_command(user_id, text):
                         "message": f"Logged {len(logged)} item(s):\n" + "\n".join(logged),
                         "tone": "neutral"
                     })
+    else:
+        # If no digits or skip_ai, ensure groq_result is defined (it may be used later)
+        groq_result = None
 
         # If AI didn't give high confidence or no items, fall through to rule‑based system
 

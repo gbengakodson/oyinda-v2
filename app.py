@@ -857,6 +857,19 @@ def handle_offramp_withdrawal(user_id, text):
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")
 
+    # Log as expense so it appears in the sidebar history
+    try:
+        append_event(user_id, user_id, 'ExpenseLogged', {
+            "amount": amount,
+            "currency": "NGN",
+            "category": "withdrawal",
+            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+            "description": f"Withdrawal to {bank_name} ({account_number[-4:]})",
+            "reason": "offramp_payout"
+        })
+    except Exception as e:
+        print(f"EVENT LOG WARNING: {e}")
+
     # Always create a NEW Breet sub-account with the current bank details
     result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
     breet_address = result['address']

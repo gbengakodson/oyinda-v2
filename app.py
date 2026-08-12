@@ -779,21 +779,18 @@ def extract_date_range(date_param=None):
 
 def handle_offramp_withdrawal(user_id, text):
     """
-    Detect withdrawal to bank and execute offramp immediately.
+    Detect bank payouts (withdraw / send / transfer to bank) and execute offramp immediately.
     Returns (handled, message_or_None)
     """
     import re
     text_lower = text.lower().strip()
-    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal']):
+    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal', 'send', 'transfer']):
         return False, None
 
-    # Patterns: withdraw 5000 to 2176411819, zenith bank
-    #           withdraw ₦5,000 to 058 0123456789, UBA
-    #           withdraw 50k to 1234567890 (bank name optional)
-    # We'll extract amount first, then account number and bank name
+    # Extract amount first (supports 5000, ₦5,000, 50k, N50,000)
     amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
     if not amount_match:
-        return True, "How much do you want to withdraw? (e.g., withdraw 5000 to 058 0123456789, Zenith Bank)"
+        return True, "How much do you want to send? (e.g., withdraw 5000 to 2176411819, Zenith Bank)"
 
     amount_str = amount_match.group(1).replace(',', '')
     multiplier = 1000 if amount_match.group(2) else 1
@@ -802,26 +799,30 @@ def handle_offramp_withdrawal(user_id, text):
     except:
         return True, "I couldn't understand the amount. Please try again."
 
-    # Extract account number (10 digits or 11 digits starting with 0)
+    # Extract account number (10 or 11 digits)
     account_match = re.search(r'\b(\d{10,11})\b', text_lower)
     if not account_match:
-        return True, "Please provide the account number you want to withdraw to."
+        return True, "Please provide the bank account number you want to send to."
 
     account_number = account_match.group(1)
 
-    # Bank name: everything after "to <account>" or after the account number, cleaned
-    # Try to find a bank name after the account number or after 'to'
+    # If the number looks like a Nigerian phone number (11 digits starting 0),
+    # return False so the internal wallet transfer logic handles it.
+    if len(account_number) == 11 and account_number.startswith('0'):
+        return False, None
+
+    # Determine bank name from text after the account number
     bank_name = None
     parts = text_lower.split(account_number)
     if len(parts) > 1:
         rest = parts[1].strip()
-        # Remove common words
         rest = re.sub(r'^(and|,|\s)*', '', rest)
         rest = rest.strip().rstrip('.').strip()
         if rest:
             bank_name = rest.title()
+
     if not bank_name:
-        # Fallback: look for known bank names in the text
+        # Fallback: look for known bank names
         known_banks = ['zenith', 'uba', 'gtbank', 'gt bank', 'access', 'first bank', 'fidelity', 'union', 'stanbic', 'keystone', 'polaris', 'wema', 'heritage', 'providus']
         for bank in known_banks:
             if bank in text_lower:
@@ -830,11 +831,11 @@ def handle_offramp_withdrawal(user_id, text):
     if not bank_name:
         bank_name = "Unknown Bank"
 
-    # Call the internal offramp function (below)
+    # ----- Offramp execution -----
     from breet_client import BreetClient
     client = BreetClient()
 
-    # Debit wallet
+    # Debit wallet immediately
     wallet = ensure_wallet(user_id)
     if wallet['balance'] < amount:
         return True, f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available."
@@ -845,39 +846,27 @@ def handle_offramp_withdrawal(user_id, text):
     cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
                 (new_balance, user_id))
 
-    # Record wallet debit event
+    # Record debit event
     try:
         append_event(user_id, user_id, 'WalletDebited', {
             "amount": amount,
             "bank_name": bank_name,
             "account_number": account_number,
-            "reason": "offramp_withdrawal"
+            "reason": "offramp_payout"
         })
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")
 
-    # Get or create Breet deposit address
-    cur.execute("SELECT address, breet_subaccount_id FROM breet_deposit_addresses WHERE user_id = %s", (user_id,))
-    row = cur.fetchone()
-    if row:
-        breet_address = row[0]
-        subaccount_id = row[1]
-    else:
-        # Create mock subaccount (we may not have account_name)
-        result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
-        breet_address = result['address']
-        subaccount_id = result['subaccount_id']
-        cur.execute("""
-            INSERT INTO breet_deposit_addresses
-            (user_id, address, network, breet_subaccount_id)
-            VALUES (%s, %s, %s, %s)
-        """, (user_id, breet_address, 'BEP20', subaccount_id))
+    # Always create a NEW Breet sub-account with the current bank details
+    result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
+    breet_address = result['address']
+    subaccount_id = result['subaccount_id']
 
-    # Get rate and compute USDT
+    # Fetch rate and compute USDT amount
     rate = client.get_rate()
     usdt_amount = round(amount / rate, 6)
 
-    # Simulate USDT transfer (mock)
+    # Simulate USDT transfer (mock mode)
     if os.getenv("BREET_MOCK", "true").lower() == "true":
         import hashlib, time
         fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
@@ -902,7 +891,8 @@ def handle_offramp_withdrawal(user_id, text):
             "amount_ngn": amount,
             "usdt_amount": usdt_amount,
             "rate": rate,
-            "tx_hash": tx_hash
+            "tx_hash": tx_hash,
+            "breet_subaccount_id": subaccount_id
         })
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")

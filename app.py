@@ -6396,6 +6396,44 @@ def breet_webhook():
         conn.close()
 
 
+@app.route('/webhook/breet/test', methods=['GET'])
+def breet_webhook_test():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE disbursement_logs
+            SET status = 'completed', completed_at = now()
+            WHERE id = (
+                SELECT id FROM disbursement_logs
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+            )
+            RETURNING id, user_id, amount_ngn
+        """)
+        row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return jsonify({"error": "No pending disbursement found"}), 404
+
+        log_id, user_id, amount_ngn = row
+        try:
+            append_event(user_id, user_id, 'OfframpCompleted', {
+                "amount_ngn": amount_ngn,
+                "disbursement_log_id": str(log_id)
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")
+
+        return jsonify({"message": f"Marked disbursement {log_id} as completed"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route('/tax/receipt', methods=['POST'])
 @jwt_required()
 def tax_receipt():

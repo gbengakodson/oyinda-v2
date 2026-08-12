@@ -777,130 +777,138 @@ def extract_date_range(date_param=None):
     return "1900-01-01", today.strftime("%Y-%m-%d"), "all time"
 
 
-def handle_withdraw_command(user_id, text):
+def handle_offramp_withdrawal(user_id, text):
     """
-    Detect withdrawal requests and initiate crypto off-ramp.
-    Returns (handled, response_message).
+    Detect withdrawal to bank and execute offramp immediately.
+    Returns (handled, message_or_None)
     """
     import re
-    # Match patterns like: withdraw 50000, withdraw ₦50000, withdraw 50k, withdraw N50,000
-    match = re.search(r'(?:withdraw|pull out|take out)\s+[₦N]?([\d,]+)(k|K)?', text)
-    if not match:
+    text_lower = text.lower().strip()
+    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal']):
         return False, None
 
-    amount_str = match.group(1).replace(',', '')
-    multiplier = 1000 if match.group(2) else 1
-    amount_ngn = float(amount_str) * multiplier
+    # Patterns: withdraw 5000 to 2176411819, zenith bank
+    #           withdraw ₦5,000 to 058 0123456789, UBA
+    #           withdraw 50k to 1234567890 (bank name optional)
+    # We'll extract amount first, then account number and bank name
+    amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
+    if not amount_match:
+        return True, "How much do you want to withdraw? (e.g., withdraw 5000 to 058 0123456789, Zenith Bank)"
 
-    # Find the user's most recent approved, undisbursed loan
+    amount_str = amount_match.group(1).replace(',', '')
+    multiplier = 1000 if amount_match.group(2) else 1
+    try:
+        amount = float(amount_str) * multiplier
+    except:
+        return True, "I couldn't understand the amount. Please try again."
+
+    # Extract account number (10 digits or 11 digits starting with 0)
+    account_match = re.search(r'\b(\d{10,11})\b', text_lower)
+    if not account_match:
+        return True, "Please provide the account number you want to withdraw to."
+
+    account_number = account_match.group(1)
+
+    # Bank name: everything after "to <account>" or after the account number, cleaned
+    # Try to find a bank name after the account number or after 'to'
+    bank_name = None
+    parts = text_lower.split(account_number)
+    if len(parts) > 1:
+        rest = parts[1].strip()
+        # Remove common words
+        rest = re.sub(r'^(and|,|\s)*', '', rest)
+        rest = rest.strip().rstrip('.').strip()
+        if rest:
+            bank_name = rest.title()
+    if not bank_name:
+        # Fallback: look for known bank names in the text
+        known_banks = ['zenith', 'uba', 'gtbank', 'gt bank', 'access', 'first bank', 'fidelity', 'union', 'stanbic', 'keystone', 'polaris', 'wema', 'heritage', 'providus']
+        for bank in known_banks:
+            if bank in text_lower:
+                bank_name = bank.title()
+                break
+    if not bank_name:
+        bank_name = "Unknown Bank"
+
+    # Call the internal offramp function (below)
+    from breet_client import BreetClient
+    client = BreetClient()
+
+    # Debit wallet
+    wallet = ensure_wallet(user_id)
+    if wallet['balance'] < amount:
+        return True, f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available."
+
+    new_balance = wallet['balance'] - amount
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                (new_balance, user_id))
+
+    # Record wallet debit event
     try:
-        cur.execute("""
-            SELECT id FROM inventory_loans
-            WHERE user_id = %s
-              AND status = 'approved'
-              AND (disbursed IS FALSE OR disbursed IS NULL)
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (user_id,))
-        row = cur.fetchone()
-        if not row:
-            return True, "You don't have any approved loan waiting for disbursement."
-
-        loan_id = row[0]
-
-        # Call the same logic as /withdraw
-        # To avoid duplication, we'll use the same internal function (see below)
-        # For now, we'll call a helper that performs the withdrawal
-        from breet_client import BreetClient
-        client = BreetClient()
-
-        # Fetch primary bank
-        cur.execute("""
-            SELECT bank_name, account_number, account_name
-            FROM user_banks
-            WHERE user_id = %s AND is_primary = true
-            LIMIT 1
-        """, (user_id,))
-        bank = cur.fetchone()
-        if not bank:
-            return True, "Please add your bank account details first (Settings → Bank)."
-
-        bank_name, account_number, account_name = bank
-
-        # Get/create Breet address
-        cur.execute("""
-            SELECT address, breet_subaccount_id
-            FROM breet_deposit_addresses
-            WHERE user_id = %s
-        """, (user_id,))
-        breet_row = cur.fetchone()
-        if breet_row:
-            breet_address = breet_row[0]
-            subaccount_id = breet_row[1]
-        else:
-            result = client.create_subaccount(user_id, bank_name, account_number, account_name)
-            breet_address = result['address']
-            subaccount_id = result['subaccount_id']
-            cur.execute("""
-                INSERT INTO breet_deposit_addresses
-                (user_id, address, network, breet_subaccount_id)
-                VALUES (%s, %s, %s, %s)
-            """, (user_id, breet_address, 'BEP20', subaccount_id))
-
-        # Rate and amount
-        rate = client.get_rate()
-        usdt_amount = round(amount_ngn / rate, 6)
-
-        # Simulate transfer
-        if os.getenv("BREET_MOCK", "true").lower() == "true":
-            import hashlib, time
-            fake_tx = hashlib.sha256(f"{loan_id}{amount_ngn}{time.time()}".encode()).hexdigest()
-            tx_hash = f"0x{fake_tx[:64]}"
-        else:
-            # TODO: real transfer
-            tx_hash = None
-
-        # Insert log
-        cur.execute("""
-            INSERT INTO disbursement_logs
-            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
-            RETURNING id
-        """, (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash))
-        disbursement_id = cur.fetchone()[0]
-
-        # Update loan
-        cur.execute("""
-            UPDATE inventory_loans
-            SET disbursement_method = 'crypto',
-                breet_reference = %s,
-                disbursed = true,
-                status = 'disbursed'
-            WHERE id = %s
-        """, (subaccount_id, loan_id))
-
-        conn.commit()
-
-        # Log event
-        try:
-            append_event(user_id, user_id, 'LoanDisbursed', {
-                "loan_id": loan_id,
-                "amount_ngn": amount_ngn,
-                "usdt_amount": usdt_amount,
-                "rate": rate,
-                "tx_hash": tx_hash
-            })
-        except Exception as e:
-            print(f"EVENT LOG WARNING: {e}")
-
-        return True, f"₦{amount_ngn:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. Reference: {tx_hash[:10]}..."
+        append_event(user_id, user_id, 'WalletDebited', {
+            "amount": amount,
+            "bank_name": bank_name,
+            "account_number": account_number,
+            "reason": "offramp_withdrawal"
+        })
     except Exception as e:
-        conn.rollback()
-        return True, f"Withdrawal failed: {str(e)}"
-    finally:
-        conn.close()
+        print(f"EVENT LOG WARNING: {e}")
+
+    # Get or create Breet deposit address
+    cur.execute("SELECT address, breet_subaccount_id FROM breet_deposit_addresses WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    if row:
+        breet_address = row[0]
+        subaccount_id = row[1]
+    else:
+        # Create mock subaccount (we may not have account_name)
+        result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
+        breet_address = result['address']
+        subaccount_id = result['subaccount_id']
+        cur.execute("""
+            INSERT INTO breet_deposit_addresses
+            (user_id, address, network, breet_subaccount_id)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, breet_address, 'BEP20', subaccount_id))
+
+    # Get rate and compute USDT
+    rate = client.get_rate()
+    usdt_amount = round(amount / rate, 6)
+
+    # Simulate USDT transfer (mock)
+    if os.getenv("BREET_MOCK", "true").lower() == "true":
+        import hashlib, time
+        fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
+        tx_hash = f"0x{fake_tx[:64]}"
+    else:
+        # TODO: real web3 transfer
+        tx_hash = None
+
+    # Insert disbursement log
+    cur.execute("""
+        INSERT INTO disbursement_logs
+        (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+        VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+    """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
+
+    conn.commit()
+    conn.close()
+
+    # Optional event
+    try:
+        append_event(user_id, user_id, 'OfframpInitiated', {
+            "amount_ngn": amount,
+            "usdt_amount": usdt_amount,
+            "rate": rate,
+            "tx_hash": tx_hash
+        })
+    except Exception as e:
+        print(f"EVENT LOG WARNING: {e}")
+
+    return True, (f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. "
+                  f"Reference: {tx_hash[:10]}...")
 
 
 
@@ -973,7 +981,10 @@ def process_user_command(user_id, text):
     from core import get_user_facts
     text_lower = text.lower().strip()
 
-    # ---- AI‑FIRST PARSING (for any text with a number) ----
+    # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====
+    handled, response = handle_offramp_withdrawal(user_id, text)
+    if handled:
+        return jsonify({"message": response, "tone": "income"})
     # ===== SKIP AI PARSING FOR WITHDRAWAL / TRANSFER COMMANDS =====
     text_lower = text.lower()
     skip_ai = any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal'])

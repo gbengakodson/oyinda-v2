@@ -8273,6 +8273,142 @@ def upload_file():
 
 
 
+# ---------- CRYPTO OFF-RAMP LOAN WITHDRAWAL ----------
+@app.route('/withdraw', methods=['POST'])
+@jwt_required()
+def withdraw_loan_crypto():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    loan_id = data.get('loan_id')
+    amount_ngn = float(data.get('amount_ngn', 0))
+
+    if not loan_id or amount_ngn <= 0:
+        return jsonify({"error": "loan_id and amount_ngn required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        # 1. Fetch loan and verify ownership
+        cur.execute("""
+            SELECT id, user_id, status, approved_amount, disbursed, breet_reference
+            FROM inventory_loans
+            WHERE id = %s
+        """, (loan_id,))
+        loan = cur.fetchone()
+        if not loan:
+            return jsonify({"error": "Loan not found"}), 404
+        if loan[1] != user_id:
+            return jsonify({"error": "Unauthorized"}), 403
+        if loan[2] not in ('approved', 'disbursed'):   # adjust to your actual status values
+            return jsonify({"error": "Loan not approved yet"}), 400
+        if loan[3] and loan[4] is not None:   # already disbursed via crypto
+            return jsonify({"error": "Loan already disbursed"}), 400
+
+        # 2. Fetch primary bank account
+        cur.execute("""
+            SELECT bank_name, account_number, account_name
+            FROM user_banks
+            WHERE user_id = %s AND is_primary = true
+            LIMIT 1
+        """, (user_id,))
+        bank = cur.fetchone()
+        if not bank:
+            return jsonify({"error": "No primary bank account. Please add one first."}), 400
+
+        bank_name, account_number, account_name = bank
+
+        # 3. Get or create Breet deposit address
+        cur.execute("""
+            SELECT address, breet_subaccount_id
+            FROM breet_deposit_addresses
+            WHERE user_id = %s
+        """, (user_id,))
+        breet_row = cur.fetchone()
+        if breet_row:
+            breet_address = breet_row[0]
+            subaccount_id = breet_row[1]
+        else:
+            # Use mock Breet client
+            from breet_client import BreetClient
+            client = BreetClient()
+            result = client.create_subaccount(user_id, bank_name, account_number, account_name)
+            breet_address = result['address']
+            subaccount_id = result['subaccount_id']
+            cur.execute("""
+                INSERT INTO breet_deposit_addresses
+                (user_id, address, network, breet_subaccount_id)
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, breet_address, 'BEP20', subaccount_id))
+
+        # 4. Fetch current USDT/NGN rate
+        from breet_client import BreetClient
+        client = BreetClient()
+        rate = client.get_rate()   # NGN per USDT
+        usdt_amount = round(amount_ngn / rate, 6)
+
+        # 5. Simulate USDT transfer from hot wallet
+        # In mock mode, generate a fake tx hash
+        if os.getenv("BREET_MOCK", "true").lower() == "true":
+            import hashlib
+            fake_tx = hashlib.sha256(f"{loan_id}{amount_ngn}{time.time()}".encode()).hexdigest()
+            tx_hash = f"0x{fake_tx[:64]}"
+        else:
+            # TODO: Real transfer via web3 (we'll implement later)
+            tx_hash = None   # replace with actual tx_hash
+
+        # 6. Insert disbursement log
+        cur.execute("""
+            INSERT INTO disbursement_logs
+            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+            RETURNING id
+        """, (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash))
+        disbursement_id = cur.fetchone()[0]
+
+        # 7. Update loan: mark as disbursed and store breet reference
+        cur.execute("""
+            UPDATE inventory_loans
+            SET disbursement_method = 'crypto',
+                breet_reference = %s,
+                disbursed = true,
+                status = 'disbursed'
+            WHERE id = %s
+        """, (subaccount_id, loan_id))
+
+        conn.commit()
+
+        # 8. Create a LoanDisbursed event (if you have append_event)
+        try:
+            append_event(user_id, user_id, 'LoanDisbursed', {
+                "loan_id": loan_id,
+                "amount_ngn": amount_ngn,
+                "usdt_amount": usdt_amount,
+                "rate": rate,
+                "tx_hash": tx_hash
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")   # non-fatal
+
+        return jsonify({
+            "message": f"₦{amount_ngn:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. " 
+                       f"Reference: {tx_hash[:10]}...",
+            "disbursement_id": str(disbursement_id),
+            "tx_hash": tx_hash,
+            "rate": rate,
+            "usdt_amount": usdt_amount
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+
 @app.route('/admin/summary', methods=['GET'])
 @jwt_required()
 def admin_summary():

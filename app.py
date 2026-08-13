@@ -6702,13 +6702,18 @@ def update_products():
         last_update = cur.fetchone()
 
         if last_update and last_update[0] is not None:
-            time_since = datetime.utcnow() - last_update[0]
+            last_update_time = last_update[0]
+            # Ensure timezone-aware
+            if last_update_time.tzinfo is None:
+                last_update_time = last_update_time.replace(tzinfo=timezone.utc)
+            time_since = datetime.now(timezone.utc) - last_update_time
             if time_since < timedelta(days=7):
                 days_left = 7 - time_since.days
                 return jsonify({
                     "error": f"You can update your prices again in {days_left} day(s)."
                 }), 400
-        # Update the products JSONB column
+
+        # ----- UPDATE or INSERT products -----
         cur.execute("""
             UPDATE business_listings
             SET products = %s::jsonb,
@@ -6717,15 +6722,12 @@ def update_products():
         """, (json.dumps(products), user_id))
 
         if cur.rowcount == 0:
-            # If no listing exists, create one with products
             cur.execute("""
                 INSERT INTO business_listings (user_id, products, last_price_update)
                 VALUES (%s, %s::jsonb, now())
             """, (user_id, json.dumps(products)))
 
-        conn.commit()
-
-        # Generate price notifications for all other users
+        # ----- GENERATE GLOBAL NOTIFICATION (user_id NULL) -----
         try:
             # Get supplier name and city
             cur.execute("""
@@ -6747,7 +6749,7 @@ def update_products():
                 unit = product.get('unit', '').strip()
                 try:
                     price_int = int(float(price_raw))
-                    price_str = f"{price_int:,}"  # adds commas
+                    price_str = f"{price_int:,}"
                 except:
                     price_str = str(price_raw)
 
@@ -6759,22 +6761,23 @@ def update_products():
                 body_parts.append(item)
 
             notification_body = " | ".join(body_parts)
+            notification_title = f"Price update from {supplier_name}"
+            metadata = json.dumps({"supplier_id": user_id, "supplier_name": supplier_name})
 
-            # Get all other users
-            cur.execute("SELECT id FROM users WHERE id != %s", (user_id,))
-            all_other_users = cur.fetchall()
-
-            # Insert a single global notification (user_id = NULL)
+            # Insert a single global notification
             cur.execute("""
                 INSERT INTO notifications (user_id, type, title, body, metadata)
                 VALUES (NULL, 'price_alert', %s, %s, %s)
             """, (notification_title, notification_body, metadata))
-            conn.commit()
         except Exception as e:
             print(f"NOTIFICATION ERROR: {e}")
 
+        conn.commit()
         return jsonify({"message": "Products updated", "products": products})
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:

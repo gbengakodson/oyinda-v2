@@ -6711,9 +6711,26 @@ def update_products():
 
         # Generate price notifications for all other users
         try:
-            # Get the supplier business name (for message body)
-            cur.execute("SELECT COALESCE(u.facts->>'business_name', u.name) FROM users u WHERE u.id = %s", (user_id,))
-            supplier_name = cur.fetchone()[0] or "A supplier"
+            # Get supplier name and city
+            cur.execute("""
+                SELECT COALESCE(u.facts->>'business_name', u.name), 
+                       COALESCE(bl.city, '')
+                FROM users u
+                LEFT JOIN business_listings bl ON bl.user_id = u.id
+                WHERE u.id = %s
+            """, (user_id,))
+            supplier_row = cur.fetchone()
+            supplier_name = supplier_row[0] if supplier_row and supplier_row[0] else "A supplier"
+            supplier_city = supplier_row[1] if supplier_row and supplier_row[1] else ""
+
+            # Build body like "Product: Price @City" for each product
+            body_parts = []
+            for product in products:
+                item = f"{product['name']}: {product['price']}"
+                if supplier_city:
+                    item += f" @{supplier_city}"
+                body_parts.append(item)
+            notification_body = " | ".join(body_parts)  # horizontally separatable
 
             # Get all other users
             cur.execute("SELECT id FROM users WHERE id != %s", (user_id,))
@@ -6721,12 +6738,12 @@ def update_products():
 
             for (other_user_id,) in all_other_users:
                 notification_title = f"Price update from {supplier_name}"
-                notification_body = "Updated product prices: " + ", ".join(
-                    [f"{p['name']} ₦{p['price']}" for p in products])
+                # Store supplier_id in metadata for click navigation
+                metadata = json.dumps({"supplier_id": user_id, "supplier_name": supplier_name})
                 cur.execute("""
                     INSERT INTO notifications (user_id, type, title, body, metadata)
                     VALUES (%s, 'price_alert', %s, %s, %s)
-                """, (other_user_id, notification_title, notification_body, json.dumps({"supplier_id": user_id})))
+                """, (other_user_id, notification_title, notification_body, metadata))
             conn.commit()
         except Exception as e:
             print(f"NOTIFICATION ERROR: {e}")
@@ -6757,15 +6774,27 @@ def get_notifications():
     rows = cur.fetchall()
     conn.close()
 
-    notifications = [{
-        "id": r[0],
-        "type": r[1],
-        "title": r[2],
-        "body": r[3],
-        "metadata": r[4],
-        "read": r[5],
-        "created_at": r[6].strftime('%I:%M %p') if r[6] else ""
-    } for r in rows]
+    notifications = []
+    for r in rows:
+        metadata_raw = r[4]
+        if isinstance(metadata_raw, str):
+            try:
+                metadata = json.loads(metadata_raw)
+            except:
+                metadata = {}
+        else:
+            metadata = metadata_raw or {}
+
+        notifications.append({
+            "id": r[0],
+            "type": r[1],
+            "title": r[2],
+            "body": r[3],
+            "metadata": metadata,
+            "supplier_id": metadata.get("supplier_id", ""),
+            "read": r[5],
+            "created_at": r[6].strftime('%I:%M %p') if r[6] else ""
+        })
 
     return jsonify({"notifications": notifications})
 
@@ -8318,12 +8347,15 @@ def list_chats():
             l.partner_id,
             COALESCE(u.facts->>'business_name', u.name) AS display_name,
             u.facts->>'rc_number' AS rc,
+            COALESCE(bl.shop_photo, '') AS shop_photo,
             l.content AS last_message,
             l.created_at AS last_time
         FROM latest l
         JOIN users u ON u.id = l.partner_id
+        LEFT JOIN business_listings bl ON bl.user_id = l.partner_id
         ORDER BY l.created_at DESC
     """, (user_id, user_id, user_id))
+
     rows = cur.fetchall()
     conn.close()
 
@@ -8331,8 +8363,9 @@ def list_chats():
         "id": r[0],
         "name": r[1] or "Unknown",
         "rc": r[2] or "",
-        "lastMessage": r[3] or "",
-        "time": r[4].strftime('%I:%M %p') if r[4] else ""
+        "shop_photo": r[3] or "",
+        "lastMessage": r[4] or "",
+        "time": r[5].strftime('%I:%M %p') if r[5] else ""
     } for r in rows]
 
     return jsonify({"chats": chats})

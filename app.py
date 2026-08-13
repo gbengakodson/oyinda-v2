@@ -6588,6 +6588,33 @@ def view_shared_report(token):
     return html
 
 
+
+@app.route('/api/my-business', methods=['GET'])
+@jwt_required()
+def get_my_business():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT business_name, shop_photo, city, market_name, products
+        FROM business_listings
+        WHERE user_id = %s
+        LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"business": None})
+    business = {
+        "business_name": row[0],
+        "shop_photo": row[1],
+        "city": row[2],
+        "market_name": row[3],
+        "products": row[4] if row[4] else []
+    }
+    return jsonify({"business": business})
+
+
 @app.route('/tax/breakdown', methods=['GET'])
 @jwt_required()
 def tax_breakdown():

@@ -6627,7 +6627,8 @@ def get_my_business():
     return jsonify({"business": business})
 
 
-@app.route('/api/update-profile-photo', methods=['POST'])
+@app.route('/api/update-profile-photo', methods=['POST', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
 def update_profile_photo():
     user_id = get_jwt_identity()
@@ -6660,6 +6661,104 @@ def update_profile_photo():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+
+@app.route('/api/update-products', methods=['POST', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def update_products():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    products = data.get('products')
+    if products is None or not isinstance(products, list):
+        return jsonify({"error": "products list required"}), 400
+
+    # Basic validation: ensure each product has name and price
+    for product in products:
+        if not isinstance(product, dict):
+            return jsonify({"error": "Invalid product format"}), 400
+        if 'name' not in product or 'price' not in product:
+            return jsonify({"error": "Each product must have name and price"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Update the products JSONB column
+        cur.execute("""
+            UPDATE business_listings
+            SET products = %s
+            WHERE user_id = %s
+        """, (json.dumps(products), user_id))
+
+        if cur.rowcount == 0:
+            # If no listing exists, create one with products
+            cur.execute("""
+                INSERT INTO business_listings (user_id, products)
+                VALUES (%s, %s)
+            """, (user_id, json.dumps(products)))
+
+        conn.commit()
+
+        # Generate price notifications for all other users
+        try:
+            # Get the supplier business name (for message body)
+            cur.execute("SELECT COALESCE(u.facts->>'business_name', u.name) FROM users u WHERE u.id = %s", (user_id,))
+            supplier_name = cur.fetchone()[0] or "A supplier"
+
+            # Get all other users
+            cur.execute("SELECT id FROM users WHERE id != %s", (user_id,))
+            all_other_users = cur.fetchall()
+
+            for (other_user_id,) in all_other_users:
+                notification_title = f"Price update from {supplier_name}"
+                notification_body = "Updated product prices: " + ", ".join(
+                    [f"{p['name']} ₦{p['price']}" for p in products])
+                cur.execute("""
+                    INSERT INTO notifications (user_id, type, title, body, metadata)
+                    VALUES (%s, 'price_alert', %s, %s, %s)
+                """, (other_user_id, notification_title, notification_body, json.dumps({"supplier_id": user_id})))
+            conn.commit()
+        except Exception as e:
+            print(f"NOTIFICATION ERROR: {e}")
+
+        return jsonify({"message": "Products updated", "products": products})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+
+@app.route('/api/notifications', methods=['GET'])
+@cross_origin()
+@jwt_required()
+def get_notifications():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, type, title, body, metadata, read, created_at
+        FROM notifications
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 20
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    notifications = [{
+        "id": r[0],
+        "type": r[1],
+        "title": r[2],
+        "body": r[3],
+        "metadata": r[4],
+        "read": r[5],
+        "created_at": r[6].strftime('%I:%M %p') if r[6] else ""
+    } for r in rows]
+
+    return jsonify({"notifications": notifications})
 
 
 @app.route('/tax/breakdown', methods=['GET'])

@@ -6627,6 +6627,41 @@ def get_my_business():
     return jsonify({"business": business})
 
 
+@app.route('/api/update-profile-photo', methods=['POST'])
+@jwt_required()
+def update_profile_photo():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    shop_photo = data.get('shop_photo')
+    if not shop_photo:
+        return jsonify({"error": "shop_photo required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Update business_listings.shop_photo for this user
+        cur.execute("""
+            UPDATE business_listings
+            SET shop_photo = %s
+            WHERE user_id = %s
+        """, (shop_photo, user_id))
+
+        if cur.rowcount == 0:
+            # If no listing exists, create a minimal one
+            cur.execute("""
+                INSERT INTO business_listings (user_id, shop_photo)
+                VALUES (%s, %s)
+            """, (user_id, shop_photo))
+
+        conn.commit()
+        return jsonify({"message": "Profile photo updated", "shop_photo": shop_photo})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route('/tax/breakdown', methods=['GET'])
 @jwt_required()
 def tax_breakdown():

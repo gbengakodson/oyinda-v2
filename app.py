@@ -6723,14 +6723,26 @@ def update_products():
             supplier_name = supplier_row[0] if supplier_row and supplier_row[0] else "A supplier"
             supplier_city = supplier_row[1] if supplier_row and supplier_row[1] else ""
 
-            # Build body like "Product: Price @City" for each product
+            # Build body parts
             body_parts = []
             for product in products:
-                item = f"{product['name']}: {product['price']}"
+                name = product.get('name', '')
+                price_raw = product.get('price', '0')
+                unit = product.get('unit', '').strip()
+                try:
+                    price_int = int(float(price_raw))
+                    price_str = f"{price_int:,}"  # adds commas
+                except:
+                    price_str = str(price_raw)
+
+                item = f"{name}: ₦{price_str}"
+                if unit:
+                    item += f" per {unit}"
                 if supplier_city:
                     item += f" @{supplier_city}"
                 body_parts.append(item)
-            notification_body = " | ".join(body_parts)  # horizontally separatable
+
+            notification_body = " | ".join(body_parts)
 
             # Get all other users
             cur.execute("SELECT id FROM users WHERE id != %s", (user_id,))
@@ -6738,7 +6750,6 @@ def update_products():
 
             for (other_user_id,) in all_other_users:
                 notification_title = f"Price update from {supplier_name}"
-                # Store supplier_id in metadata for click navigation
                 metadata = json.dumps({"supplier_id": user_id, "supplier_name": supplier_name})
                 cur.execute("""
                     INSERT INTO notifications (user_id, type, title, body, metadata)

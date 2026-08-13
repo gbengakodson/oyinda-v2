@@ -8380,9 +8380,11 @@ def get_chat_messages(room_id):
             SELECT m.content, m.sender_id, m.media_url, m.media_type,
                    COALESCE(u.facts->>'business_name', u.name) as display_name,
                    u.facts->>'rc_number' as rc,
+                   COALESCE(bl.shop_photo, '') as sender_photo,
                    m.created_at
             FROM messages m
             JOIN users u ON m.sender_id = u.id
+            LEFT JOIN business_listings bl ON bl.user_id = m.sender_id
             WHERE m.room_id = %s
             ORDER BY m.created_at ASC
             LIMIT 100
@@ -8393,9 +8395,11 @@ def get_chat_messages(room_id):
             SELECT m.content, m.sender_id, m.media_url, m.media_type,
                    COALESCE(u.facts->>'business_name', u.name) as display_name,
                    u.facts->>'rc_number' as rc,
+                   COALESCE(bl.shop_photo, '') as sender_photo,
                    m.created_at
             FROM messages m
             JOIN users u ON m.sender_id = u.id
+            LEFT JOIN business_listings bl ON bl.user_id = m.sender_id
             WHERE ((m.sender_id = %s AND m.receiver_id = %s)
                    OR (m.sender_id = %s AND m.receiver_id = %s))
             ORDER BY m.created_at ASC
@@ -8412,7 +8416,8 @@ def get_chat_messages(room_id):
         "media_type": r[3],
         "sender_name": r[4],
         "sender_rc": r[5] or "",
-        "time": r[6].strftime('%I:%M %p') if r[6] else ""
+        "sender_photo": r[6] or "",
+        "time": r[7].strftime('%I:%M %p') if r[7] else ""
     } for r in rows]
 
     return jsonify({"messages": messages, "current_user_id": user_id})

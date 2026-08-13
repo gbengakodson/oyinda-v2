@@ -6595,16 +6595,28 @@ def get_my_business():
     user_id = get_jwt_identity()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT business_name, shop_photo, city, market_name, products
-        FROM business_listings
-        WHERE user_id = %s
-        LIMIT 1
-    """, (user_id,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        cur.execute("""
+            SELECT 
+                COALESCE(u.facts->>'business_name', u.name) AS business_name,
+                bl.shop_photo,
+                bl.city,
+                bl.market_name,
+                bl.products
+            FROM business_listings bl
+            JOIN users u ON u.id = bl.user_id
+            WHERE bl.user_id = %s
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
     if not row:
         return jsonify({"business": None})
+
     business = {
         "business_name": row[0],
         "shop_photo": row[1],

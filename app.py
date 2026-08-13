@@ -6693,18 +6693,34 @@ def update_products():
     conn = get_conn()
     cur = conn.cursor()
     try:
+        # ----- WEEKLY UPDATE LIMIT CHECK -----
+        cur.execute("""
+            SELECT last_price_update
+            FROM business_listings
+            WHERE user_id = %s
+        """, (user_id,))
+        last_update = cur.fetchone()
+
+        if last_update and last_update[0] is not None:
+            time_since = datetime.utcnow() - last_update[0]
+            if time_since < timedelta(days=7):
+                days_left = 7 - time_since.days
+                return jsonify({
+                    "error": f"You can update your prices again in {days_left} day(s)."
+                }), 400
         # Update the products JSONB column
         cur.execute("""
             UPDATE business_listings
-            SET products = %s
+            SET products = %s::jsonb,
+                last_price_update = now()
             WHERE user_id = %s
         """, (json.dumps(products), user_id))
 
         if cur.rowcount == 0:
             # If no listing exists, create one with products
             cur.execute("""
-                INSERT INTO business_listings (user_id, products)
-                VALUES (%s, %s)
+                INSERT INTO business_listings (user_id, products, last_price_update)
+                VALUES (%s, %s::jsonb, now())
             """, (user_id, json.dumps(products)))
 
         conn.commit()
@@ -6748,13 +6764,11 @@ def update_products():
             cur.execute("SELECT id FROM users WHERE id != %s", (user_id,))
             all_other_users = cur.fetchall()
 
-            for (other_user_id,) in all_other_users:
-                notification_title = f"Price update from {supplier_name}"
-                metadata = json.dumps({"supplier_id": user_id, "supplier_name": supplier_name})
-                cur.execute("""
-                    INSERT INTO notifications (user_id, type, title, body, metadata)
-                    VALUES (%s, 'price_alert', %s, %s, %s)
-                """, (other_user_id, notification_title, notification_body, metadata))
+            # Insert a single global notification (user_id = NULL)
+            cur.execute("""
+                INSERT INTO notifications (user_id, type, title, body, metadata)
+                VALUES (NULL, 'price_alert', %s, %s, %s)
+            """, (notification_title, notification_body, metadata))
             conn.commit()
         except Exception as e:
             print(f"NOTIFICATION ERROR: {e}")
@@ -6778,10 +6792,10 @@ def get_notifications():
     cur.execute("""
         SELECT id, type, title, body, metadata, read, created_at
         FROM notifications
-        WHERE user_id = %s
+        WHERE user_id IS NULL
         ORDER BY created_at DESC
-        LIMIT 20
-    """, (user_id,))
+        LIMIT 30
+    """)
     rows = cur.fetchall()
     conn.close()
 

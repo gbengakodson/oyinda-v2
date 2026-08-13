@@ -6617,12 +6617,21 @@ def get_my_business():
     if not row:
         return jsonify({"business": None})
 
+    raw_products = row[4] if row[4] else []
+    if isinstance(raw_products, str):
+        try:
+            products = json.loads(raw_products)
+        except:
+            products = []
+    else:
+        products = raw_products
+
     business = {
         "business_name": row[0],
         "shop_photo": row[1],
         "city": row[2],
         "market_name": row[3],
-        "products": row[4] if row[4] else []
+        "products": products
     }
     return jsonify({"business": business})
 

@@ -1,7 +1,7 @@
 # app.py – Oyinda V2 API (Final: voice, statements, swap, credit, bank linking)
 
 import os, re, uuid, requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,  timezone
 from flask import Flask, request, jsonify, send_from_directory, send_file, jsonify, send_file, Response
 from flask_cors import CORS, cross_origin
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -6683,7 +6683,6 @@ def update_products():
     if products is None or not isinstance(products, list):
         return jsonify({"error": "products list required"}), 400
 
-    # Basic validation: ensure each product has name and price
     for product in products:
         if not isinstance(product, dict):
             return jsonify({"error": "Invalid product format"}), 400
@@ -6703,20 +6702,17 @@ def update_products():
 
         if last_update and last_update[0] is not None:
             last_update_time = last_update[0]
-            # Ensure timezone-aware
             if last_update_time.tzinfo is None:
                 last_update_time = last_update_time.replace(tzinfo=timezone.utc)
             time_since = datetime.now(timezone.utc) - last_update_time
             if time_since < timedelta(days=7):
                 days_left = 7 - time_since.days
-                return jsonify({
-                    "error": f"You can update your prices again in {days_left} day(s)."
-                }), 400
+                return jsonify({"error": f"You can update your prices again in {days_left} day(s)."}), 400
 
-        # ----- UPDATE or INSERT products -----
+        # ----- UPDATE or INSERT products (no ::jsonb cast) -----
         cur.execute("""
             UPDATE business_listings
-            SET products = %s::jsonb,
+            SET products = %s,
                 last_price_update = now()
             WHERE user_id = %s
         """, (json.dumps(products), user_id))
@@ -6724,12 +6720,11 @@ def update_products():
         if cur.rowcount == 0:
             cur.execute("""
                 INSERT INTO business_listings (user_id, products, last_price_update)
-                VALUES (%s, %s::jsonb, now())
+                VALUES (%s, %s, now())
             """, (user_id, json.dumps(products)))
 
         # ----- GENERATE GLOBAL NOTIFICATION (user_id NULL) -----
         try:
-            # Get supplier name and city
             cur.execute("""
                 SELECT COALESCE(u.facts->>'business_name', u.name), 
                        COALESCE(bl.city, '')
@@ -6741,7 +6736,6 @@ def update_products():
             supplier_name = supplier_row[0] if supplier_row and supplier_row[0] else "A supplier"
             supplier_city = supplier_row[1] if supplier_row and supplier_row[1] else ""
 
-            # Build body parts
             body_parts = []
             for product in products:
                 name = product.get('name', '')
@@ -6764,7 +6758,6 @@ def update_products():
             notification_title = f"Price update from {supplier_name}"
             metadata = json.dumps({"supplier_id": user_id, "supplier_name": supplier_name})
 
-            # Insert a single global notification
             cur.execute("""
                 INSERT INTO notifications (user_id, type, title, body, metadata)
                 VALUES (NULL, 'price_alert', %s, %s, %s)

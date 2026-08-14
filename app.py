@@ -1049,6 +1049,105 @@ def process_user_command(user_id, text):
 
         # If AI didn't give high confidence or no items, fall through to rule‑based system
 
+    # ===== HANDLE AWAITING LOAN AMOUNT STATE =====
+    if pending_transaction.get(user_id, {}).get('state') == 'awaiting_loan_amount':
+        import re
+        amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
+        if amount_match:
+            amt_str = amount_match.group(1).replace(',', '')
+            multiplier = 1000 if amount_match.group(2) else 1
+            requested_amount = float(amt_str) * multiplier
+
+            # Re-run eligibility and tier logic (copy from the loan handler)
+            credit = get_credit_score(user_id)
+            score = credit['score']
+            tiers = [
+                (5000, 10000, 21, 3, 0.10, 20),
+                (10001, 50000, 28, 7, 0.10, 50),
+                (51000, 100000, 56, 14, 0.10, 100),
+                (101000, 200000, 90, 21, 0.10, 250),
+                (201000, 500000, 180, 30, 0.10, 350),
+                (501000, 1000000, 240, 60, 0.10, 500),
+                (1100000, 5000000, 365, 90, 0.10, 700),
+            ]
+
+            min_eligible = None
+            max_eligible = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if score >= min_score:
+                    if min_eligible is None:
+                        min_eligible = min_amt
+                    max_eligible = max_amt
+
+            if min_eligible is None or requested_amount < min_eligible or requested_amount > max_eligible:
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": f"The amount ₦{requested_amount:,.2f} is outside your eligible range (₦{min_eligible:,} – ₦{max_eligible:,}). Please request an amount within this range.",
+                    "tone": "neutral"
+                })
+
+            selected_tier = None
+            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+                if min_amt <= requested_amount <= max_amt:
+                    selected_tier = (min_amt, max_amt, dur, grace, rate)
+                    break
+
+            if not selected_tier:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "Could not determine loan terms. Please try again.", "tone": "neutral"})
+
+            min_amt, max_amt, dur_days, grace_days, interest_rate = selected_tier
+            total_interest = requested_amount * interest_rate
+            total_repayable = requested_amount + total_interest
+            repay_days = dur_days - grace_days
+            daily_amount = round(total_repayable / repay_days, 2)
+            is_weekly = dur_days > 90
+            weekly_amount = round(total_repayable / (repay_days / 7), 2) if is_weekly else None
+
+            conn = get_conn()
+            cur = conn.cursor()
+            supplier_id = user_id
+            product = "Cash Loan"
+            supplier_name = get_user_facts(user_id).get('business_name', '')
+            supplier_phone = get_user_facts(user_id).get('phone', '')
+
+            cur.execute("""
+                INSERT INTO pending_loans
+                (user_id, supplier_id, product, amount, interest, total_repayable,
+                 daily_amount, duration_days, grace_days, supplier_name, supplier_phone, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+            """, (user_id, supplier_id, product, requested_amount, total_interest, total_repayable,
+                  daily_amount, dur_days, grace_days, supplier_name, supplier_phone))
+            conn.commit()
+            conn.close()
+
+            pending_transaction.pop(user_id, None)
+
+            if is_weekly:
+                repayment_msg = f"Weekly repayment: ₦{weekly_amount:,.2f} ({int(repay_days / 7)} weeks)"
+            else:
+                repayment_msg = f"Daily repayment: ₦{daily_amount:,.2f} for {repay_days} days"
+
+            return jsonify({
+                "message": (
+                    f"✅ Loan request submitted!\n\n"
+                    f"💰 Amount: ₦{requested_amount:,.2f}\n"
+                    f"📊 Interest (10%): ₦{total_interest:,.2f}\n"
+                    f"💵 Total repay: ₦{total_repayable:,.2f}\n"
+                    f"⏳ Duration: {dur_days} days (grace: {grace_days} days)\n"
+                    f"🗓️ {repayment_msg}\n\n"
+                    f"Your request is pending admin approval. We'll notify you when it's disbursed."
+                ),
+                "tone": "income"
+            })
+        else:
+            # User typed something that isn't a number while waiting for amount
+            pending_transaction.pop(user_id, None)
+            return jsonify({
+                "message": "Please enter a valid amount (e.g., 5000).",
+                "tone": "neutral"
+            })
+
 
     # --- MULTILINGUAL SUPPORT: translate non-English messages to English ---
     original_text = text
@@ -2580,7 +2679,7 @@ def process_user_command(user_id, text):
             return finalise_transaction(user_id)
 
         # ---- SHORT LOAN SUMMARY (concrete Naira examples) ----
-        if text_lower == 'get a loan':
+        if text_lower == 'About loan':
             credit = get_credit_score(user_id)
             score = credit['score']
             tiers = [

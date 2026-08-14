@@ -6762,6 +6762,15 @@ def update_products():
                 INSERT INTO notifications (user_id, type, title, body, metadata)
                 VALUES (NULL, 'price_alert', %s, %s, %s)
             """, (notification_title, notification_body, metadata))
+            # If no queue is active, set start_time = now()
+            cur.execute("SELECT start_time FROM notification_queue_meta WHERE id = 1")
+            meta_row = cur.fetchone()
+            if not meta_row or meta_row[0] is None:
+                cur.execute("""
+                    UPDATE notification_queue_meta
+                    SET start_time = now()
+                    WHERE id = 1
+                """)
         except Exception as e:
             print(f"NOTIFICATION ERROR: {e}")
 
@@ -6818,6 +6827,92 @@ def get_notifications():
         })
 
     return jsonify({"notifications": notifications})
+
+
+@app.route('/api/current-notification', methods=['GET'])
+@cross_origin()
+@jwt_required()
+def get_current_notification():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Get queue start time
+        cur.execute("SELECT start_time FROM notification_queue_meta WHERE id = 1")
+        meta_row = cur.fetchone()
+        if not meta_row or meta_row[0] is None:
+            return jsonify({"notification": None})
+
+        start_time = meta_row[0]
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+
+        now_utc = datetime.now(timezone.utc)
+        elapsed = (now_utc - start_time).total_seconds()
+        current_index = int(elapsed // 30)   # each notification lasts 30s
+
+        # Count total active notifications
+        cur.execute("SELECT COUNT(*) FROM notifications WHERE user_id IS NULL")
+        total = cur.fetchone()[0]
+
+        # Delete already displayed notifications (optional cleanup)
+        if total > 0:
+            cur.execute("""
+                DELETE FROM notifications
+                WHERE user_id IS NULL
+                AND id IN (
+                    SELECT id FROM notifications
+                    WHERE user_id IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                )
+            """, (current_index,))
+
+        if current_index >= total:
+            # Queue exhausted – reset start_time
+            cur.execute("UPDATE notification_queue_meta SET start_time = NULL WHERE id = 1")
+            conn.commit()
+            return jsonify({"notification": None})
+
+        # Fetch the current notification (offset = current_index)
+        cur.execute("""
+            SELECT n.id, n.type, n.title, n.body, n.metadata, n.created_at
+            FROM notifications n
+            WHERE n.user_id IS NULL
+            ORDER BY n.created_at ASC
+            OFFSET %s
+            LIMIT 1
+        """, (current_index,))
+        row = cur.fetchone()
+        conn.commit()
+
+        if not row:
+            return jsonify({"notification": None})
+
+        metadata_raw = row[4]
+        if isinstance(metadata_raw, str):
+            try:
+                metadata = json.loads(metadata_raw)
+            except:
+                metadata = {}
+        else:
+            metadata = metadata_raw or {}
+
+        notification = {
+            "id": row[0],
+            "type": row[1],
+            "title": row[2],
+            "body": row[3],
+            "metadata": metadata,
+            "supplier_id": metadata.get("supplier_id", ""),
+            "created_at": row[5].strftime('%I:%M %p') if row[5] else ""
+        }
+        return jsonify({"notification": notification})
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route('/tax/breakdown', methods=['GET'])

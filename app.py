@@ -1051,7 +1051,7 @@ def process_user_command(user_id, text):
 
     # ===== HANDLE AWAITING LOAN AMOUNT STATE =====
     if pending_transaction.get(user_id, {}).get('state') == 'awaiting_loan_amount':
-        import re
+
         amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
         if amount_match:
             amt_str = amount_match.group(1).replace(',', '')

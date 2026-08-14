@@ -4716,7 +4716,7 @@ def handle_query(text, user_id):
 
     # ---------- LOAN ELIGIBILITY ----------
     if any(phrase in text_lower for phrase in ['can i get a loan', 'do i qualify for a loan', 'i need a loan',
-                                               'borrow money', 'loan offer', 'lend me']):
+                                               'borrow money', 'loan offer', 'lend me', 'borrow']):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT MIN(created_at) FROM events WHERE user_id = %s", (user_id,))
@@ -4748,23 +4748,94 @@ def handle_query(text, user_id):
                 if min_eligible is None:
                     min_eligible = min_amt
                 max_eligible = max_amt
-        if min_eligible is not None:
-            return jsonify({
-                "answer": (
-                    f"🎉 You qualify for a loan!\n\n"
-                    f"• Credit score: **{score}/850**\n"
-                    f"• Eligible range: **₦{min_eligible:,} – ₦{max_eligible:,}**\n"
-                    f"• Interest: 10% flat\n"
-                    f"• Duration & grace depend on the amount\n\n"
-                    f"Tap the cart icon 🛒 to browse suppliers and start a loan."
-                ),
-                "tone": "income"
-            })
-        else:
+
+        if min_eligible is None:
             return jsonify({
                 "answer": f"Your credit score is {score}/850. You need at least 20 to qualify. Keep logging transactions!",
                 "tone": "neutral"
             })
+
+        # Try to extract amount from the message
+        import re
+        amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
+        requested_amount = None
+        if amount_match:
+            amt_str = amount_match.group(1).replace(',', '')
+            multiplier = 1000 if amount_match.group(2) else 1
+            requested_amount = float(amt_str) * multiplier
+
+        if requested_amount is None:
+            return jsonify({
+                "answer": (
+                    f"🎉 You qualify for a loan!\n\n"
+                    f"• Credit score: **{score}/850**\n"
+                    f"• Eligible range: **₦{min_eligible:,} – ₦{max_eligible:,}**\n\n"
+                    f"How much do you want to borrow? Type the amount (e.g., 'borrow 5000')."
+                ),
+                "tone": "income"
+            })
+
+        # Check requested amount against range
+        if requested_amount < min_eligible or requested_amount > max_eligible:
+            return jsonify({
+                "answer": f"The amount ₦{requested_amount:,.2f} is outside your eligible range (₦{min_eligible:,} – ₦{max_eligible:,}). Please request an amount within this range.",
+                "tone": "neutral"
+            })
+
+        # Find the tier that matches the requested amount
+        selected_tier = None
+        for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+            if min_amt <= requested_amount <= max_amt:
+                selected_tier = (min_amt, max_amt, dur, grace, rate)
+                break
+
+        if not selected_tier:
+            return jsonify({"answer": "Could not determine loan terms. Please try again.", "tone": "neutral"})
+
+        min_amt, max_amt, dur_days, grace_days, interest_rate = selected_tier
+        total_interest = requested_amount * interest_rate
+        total_repayable = requested_amount + total_interest
+        repay_days = dur_days - grace_days
+        daily_amount = round(total_repayable / repay_days, 2)
+        is_weekly = dur_days > 90
+        weekly_amount = round(total_repayable / (repay_days / 7), 2) if is_weekly else None
+
+        # Insert pending_loan with self as supplier (cash loan)
+        conn = get_conn()
+        cur = conn.cursor()
+        supplier_id = user_id
+        product = "Cash Loan"
+        supplier_name = get_user_facts(user_id).get('business_name', '')
+        supplier_phone = get_user_facts(user_id).get('phone', '')
+
+        cur.execute("""
+            INSERT INTO pending_loans
+            (user_id, supplier_id, product, amount, interest, total_repayable,
+             daily_amount, duration_days, grace_days, supplier_name, supplier_phone, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+        """, (user_id, supplier_id, product, requested_amount, total_interest, total_repayable,
+              daily_amount, dur_days, grace_days, supplier_name, supplier_phone))
+        conn.commit()
+        conn.close()
+
+        # Build repayment message
+        if is_weekly:
+            repayment_msg = f"Weekly repayment: ₦{weekly_amount:,.2f} ({int(repay_days / 7)} weeks)"
+        else:
+            repayment_msg = f"Daily repayment: ₦{daily_amount:,.2f} for {repay_days} days"
+
+        return jsonify({
+            "answer": (
+                f"✅ Loan request submitted!\n\n"
+                f"💰 Amount: ₦{requested_amount:,.2f}\n"
+                f"📊 Interest (10%): ₦{total_interest:,.2f}\n"
+                f"💵 Total repay: ₦{total_repayable:,.2f}\n"
+                f"⏳ Duration: {dur_days} days (grace: {grace_days} days)\n"
+                f"🗓️ {repayment_msg}\n\n"
+                f"Your request is pending admin approval. We'll notify you when it's disbursed."
+            ),
+            "tone": "income"
+        })
 
 
 

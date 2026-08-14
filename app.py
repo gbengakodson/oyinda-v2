@@ -6915,6 +6915,113 @@ def get_current_notification():
         conn.close()
 
 
+
+@app.route('/api/credit-summary', methods=['GET'])
+@cross_origin()
+@jwt_required()
+def credit_summary():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get latest credit score
+    cur.execute("""
+        SELECT score
+        FROM credit_scores
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    score = row[0] if row else 0
+
+    # Define tiers (score threshold, min amount, max amount)
+    tiers = [
+        (20, 5000, 10000),
+        (50, 10000, 50000),
+        (100, 51000, 100000),
+        (250, 101000, 200000),
+        (350, 201000, 500000),
+        (500, 501000, 1000000),
+        (700, 1100000, 5000000)
+    ]
+
+    tier_num = 0
+    tier_min = 0
+    tier_max = 0
+    for i, (min_score, min_amt, max_amt) in enumerate(tiers, start=1):
+        if score >= min_score:
+            tier_num = i
+            tier_min = min_amt
+            tier_max = max_amt
+        else:
+            break
+
+    conn.close()
+
+    return jsonify({
+        "credit_score": score,
+        "tier": tier_num,
+        "tier_min_amount": tier_min,
+        "tier_max_amount": tier_max,
+        "business_credit_balance": tier_max  # maximum borrowable within tier
+    })
+
+
+@app.route('/api/update-business-info', methods=['POST', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def update_business_info():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    business_name = data.get('business_name', '').strip()
+    city = data.get('city', '').strip()
+    market_name = data.get('market_name', '').strip()
+
+    if not business_name:
+        return jsonify({"error": "Business name is required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Update users.facts.business_name
+        cur.execute("""
+            UPDATE users
+            SET facts = jsonb_set(
+                COALESCE(facts, '{}')::jsonb,
+                '{business_name}',
+                %s::jsonb
+            )
+            WHERE id = %s
+        """, (json.dumps(business_name), user_id))
+
+        # Update or insert business_listings with city/market
+        cur.execute("""
+            UPDATE business_listings
+            SET city = %s,
+                market_name = %s
+            WHERE user_id = %s
+        """, (city, market_name, user_id))
+
+        if cur.rowcount == 0:
+            cur.execute("""
+                INSERT INTO business_listings (user_id, city, market_name)
+                VALUES (%s, %s, %s)
+            """, (user_id, city, market_name))
+
+        conn.commit()
+        return jsonify({
+            "business_name": business_name,
+            "city": city,
+            "market_name": market_name
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route('/tax/breakdown', methods=['GET'])
 @jwt_required()
 def tax_breakdown():

@@ -2679,7 +2679,7 @@ def process_user_command(user_id, text):
             return finalise_transaction(user_id)
 
         # ---- SHORT LOAN SUMMARY (concrete Naira examples) ----
-        if text_lower == 'About loan':
+        if text_lower == 'Get a loan':
             credit = get_credit_score(user_id)
             score = credit['score']
             tiers = [

@@ -6923,49 +6923,54 @@ def credit_summary():
     user_id = get_jwt_identity()
     conn = get_conn()
     cur = conn.cursor()
+    try:
+        # Get latest credit score (order by updated_at)
+        cur.execute("""
+            SELECT score
+            FROM credit_scores
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        score = row[0] if row else 0
 
-    # Get latest credit score
-    cur.execute("""
-        SELECT score
-        FROM credit_scores
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (user_id,))
-    row = cur.fetchone()
-    score = row[0] if row else 0
+        # Define tiers (score threshold, min amount, max amount)
+        tiers = [
+            (20, 5000, 10000),
+            (50, 10000, 50000),
+            (100, 51000, 100000),
+            (250, 101000, 200000),
+            (350, 201000, 500000),
+            (500, 501000, 1000000),
+            (700, 1100000, 5000000)
+        ]
 
-    # Define tiers (score threshold, min amount, max amount)
-    tiers = [
-        (20, 5000, 10000),
-        (50, 10000, 50000),
-        (100, 51000, 100000),
-        (250, 101000, 200000),
-        (350, 201000, 500000),
-        (500, 501000, 1000000),
-        (700, 1100000, 5000000)
-    ]
+        tier_num = 0
+        tier_min = 0
+        tier_max = 0
+        for i, (min_score, min_amt, max_amt) in enumerate(tiers, start=1):
+            if score >= min_score:
+                tier_num = i
+                tier_min = min_amt
+                tier_max = max_amt
+            else:
+                break
 
-    tier_num = 0
-    tier_min = 0
-    tier_max = 0
-    for i, (min_score, min_amt, max_amt) in enumerate(tiers, start=1):
-        if score >= min_score:
-            tier_num = i
-            tier_min = min_amt
-            tier_max = max_amt
-        else:
-            break
-
-    conn.close()
-
-    return jsonify({
-        "credit_score": score,
-        "tier": tier_num,
-        "tier_min_amount": tier_min,
-        "tier_max_amount": tier_max,
-        "business_credit_balance": tier_max  # maximum borrowable within tier
-    })
+        return jsonify({
+            "credit_score": score,
+            "tier": tier_num,
+            "tier_min_amount": tier_min,
+            "tier_max_amount": tier_max,
+            "business_credit_balance": tier_max
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route('/api/update-business-info', methods=['POST', 'OPTIONS'])

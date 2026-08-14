@@ -2623,25 +2623,24 @@ def process_user_command(user_id, text):
             else:
                 repayment_str = f"₦{daily_repay:,.2f} daily for {repay_days} days"
 
-            msg = f"Ma/Sir, your credit score is **{score}/850**.\n\n"
-            msg += f"Right now you fit borrow **₦{min_amt:,} to ₦{max_amt:,}**.\n"
-            msg += "The money goes straight to your supplier — you no go touch cash.\n\n"
+            msg = f"Your credit score is **{score}/850**.\n\n"
+            msg += f"Right now you can borrow **₦{min_amt:,} to ₦{max_amt:,}**.\n"
 
-            msg += f"For example, if you borrow **₦{example_loan:,}**:\n"
-            msg += f"• You go pay back **₦{total_repayable:,.0f}** in total.\n"
+
+            msg += f"For a loan of **₦{example_loan:,}**:\n"
+            msg += f"• You will pay back **₦{total_repayable:,.0f}** in total.\n"
             msg += f"• That's **{repayment_str}**.\n"
-            msg += f"• First **{grace} days** na free — you no pay anything.\n\n"
+            msg += f"• You will have **{grace} days** grace period.\n\n"
 
-            msg += "The interest na small — e dey different for how long you take the loan.\n"
-            msg += "Longer time get small extra charge.\n\n"
+            msg += "The interest is small — and it is different depending on the loan period.\n"
+
 
             if next_min_score:
-                msg += f"🔓 Reach score **{next_min_score}** to unlock the next level.\n"
+                msg += f"🔓 Credit score is key to access loan. A score of **{next_min_score}** for example can unlock bigger loan.\n"
             else:
-                msg += "🎉 You don reach the top level! Well done!\n"
+                msg += "🎉 Well done!\n"
 
-            msg += "Keep telling me your sales and expenses — your score go grow.\n"
-            msg += "Ask **'loan tiers'** if you wan see full details."
+            msg += "To see our full loan details, Type **'loan tiers'**."
 
             return jsonify({"message": msg, "tone": "income"})
 
@@ -2682,8 +2681,8 @@ def process_user_command(user_id, text):
             else:
                 msg += "🔒 Keep logging to reach score 20.\n"
 
-            msg += "\n💡 All loans go to your supplier, you repay daily/weekly.\n"
-            msg += "Ask **'get a loan'** for a simple summary."
+            msg += "\n💡 All loans are disbursed under 5minuites.\n"
+            msg += "Type **'I need a loan'** to fercilitate the loan process."
 
             return jsonify({"message": msg, "tone": "neutral"})
 
@@ -2815,12 +2814,17 @@ def process_user_command(user_id, text):
                 requested_amount = float(amt_str) * multiplier
 
             if requested_amount is None:
+                # Store state to expect amount in next message
+                pending_transaction[user_id] = {
+                    "state": "awaiting_loan_amount",
+                    "data": {}
+                }
                 return jsonify({
                     "message": (
                         f"🎉 You qualify for a loan!\n\n"
                         f"• Credit score: **{score}/850**\n"
                         f"• Eligible range: **₦{min_eligible:,} – ₦{max_eligible:,}**\n\n"
-                        f"How much do you want to borrow? Type the amount (e.g., 'borrow 5000')."
+                        f"How much do you want to borrow? Type the amount."
                     ),
                     "tone": "income"
                 })

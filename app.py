@@ -7059,9 +7059,9 @@ def get_my_business():
                 bl.city,
                 bl.market_name,
                 bl.products
-            FROM business_listings bl
-            JOIN users u ON u.id = bl.user_id
-            WHERE bl.user_id = %s
+            FROM users u
+            LEFT JOIN business_listings bl ON bl.user_id = u.id
+            WHERE u.id = %s
             LIMIT 1
         """, (user_id,))
         row = cur.fetchone()
@@ -7087,7 +7087,7 @@ def get_my_business():
         "shop_photo": row[1],
         "city": row[2],
         "market_name": row[3],
-        "products": products
+        "products": row[4] if row[4] else []
     }
     return jsonify({"business": business})
 

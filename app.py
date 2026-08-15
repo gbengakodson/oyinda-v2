@@ -7418,7 +7418,7 @@ def credit_summary():
             "tier": tier_num,
             "tier_min_amount": tier_min,
             "tier_max_amount": tier_max,
-            "business_credit_balance": tier_max
+            "credit_limit": tier_max  # maximum borrowable within tier
         })
     except Exception as e:
         import traceback

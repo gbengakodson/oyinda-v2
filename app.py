@@ -790,7 +790,11 @@ def handle_offramp_withdrawal(user_id, text):
     # Extract amount first (supports 5000, ₦5,000, 50k, N50,000)
     amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
     if not amount_match:
-        return True, "How much do you want to send? (e.g., withdraw 5000 to 2176411819, Zenith Bank)"
+        pending_transaction[user_id] = {
+            "state": "offramp_collect_amount",
+            "data": {}
+        }
+        return True, "How much do you want to send?"
 
     amount_str = amount_match.group(1).replace(',', '')
     multiplier = 1000 if amount_match.group(2) else 1
@@ -802,7 +806,11 @@ def handle_offramp_withdrawal(user_id, text):
     # Extract account number (10 or 11 digits)
     account_match = re.search(r'\b(\d{10,11})\b', text_lower)
     if not account_match:
-        return True, "Please provide the bank account number you want to send to."
+        pending_transaction[user_id] = {
+            "state": "offramp_collect_account",
+            "data": {"amount": amount}
+        }
+        return True, "Please provide the bank account number (and optionally bank name)."
 
     account_number = account_match.group(1)
 
@@ -1048,6 +1056,134 @@ def process_user_command(user_id, text):
         groq_result = None
 
         # If AI didn't give high confidence or no items, fall through to rule‑based system
+    # ===== HANDLE PENDING OFFRAMP STATES =====
+    offramp_state = pending_transaction.get(user_id, {}).get('state')
+    if offramp_state and offramp_state.startswith('offramp_'):
+        import re
+        if offramp_state == 'offramp_collect_amount':
+            amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
+            if amount_match:
+                amount_str = amount_match.group(1).replace(',', '')
+                multiplier = 1000 if amount_match.group(2) else 1
+                amount = float(amount_str) * multiplier
+                # Store amount and ask for account
+                pending_transaction[user_id] = {
+                    "state": "offramp_collect_account",
+                    "data": {"amount": amount}
+                }
+                return jsonify({
+                    "message": "Got it! Now provide the bank account number (and optionally bank name).",
+                    "tone": "neutral"
+                })
+            else:
+                return jsonify({"message": "Please enter a valid amount (e.g., 5000).", "tone": "neutral"})
+
+        elif offramp_state == 'offramp_collect_account':
+            amount = pending_transaction[user_id]['data'].get('amount')
+            if not amount:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "Missing amount. Please start again.", "tone": "warning"})
+
+            # Extract account number and bank name
+            account_match = re.search(r'(?<!\d)(\d{10,11})(?!\d)', text)
+            if not account_match:
+                return jsonify({"message": "Please enter a valid account number (10 digits).", "tone": "neutral"})
+            account_number = account_match.group(1)
+
+            # If it looks like a phone number, abort offramp and let internal transfer handle it
+            if len(account_number) == 11 and account_number.startswith('0'):
+                pending_transaction.pop(user_id, None)
+                # Re-route to internal transfer logic by returning handled=False? Actually need to call other handlers.
+                # We'll return False, None to allow normal flow (which may catch as wallet transfer)
+                # But we've already returned json from this early check; better to call handle_offramp_withdrawal again with a constructed text?
+                # Simpler: just return a message to user indicating this is a phone number; then they can use 'send to phone' separately.
+                return jsonify(
+                    {"message": "This looks like a phone number. Use 'send 500 to 08012345678' for wallet transfer.",
+                     "tone": "neutral"})
+
+            # Determine bank name
+            bank_name = None
+            parts = text.lower().split(account_number)
+            if len(parts) > 1:
+                rest = parts[1].strip()
+                rest = re.sub(r'^(and|,|\s)*', '', rest)
+                rest = rest.strip().rstrip('.').strip()
+                if rest:
+                    bank_name = rest.title()
+            if not bank_name:
+                known_banks = ['zenith', 'uba', 'gtbank', 'gt bank', 'access', 'first bank', 'fidelity', 'union',
+                               'stanbic', 'keystone', 'polaris', 'wema', 'heritage', 'providus']
+                for bank in known_banks:
+                    if bank in text.lower():
+                        bank_name = bank.title()
+                        break
+            if not bank_name:
+                bank_name = "Unknown Bank"
+
+            # Now execute offramp using the same logic as handle_offramp_withdrawal would with complete info
+            from breet_client import BreetClient
+            client = BreetClient()
+            wallet = ensure_wallet(user_id)
+            if wallet['balance'] < amount:
+                pending_transaction.pop(user_id, None)
+                return jsonify(
+                    {"message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
+                     "tone": "warning"})
+
+            new_balance = wallet['balance'] - amount
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                        (new_balance, user_id))
+            try:
+                append_event(user_id, user_id, 'WalletDebited', {
+                    "amount": amount,
+                    "bank_name": bank_name,
+                    "account_number": account_number,
+                    "reason": "offramp_payout"
+                })
+            except Exception as e:
+                print(f"EVENT LOG WARNING: {e}")
+
+            result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
+            breet_address = result['address']
+            subaccount_id = result['subaccount_id']
+            rate = client.get_rate()
+            usdt_amount = round(amount / rate, 6)
+
+            if os.getenv("BREET_MOCK", "true").lower() == "true":
+                import hashlib, time
+                fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
+                tx_hash = f"0x{fake_tx[:64]}"
+            else:
+                tx_hash = None
+
+            cur.execute("""
+                INSERT INTO disbursement_logs
+                (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+                VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+            """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
+            conn.commit()
+            conn.close()
+
+            try:
+                append_event(user_id, user_id, 'ExpenseLogged', {
+                    "amount": amount,
+                    "currency": "NGN",
+                    "category": "withdrawal",
+                    "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                    "description": f"Withdrawal to {bank_name} ({account_number[-4:]})",
+                    "reason": "offramp_payout"
+                })
+            except Exception as e:
+                print(f"EVENT LOG WARNING: {e}")
+
+            pending_transaction.pop(user_id, None)
+            return jsonify({
+                "message": f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. Reference: {tx_hash[:10]}...",
+                "tone": "income"
+            })
+
 
     # ===== HANDLE AWAITING LOAN AMOUNT STATE =====
     if pending_transaction.get(user_id, {}).get('state') == 'awaiting_loan_amount':

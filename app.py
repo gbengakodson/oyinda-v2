@@ -1184,27 +1184,26 @@ def process_user_command(user_id, text):
                 "tone": "income"
             })
 
-
     # ===== HANDLE AWAITING LOAN AMOUNT STATE =====
     if pending_transaction.get(user_id, {}).get('state') == 'awaiting_loan_amount':
-
         amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
         if amount_match:
             amt_str = amount_match.group(1).replace(',', '')
             multiplier = 1000 if amount_match.group(2) else 1
             requested_amount = float(amt_str) * multiplier
 
-            # Re-run eligibility and tier logic (copy from the loan handler)
+            # Re-run eligibility and tier logic
             credit = get_credit_score(user_id)
             score = credit['score']
             tiers = [
-                (5000, 10000, 21, 3, 0.10, 20),
+                # (min_amount, max_amount, max_duration_days, grace_days, monthly_rate, min_score)
+                (5000, 10000, 21, 3, 0.133, 20),
                 (10001, 50000, 28, 7, 0.10, 50),
-                (51000, 100000, 56, 14, 0.10, 100),
-                (101000, 200000, 90, 21, 0.10, 250),
-                (201000, 500000, 180, 30, 0.10, 350),
-                (501000, 1000000, 240, 60, 0.10, 500),
-                (1100000, 5000000, 365, 90, 0.10, 700),
+                (51000, 100000, 56, 14, 0.075, 100),
+                (101000, 200000, 90, 21, 0.05, 250),
+                (201000, 500000, 180, 30, 0.0333, 350),
+                (501000, 1000000, 240, 60, 0.025, 500),
+                (1100000, 5000000, 365, 90, 0.0208, 700)
             ]
 
             min_eligible = None
@@ -1232,52 +1231,32 @@ def process_user_command(user_id, text):
                 pending_transaction.pop(user_id, None)
                 return jsonify({"message": "Could not determine loan terms. Please try again.", "tone": "neutral"})
 
-            min_amt, max_amt, dur_days, grace_days, interest_rate = selected_tier
-            total_interest = requested_amount * interest_rate
-            total_repayable = requested_amount + total_interest
-            repay_days = dur_days - grace_days
-            daily_amount = round(total_repayable / repay_days, 2)
-            is_weekly = dur_days > 90
-            weekly_amount = round(total_repayable / (repay_days / 7), 2) if is_weekly else None
+            # Unpack tier details (now with monthly_rate)
+            min_amt, max_amt, max_dur_days, grace_days, monthly_rate = selected_tier
+            min_dur_days = grace_days + 14
 
-            conn = get_conn()
-            cur = conn.cursor()
-            supplier_id = user_id
-            product = "Cash Loan"
-            supplier_name = get_user_facts(user_id).get('business_name', '')
-            supplier_phone = get_user_facts(user_id).get('phone', '')
-
-            cur.execute("""
-                INSERT INTO pending_loans
-                (user_id, supplier_id, product, amount, interest, total_repayable,
-                 daily_amount, duration_days, grace_days, supplier_name, supplier_phone, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, supplier_id, product, requested_amount, total_interest, total_repayable,
-                  daily_amount, dur_days, grace_days, supplier_name, supplier_phone))
-            conn.commit()
-            conn.close()
-
-            pending_transaction.pop(user_id, None)
-
-            if is_weekly:
-                repayment_msg = f"Weekly repayment: ₦{weekly_amount:,.2f} ({int(repay_days / 7)} weeks)"
-            else:
-                repayment_msg = f"Daily repayment: ₦{daily_amount:,.2f} for {repay_days} days"
+            # Store state to expect duration
+            pending_transaction[user_id] = {
+                "state": "awaiting_loan_duration",
+                "data": {
+                    "amount": requested_amount,
+                    "grace_days": grace_days,
+                    "max_dur_days": max_dur_days,
+                    "min_dur_days": min_dur_days,
+                    "monthly_rate": monthly_rate
+                }
+            }
 
             return jsonify({
                 "message": (
-                    f"✅ Loan request submitted!\n\n"
-                    f"💰 Amount: ₦{requested_amount:,.2f}\n"
-                    f"📊 Interest (10%): ₦{total_interest:,.2f}\n"
-                    f"💵 Total repay: ₦{total_repayable:,.2f}\n"
-                    f"⏳ Duration: {dur_days} days (grace: {grace_days} days)\n"
-                    f"🗓️ {repayment_msg}\n\n"
-                    f"Your request is pending admin approval. We'll notify you when it's disbursed."
+                    f"Great! You want to borrow ₦{requested_amount:,.2f}.\n\n"
+                    f"How many days do you want to repay? "
+                    f"Minimum {min_dur_days} days, maximum {max_dur_days} days.\n"
+                    f"(You get {grace_days} days grace before repayment starts.)"
                 ),
-                "tone": "income"
+                "tone": "neutral"
             })
         else:
-            # User typed something that isn't a number while waiting for amount
             pending_transaction.pop(user_id, None)
             return jsonify({
                 "message": "Please enter a valid amount (e.g., 5000).",
@@ -3015,15 +2994,47 @@ def process_user_command(user_id, text):
                     "tone": "warning"
                 })
 
+            # ---- OUTSTANDING LOAN CHECK ----
+            conn = get_conn()
+            cur = conn.cursor()
+            # Check for pending loan request
+            cur.execute("""
+                SELECT id FROM pending_loans
+                WHERE user_id = %s AND status IN ('pending','approved')
+                LIMIT 1
+            """, (user_id,))
+            if cur.fetchone():
+                conn.close()
+                return jsonify({
+                    "message": "You already have a pending loan request. Please wait for it to be processed.",
+                    "tone": "warning"
+                })
+            # Check for active/outstanding inventory loan
+            cur.execute("""
+                SELECT id FROM inventory_loans
+                WHERE user_id = %s
+                  AND status NOT IN ('repaid','defaulted','cancelled')
+                  AND (remaining_balance IS NULL OR remaining_balance > 0)
+                LIMIT 1
+            """, (user_id,))
+            if cur.fetchone():
+                conn.close()
+                return jsonify({
+                    "message": "You have an outstanding loan. Please repay it before applying for another.",
+                    "tone": "warning"
+                })
+            conn.close()
+
             # Define tiers
             tiers = [
-                (5000, 10000, 21, 3, 0.10, 20),
+                # (min_amount, max_amount, max_duration_days, grace_days, monthly_rate, min_score)
+                (5000, 10000, 21, 3, 0.133, 20),
                 (10001, 50000, 28, 7, 0.10, 50),
-                (51000, 100000, 56, 14, 0.10, 100),
-                (101000, 200000, 90, 21, 0.10, 250),
-                (201000, 500000, 180, 30, 0.10, 350),
-                (501000, 1000000, 240, 60, 0.10, 500),
-                (1100000, 5000000, 365, 90, 0.10, 700),
+                (51000, 100000, 56, 14, 0.075, 100),
+                (101000, 200000, 90, 21, 0.05, 250),
+                (201000, 500000, 180, 30, 0.0333, 350),
+                (501000, 1000000, 240, 60, 0.025, 500),
+                (1100000, 5000000, 365, 90, 0.0208, 700)
             ]
 
             min_eligible = None
@@ -3073,57 +3084,38 @@ def process_user_command(user_id, text):
 
             # Find the tier for the requested amount
             selected_tier = None
-            for min_amt, max_amt, dur, grace, rate, min_score in tiers:
+            for min_amt, max_amt, max_dur, grace, monthly_rate, min_score in tiers:
                 if min_amt <= requested_amount <= max_amt:
-                    selected_tier = (min_amt, max_amt, dur, grace, rate)
+                    selected_tier = (min_amt, max_amt, max_dur, grace, monthly_rate)
                     break
 
             if not selected_tier:
                 return jsonify({"message": "Could not determine loan terms. Please try again.", "tone": "neutral"})
 
-            min_amt, max_amt, dur_days, grace_days, interest_rate = selected_tier
-            total_interest = requested_amount * interest_rate
-            total_repayable = requested_amount + total_interest
-            repay_days = dur_days - grace_days
-            daily_amount = round(total_repayable / repay_days, 2)
-            is_weekly = dur_days > 90
-            weekly_amount = round(total_repayable / (repay_days / 7), 2) if is_weekly else None
+            # Unpack tier details
+            min_amt, max_amt, max_dur_days, grace_days, monthly_rate = selected_tier
+            min_dur_days = grace_days + 14  # minimum repayment period
 
-            # Insert pending_loan with self as supplier (cash loan)
-            conn = get_conn()
-            cur = conn.cursor()
-            supplier_id = user_id
-            product = "Cash Loan"
-            supplier_name = get_user_facts(user_id).get('business_name', '')
-            supplier_phone = get_user_facts(user_id).get('phone', '')
-
-            cur.execute("""
-                INSERT INTO pending_loans
-                (user_id, supplier_id, product, amount, interest, total_repayable,
-                 daily_amount, duration_days, grace_days, supplier_name, supplier_phone, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, supplier_id, product, requested_amount, total_interest, total_repayable,
-                  daily_amount, dur_days, grace_days, supplier_name, supplier_phone))
-            conn.commit()
-            conn.close()
-
-            # Build repayment message
-            if is_weekly:
-                repayment_msg = f"Weekly repayment: ₦{weekly_amount:,.2f} ({int(repay_days / 7)} weeks)"
-            else:
-                repayment_msg = f"Daily repayment: ₦{daily_amount:,.2f} for {repay_days} days"
+            # Store state to expect duration
+            pending_transaction[user_id] = {
+                "state": "awaiting_loan_duration",
+                "data": {
+                    "amount": requested_amount,
+                    "grace_days": grace_days,
+                    "max_dur_days": max_dur_days,
+                    "min_dur_days": min_dur_days,
+                    "monthly_rate": monthly_rate
+                }
+            }
 
             return jsonify({
                 "message": (
-                    f"✅ Loan request submitted!\n\n"
-                    f"💰 Amount: ₦{requested_amount:,.2f}\n"
-                    f"📊 Interest (10%): ₦{total_interest:,.2f}\n"
-                    f"💵 Total repay: ₦{total_repayable:,.2f}\n"
-                    f"⏳ Duration: {dur_days} days (grace: {grace_days} days)\n"
-                    f"🗓️ {repayment_msg}\n\n"
-                    f"Your request is pending admin approval. We'll notify you when it's disbursed."
+                    f"Great! You want to borrow ₦{requested_amount:,.2f}.\n\n"
+                    f"How many days do you want to repay? "
+                    f"Minimum {min_dur_days} days, maximum {max_dur_days} days.\n"
+                    f"(You get {grace_days} days grace before repayment starts.)"
                 ),
-                "tone": "income"
+                "tone": "neutral"
             })
 
         # ---- LIST ALL BUSINESSES ----
@@ -4322,13 +4314,14 @@ def process_user_command(user_id, text):
             credit = get_credit_score(user_id)
             score = credit['score']
             tiers = [
-                (5000, 10000, 21, 3, 0.10, 20),
+                # (min_amount, max_amount, max_duration_days, grace_days, monthly_rate, min_score)
+                (5000, 10000, 21, 3, 0.133, 20),
                 (10001, 50000, 28, 7, 0.10, 50),
-                (51000, 100000, 56, 14, 0.10, 100),
-                (101000, 200000, 90, 21, 0.10, 250),
-                (201000, 500000, 180, 30, 0.10, 350),
-                (501000, 1000000, 240, 60, 0.10, 500),
-                (1100000, 5000000, 365, 90, 0.10, 700),
+                (51000, 100000, 56, 14, 0.075, 100),
+                (101000, 200000, 90, 21, 0.05, 250),
+                (201000, 500000, 180, 30, 0.0333, 350),
+                (501000, 1000000, 240, 60, 0.025, 500),
+                (1100000, 5000000, 365, 90, 0.0208, 700)
             ]
             min_eligible = None
             max_eligible = None
@@ -4361,13 +4354,14 @@ def process_user_command(user_id, text):
             score = credit['score']
             # Tiers: (min_amount, max_amount, dur, grace, rate, min_score)
             tiers = [
-                (5000, 10000, 21, 3, 0.10, 20),
+                # (min_amount, max_amount, max_duration_days, grace_days, monthly_rate, min_score)
+                (5000, 10000, 21, 3, 0.133, 20),
                 (10001, 50000, 28, 7, 0.10, 50),
-                (51000, 100000, 56, 14, 0.10, 100),
-                (101000, 200000, 90, 21, 0.10, 250),
-                (201000, 500000, 180, 30, 0.10, 350),
-                (501000, 1000000, 240, 60, 0.10, 500),
-                (1100000, 5000000, 365, 90, 0.10, 700),
+                (51000, 100000, 56, 14, 0.075, 100),
+                (101000, 200000, 90, 21, 0.05, 250),
+                (201000, 500000, 180, 30, 0.0333, 350),
+                (501000, 1000000, 240, 60, 0.025, 500),
+                (1100000, 5000000, 365, 90, 0.0208, 700)
             ]
             min_eligible = None
             max_eligible = None
@@ -5071,13 +5065,14 @@ def handle_query(text, user_id):
         credit = get_credit_score(user_id)
         score = credit['score']
         tiers = [
-            (5000, 10000, 21, 3, 0.10, 20),
+            # (min_amount, max_amount, max_duration_days, grace_days, monthly_rate, min_score)
+            (5000, 10000, 21, 3, 0.133, 20),
             (10001, 50000, 28, 7, 0.10, 50),
-            (51000, 100000, 56, 14, 0.10, 100),
-            (101000, 200000, 90, 21, 0.10, 250),
-            (201000, 500000, 180, 30, 0.10, 350),
-            (501000, 1000000, 240, 60, 0.10, 500),
-            (1100000, 5000000, 365, 90, 0.10, 700),
+            (51000, 100000, 56, 14, 0.075, 100),
+            (101000, 200000, 90, 21, 0.05, 250),
+            (201000, 500000, 180, 30, 0.0333, 350),
+            (501000, 1000000, 240, 60, 0.025, 500),
+            (1100000, 5000000, 365, 90, 0.0208, 700)
         ]
         min_eligible = None
         max_eligible = None

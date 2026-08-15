@@ -7651,12 +7651,63 @@ def get_wallet():
     user_id = get_jwt_identity()
     try:
         wallet = ensure_wallet(user_id)
+
+        # Check for outstanding/active inventory loan
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, principal, remaining_balance, start_date, end_date,
+                   grace_days, duration_days, payment_frequency, status
+            FROM inventory_loans
+            WHERE user_id = %s
+              AND status NOT IN ('repaid','defaulted','cancelled')
+              AND (remaining_balance IS NULL OR remaining_balance > 0)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        loan_row = cur.fetchone()
+        conn.close()
+
+        outstanding_loan = None
+        if loan_row:
+            loan_id = loan_row[0]
+            principal = loan_row[1]
+            remaining_balance = loan_row[2] if loan_row[2] is not None else principal
+            start_date = loan_row[3]
+            end_date = loan_row[4]
+            grace_days = loan_row[5]
+            duration_days = loan_row[6]
+            payment_frequency = loan_row[7]
+            status = loan_row[8]
+
+            # Calculate next repayment date (simple: today + 1 day for daily, +7 for weekly)
+            from datetime import datetime, timedelta
+            next_date = None
+            if payment_frequency == 'weekly':
+                next_date = (datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')
+            else:
+                next_date = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+
+            outstanding_loan = {
+                "loan_id": str(loan_id),
+                "principal": principal,
+                "remaining_balance": remaining_balance,
+                "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                "end_date": end_date.strftime('%Y-%m-%d') if end_date else None,
+                "grace_days": grace_days,
+                "duration_days": duration_days,
+                "payment_frequency": payment_frequency,
+                "status": status,
+                "next_repayment_date": next_date
+            }
+
         return jsonify({
             "has_wallet": True,
             "balance": wallet['balance'],
             "account_number": wallet['account_number'],
             "bank_name": wallet['bank_name'],
-            "bank_code": wallet['bank_code']
+            "bank_code": wallet['bank_code'],
+            "outstanding_loan": outstanding_loan
         })
     except Exception as e:
         return jsonify({

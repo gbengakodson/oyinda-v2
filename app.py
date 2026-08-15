@@ -1055,10 +1055,14 @@ def process_user_command(user_id, text):
         # If no digits or skip_ai, ensure groq_result is defined (it may be used later)
         groq_result = None
 
-        # If AI didn't give high confidence or no items, fall through to rule‑based system
+
     # ===== HANDLE PENDING OFFRAMP STATES =====
     offramp_state = pending_transaction.get(user_id, {}).get('state')
     if offramp_state and offramp_state.startswith('offramp_'):
+        # Universal cancel
+        if text.strip().lower() in ['cancel', 'stop', 'abort', 'quit']:
+            pending_transaction.pop(user_id, None)
+            return jsonify({"message": "Process cancelled.", "tone": "neutral"})
 
         if offramp_state == 'offramp_collect_amount':
             amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
@@ -1066,7 +1070,6 @@ def process_user_command(user_id, text):
                 amount_str = amount_match.group(1).replace(',', '')
                 multiplier = 1000 if amount_match.group(2) else 1
                 amount = float(amount_str) * multiplier
-                # Store amount and ask for account
                 pending_transaction[user_id] = {
                     "state": "offramp_collect_account",
                     "data": {"amount": amount}
@@ -1076,7 +1079,12 @@ def process_user_command(user_id, text):
                     "tone": "neutral"
                 })
             else:
-                return jsonify({"message": "Please enter a valid amount (e.g., 5000).", "tone": "neutral"})
+                # Invalid amount – cancel and give message
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": "I didn't understand the amount. Please type 'withdraw' to start again.",
+                    "tone": "neutral"
+                })
 
         elif offramp_state == 'offramp_collect_account':
             amount = pending_transaction[user_id]['data'].get('amount')
@@ -1084,24 +1092,23 @@ def process_user_command(user_id, text):
                 pending_transaction.pop(user_id, None)
                 return jsonify({"message": "Missing amount. Please start again.", "tone": "warning"})
 
-            # Extract account number and bank name
             account_match = re.search(r'(?<!\d)(\d{10,11})(?!\d)', text)
             if not account_match:
-                return jsonify({"message": "Please enter a valid account number (10 digits).", "tone": "neutral"})
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": "No valid account number found. Please type 'withdraw' to start again.",
+                    "tone": "neutral"
+                })
             account_number = account_match.group(1)
 
-            # If it looks like a phone number, abort offramp and let internal transfer handle it
             if len(account_number) == 11 and account_number.startswith('0'):
                 pending_transaction.pop(user_id, None)
-                # Re-route to internal transfer logic by returning handled=False? Actually need to call other handlers.
-                # We'll return False, None to allow normal flow (which may catch as wallet transfer)
-                # But we've already returned json from this early check; better to call handle_offramp_withdrawal again with a constructed text?
-                # Simpler: just return a message to user indicating this is a phone number; then they can use 'send to phone' separately.
-                return jsonify(
-                    {"message": "This looks like a phone number. Use 'send 500 to 08012345678' for wallet transfer.",
-                     "tone": "neutral"})
+                return jsonify({
+                    "message": "This looks like a phone number. Use 'send 500 to 08012345678' for wallet transfer.",
+                    "tone": "neutral"
+                })
 
-            # Determine bank name
+            # Determine bank name (simplified)
             bank_name = None
             parts = text.lower().split(account_number)
             if len(parts) > 1:
@@ -1120,15 +1127,16 @@ def process_user_command(user_id, text):
             if not bank_name:
                 bank_name = "Unknown Bank"
 
-            # Now execute offramp using the same logic as handle_offramp_withdrawal would with complete info
+            # Execute offramp (same as before, copy from existing code)
             from breet_client import BreetClient
             client = BreetClient()
             wallet = ensure_wallet(user_id)
             if wallet['balance'] < amount:
                 pending_transaction.pop(user_id, None)
-                return jsonify(
-                    {"message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
-                     "tone": "warning"})
+                return jsonify({
+                    "message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
+                    "tone": "warning"
+                })
 
             new_balance = wallet['balance'] - amount
             conn = get_conn()
@@ -1183,6 +1191,50 @@ def process_user_command(user_id, text):
                 "message": f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. Reference: {tx_hash[:10]}...",
                 "tone": "income"
             })
+
+    # ===== HANDLE REPAY LOAN COMMAND =====
+    if 'repay loan' in text.lower() or 'repay my loan' in text.lower():
+        wallet = ensure_wallet(user_id)
+        # Get outstanding loan details
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, principal, remaining_balance, start_date, end_date, grace_days, payment_frequency
+            FROM inventory_loans
+            WHERE user_id = %s
+              AND status NOT IN ('repaid','defaulted','cancelled')
+              AND (remaining_balance IS NULL OR remaining_balance > 0)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        loan_row = cur.fetchone()
+        conn.close()
+
+        if not loan_row:
+            return jsonify({
+                "message": "You don't have an outstanding loan. If you want to deposit money into your wallet, use 'deposit'.",
+                "tone": "neutral"
+            })
+
+        loan_id = loan_row[0]
+        principal = loan_row[1]
+        remaining_balance = loan_row[2] if loan_row[2] is not None else principal
+        start_date = loan_row[3]
+        end_date = loan_row[4]
+        grace_days = loan_row[5]
+        payment_frequency = loan_row[6]
+
+        # Simple deposit instructions – can be replaced with bank/crypto details later
+        return jsonify({
+            "message": (
+                f"To repay your loan, deposit ₦{remaining_balance:,.2f} into your Oyinda wallet.\n\n"
+                f"Your wallet account: {wallet['account_number']} ({wallet['bank_name']})\n"
+                f"Use your phone number as narration.\n\n"
+                f"Once we confirm the deposit, your loan balance will be updated."
+            ),
+            "tone": "income"
+        })
+
 
     # ===== HANDLE AWAITING LOAN AMOUNT STATE =====
     if pending_transaction.get(user_id, {}).get('state') == 'awaiting_loan_amount':

@@ -782,7 +782,7 @@ def handle_offramp_withdrawal(user_id, text):
     Detect bank payouts (withdraw / send / transfer to bank) and execute offramp immediately.
     Returns (handled, message_or_None)
     """
-    import re
+
     text_lower = text.lower().strip()
     if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal', 'send', 'transfer']):
         return False, None
@@ -1059,7 +1059,7 @@ def process_user_command(user_id, text):
     # ===== HANDLE PENDING OFFRAMP STATES =====
     offramp_state = pending_transaction.get(user_id, {}).get('state')
     if offramp_state and offramp_state.startswith('offramp_'):
-        import re
+
         if offramp_state == 'offramp_collect_amount':
             amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
             if amount_match:
@@ -5094,7 +5094,7 @@ def handle_query(text, user_id):
             })
 
         # Try to extract amount from the message
-        import re
+
         amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
         requested_amount = None
         if amount_match:
@@ -8001,7 +8001,7 @@ def credit_report():
     # Total assets from net worth
     try:
         net_worth_str = calculate_net_worth(user_id)
-        import re
+
         match = re.search(r'Total Assets \(NGN\): ₦([\d,]+\.?\d*)', net_worth_str)
         total_assets = float(match.group(1).replace(',','')) if match else 0
         match_liab = re.search(r'Total Liabilities \(Loans\): ₦([\d,]+\.?\d*)', net_worth_str)

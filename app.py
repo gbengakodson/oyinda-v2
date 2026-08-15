@@ -7657,7 +7657,7 @@ def get_wallet():
         cur = conn.cursor()
         cur.execute("""
             SELECT id, principal, remaining_balance, start_date, end_date,
-                   grace_days, duration_days, payment_frequency, status
+                   grace_days, payment_frequency, status
             FROM inventory_loans
             WHERE user_id = %s
               AND status NOT IN ('repaid','defaulted','cancelled')
@@ -7676,9 +7676,13 @@ def get_wallet():
             start_date = loan_row[3]
             end_date = loan_row[4]
             grace_days = loan_row[5]
-            duration_days = loan_row[6]
-            payment_frequency = loan_row[7]
-            status = loan_row[8]
+            payment_frequency = loan_row[6]
+            status = loan_row[7]
+
+            # Calculate duration in days from start_date and end_date (fallback 0)
+            duration_days = 0
+            if start_date and end_date:
+                duration_days = (end_date - start_date).days
 
             # Calculate next repayment date (simple: today + 1 day for daily, +7 for weekly)
             from datetime import datetime, timedelta

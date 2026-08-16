@@ -7745,12 +7745,17 @@ def get_wallet():
                 "next_repayment_date": next_date
             }
 
+        # Get Spenda wallet address from user facts
+        user_facts = get_user_facts(user_id)
+        crypto_wallet_address = user_facts.get('crypto_wallet_address', '')
+
         return jsonify({
             "has_wallet": True,
             "balance": wallet['balance'],
             "account_number": wallet['account_number'],
             "bank_name": wallet['bank_name'],
             "bank_code": wallet['bank_code'],
+            "crypto_wallet_address": crypto_wallet_address,
             "outstanding_loan": outstanding_loan
         })
     except Exception as e:

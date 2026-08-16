@@ -779,12 +779,12 @@ def extract_date_range(date_param=None):
 
 def handle_offramp_withdrawal(user_id, text):
     """
-    Detect bank payouts (withdraw / send / transfer to bank) and execute offramp immediately.
+    Detect withdrawal requests and initiate off-ramp using the user's linked Spenda USDC address.
     Returns (handled, message_or_None)
     """
-
+    import re
     text_lower = text.lower().strip()
-    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal', 'send', 'transfer']):
+    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal']):
         return False, None
 
     # Extract amount first (supports 5000, ₦5,000, 50k, N50,000)
@@ -794,7 +794,7 @@ def handle_offramp_withdrawal(user_id, text):
             "state": "offramp_collect_amount",
             "data": {}
         }
-        return True, "How much do you want to send?"
+        return True, "How much do you want to withdraw? (e.g., 5000)"
 
     amount_str = amount_match.group(1).replace(',', '')
     multiplier = 1000 if amount_match.group(2) else 1
@@ -803,45 +803,15 @@ def handle_offramp_withdrawal(user_id, text):
     except:
         return True, "I couldn't understand the amount. Please try again."
 
-    # Extract account number (10 or 11 digits)
-    account_match = re.search(r'\b(\d{10,11})\b', text_lower)
-    if not account_match:
-        pending_transaction[user_id] = {
-            "state": "offramp_collect_account",
-            "data": {"amount": amount}
-        }
-        return True, "Please provide the bank account number (and optionally bank name)."
+    # Check if user has linked a Spenda USDC address
+    user_facts = get_user_facts(user_id)
+    crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
 
-    account_number = account_match.group(1)
-
-    # If the number looks like a Nigerian phone number (11 digits starting 0),
-    # return False so the internal wallet transfer logic handles it.
-    if len(account_number) == 11 and account_number.startswith('0'):
-        return False, None
-
-    # Determine bank name from text after the account number
-    bank_name = None
-    parts = text_lower.split(account_number)
-    if len(parts) > 1:
-        rest = parts[1].strip()
-        rest = re.sub(r'^(and|,|\s)*', '', rest)
-        rest = rest.strip().rstrip('.').strip()
-        if rest:
-            bank_name = rest.title()
-
-    if not bank_name:
-        # Fallback: look for known bank names
-        known_banks = ['zenith', 'uba', 'gtbank', 'gt bank', 'access', 'first bank', 'fidelity', 'union', 'stanbic', 'keystone', 'polaris', 'wema', 'heritage', 'providus']
-        for bank in known_banks:
-            if bank in text_lower:
-                bank_name = bank.title()
-                break
-    if not bank_name:
-        bank_name = "Unknown Bank"
-
-    # ----- Offramp execution -----
-    from breet_client import BreetClient
-    client = BreetClient()
+    if not crypto_wallet_address:
+        return True, (
+            "You haven't linked your Spenda USDC address yet. "
+            "Please go to Profile → Edit and add your Spenda USDC address to receive withdrawals."
+        )
 
     # Debit wallet immediately
     wallet = ensure_wallet(user_id)
@@ -854,46 +824,29 @@ def handle_offramp_withdrawal(user_id, text):
     cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
                 (new_balance, user_id))
 
-    # Record debit event
+    # Record wallet debit event
     try:
         append_event(user_id, user_id, 'WalletDebited', {
             "amount": amount,
-            "bank_name": bank_name,
-            "account_number": account_number,
-            "reason": "offramp_payout"
+            "reason": "offramp_payout_spenda",
+            "crypto_wallet_address": crypto_wallet_address
         })
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")
 
-    # Log as expense so it appears in the sidebar history
-    try:
-        append_event(user_id, user_id, 'ExpenseLogged', {
-            "amount": amount,
-            "currency": "NGN",
-            "category": "withdrawal",
-            "date": datetime.utcnow().strftime('%Y-%m-%d'),
-            "description": f"Withdrawal to {bank_name} ({account_number[-4:]})",
-            "reason": "offramp_payout"
-        })
-    except Exception as e:
-        print(f"EVENT LOG WARNING: {e}")
-
-    # Always create a NEW Breet sub-account with the current bank details
-    result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
-    breet_address = result['address']
-    subaccount_id = result['subaccount_id']
-
-    # Fetch rate and compute USDT amount
+    # Use mock Breet client to get a rate (or replace with real rate provider later)
+    from breet_client import BreetClient
+    client = BreetClient()
     rate = client.get_rate()
     usdt_amount = round(amount / rate, 6)
 
-    # Simulate USDT transfer (mock mode)
+    # Simulate USDT transfer to the user's Spenda address
     if os.getenv("BREET_MOCK", "true").lower() == "true":
         import hashlib, time
         fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
         tx_hash = f"0x{fake_tx[:64]}"
     else:
-        # TODO: real web3 transfer
+        # TODO: real USDT transfer to crypto_wallet_address
         tx_hash = None
 
     # Insert disbursement log
@@ -901,25 +854,25 @@ def handle_offramp_withdrawal(user_id, text):
         INSERT INTO disbursement_logs
         (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
         VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
-    """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
-
+    """, (user_id, amount, usdt_amount, rate, crypto_wallet_address, tx_hash))
     conn.commit()
     conn.close()
 
-    # Optional event
+    # Optional event logging
     try:
-        append_event(user_id, user_id, 'OfframpInitiated', {
-            "amount_ngn": amount,
-            "usdt_amount": usdt_amount,
-            "rate": rate,
-            "tx_hash": tx_hash,
-            "breet_subaccount_id": subaccount_id
+        append_event(user_id, user_id, 'ExpenseLogged', {
+            "amount": amount,
+            "currency": "NGN",
+            "category": "withdrawal",
+            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+            "description": f"Withdrawal to Spenda ({crypto_wallet_address[:8]}...)",
+            "reason": "offramp_payout_spenda"
         })
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")
 
-    return True, (f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. "
-                  f"Reference: {tx_hash[:10]}...")
+    return True, (f"₦{amount:,.2f} is on its way to your Spenda wallet. "
+                  f"It will appear as Naira in your Spenda account. Reference: {tx_hash[:10]}...")
 
 
 
@@ -7058,7 +7011,8 @@ def get_my_business():
                 bl.shop_photo,
                 bl.city,
                 bl.market_name,
-                bl.products
+                bl.products,
+                COALESCE(u.facts->>'crypto_wallet_address', '') AS crypto_wallet_address
             FROM users u
             LEFT JOIN business_listings bl ON bl.user_id = u.id
             WHERE u.id = %s
@@ -7481,6 +7435,40 @@ def update_business_info():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+
+@app.route('/api/update-crypto-wallet-address', methods=['POST', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def update_crypto_wallet_address():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    address = data.get('address', '').strip()
+
+    if not address:
+        return jsonify({"error": "Address is required"}), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE users
+            SET facts = jsonb_set(
+                COALESCE(facts, '{}')::jsonb,
+                '{crypto_wallet_address}',
+                %s::jsonb
+            )
+            WHERE id = %s
+        """, (json.dumps(address), user_id))
+        conn.commit()
+        return jsonify({"message": "Crypto wallet address updated", "address": address})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 
 @app.route('/tax/breakdown', methods=['GET'])

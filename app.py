@@ -32,6 +32,8 @@ import traceback
 
 
 
+
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL")          # e.g. https://abcdefg.supabase.co
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
@@ -658,6 +660,109 @@ def ensure_wallet(user_id):
         "bank_code": bank_code,
         "balance": 0.0
     }
+
+
+def get_treasury_balance():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM treasury WHERE id = 1")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def credit_treasury(amount):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE treasury
+        SET balance = balance + %s, updated_at = now()
+        WHERE id = 1
+    """, (amount,))
+    conn.commit()
+    conn.close()
+    return get_treasury_balance()
+
+def debit_treasury(amount):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM treasury WHERE id = 1 FOR UPDATE")
+    row = cur.fetchone()
+    if not row or row[0] < amount:
+        conn.close()
+        return False
+    cur.execute("""
+        UPDATE treasury
+        SET balance = balance - %s, updated_at = now()
+        WHERE id = 1
+    """, (amount,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+
+def disburse_loan_from_treasury(loan_id):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Fetch pending loan details
+    cur.execute("""
+        SELECT user_id, amount
+        FROM pending_loans
+        WHERE id = %s AND status = 'approved'
+    """, (loan_id,))
+    loan = cur.fetchone()
+    if not loan:
+        conn.close()
+        return False, "Loan not found or not approved"
+
+    user_id, amount = loan
+
+    # Check treasury balance
+    treasury_balance = get_treasury_balance()
+    if treasury_balance < amount:
+        conn.close()
+        return False, "Insufficient treasury balance"
+
+    # Debit treasury
+    if not debit_treasury(amount):
+        conn.close()
+        return False, "Failed to debit treasury"
+
+    # Credit borrower's wallet
+    ensure_wallet(user_id)
+    cur.execute("""
+        UPDATE user_wallets
+        SET balance = balance + %s, last_balance_update = now()
+        WHERE user_id = %s
+    """, (amount, user_id))
+    conn.commit()
+    conn.close()
+
+    # Log events
+    append_event(user_id, user_id, 'WalletCredited', {
+        "amount": amount,
+        "source": "loan_disbursement_treasury",
+        "loan_id": str(loan_id)
+    })
+    append_event(user_id, user_id, 'LoanDisbursed', {
+        "loan_id": str(loan_id),
+        "amount": amount
+    })
+
+    # Mark pending loan as disbursed (or move to inventory_loans)
+    # For simplicity, update status to 'disbursed'
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE pending_loans
+        SET status = 'disbursed'
+        WHERE id = %s
+    """, (loan_id,))
+    conn.commit()
+    conn.close()
+
+    return True, "Loan disbursed"
 
 
 
@@ -6902,6 +7007,37 @@ def send_broadcast():
     return jsonify({"message": f"Broadcast sent to {len(members)} people"})
 
 
+@app.route('/admin/fund-treasury', methods=['POST', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def admin_fund_treasury():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
+    data = request.get_json()
+    amount = float(data.get('amount', 0))
+    if amount <= 0:
+        return jsonify({"error": "Amount must be positive"}), 400
+
+    new_balance = credit_treasury(amount)
+    return jsonify({"message": f"Treasury funded. New balance: ₦{new_balance:,.2f}", "balance": new_balance})
+
+
+@app.route('/admin/treasury', methods=['GET'])
+@cross_origin()
+@jwt_required()
+def admin_get_treasury():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
+    balance = get_treasury_balance()
+    return jsonify({"balance": balance})
+
+
 
 @app.route('/credit/share/<token>', methods=['GET'])
 def share_credit_report(token):
@@ -8423,55 +8559,32 @@ def admin_confirm_loan():
         return jsonify({"error": "unauthorized"}), 403
 
     data = request.get_json()
-    loan_id = data.get('loan_id', '')
+    loan_id = data.get('loan_id')
+    if not loan_id:
+        return jsonify({"error": "loan_id required"}), 400
 
+    # Mark the pending loan as approved
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM pending_loans WHERE id = %s AND status = 'pending'", (loan_id,))
-    loan = cur.fetchone()
-    if not loan:
-        conn.close()
-        return jsonify({"error": "Loan not found or already processed"}), 404
-
-    borrower_id, supplier_id, product, amount, interest, total_repayable, daily_amount, dur_days, grace_days, supplier_name, supplier_phone = loan[1:12]
-
-    # Credit supplier wallet
-    cur.execute("UPDATE user_wallets SET balance = balance + %s WHERE user_id = %s", (amount, supplier_id))
-
-    # Create inventory loan record
-    start_date = datetime.utcnow().date()
-    end_date = start_date + timedelta(days=dur_days)
     cur.execute("""
-        INSERT INTO inventory_loans
-        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
-         daily_amount, remaining_balance, start_date, end_date, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-    """, (borrower_id, supplier_id, product, amount, interest,
-          total_repayable, daily_amount, total_repayable, start_date, end_date))
-
-    # Log events
-    append_event(borrower_id, borrower_id, 'LoanTaken', {
-        "amount": amount,
-        "supplier_id": str(supplier_id),
-        "product": product,
-        "total_interest": interest,
-        "total_repayable": total_repayable,
-        "daily_amount": daily_amount,
-        "duration_days": dur_days,
-        "grace_days": grace_days
-    })
-    append_event(supplier_id, supplier_id, 'WalletCredited', {
-        "amount": amount,
-        "source": "oyinda_loan"
-    })
-
-    update_credit_score(conn, borrower_id)
-
-    cur.execute("UPDATE pending_loans SET status = 'approved' WHERE id = %s", (loan_id,))
+        UPDATE pending_loans
+        SET status = 'approved'
+        WHERE id = %s AND status = 'pending'
+        RETURNING id
+    """, (loan_id,))
+    row = cur.fetchone()
     conn.commit()
     conn.close()
 
-    return jsonify({"message": f"Loan of ₦{amount:,.2f} to {supplier_name} disbursed successfully."})
+    if not row:
+        return jsonify({"error": "Loan not found or already processed"}), 404
+
+    # Auto‑disburse from treasury
+    success, message = disburse_loan_from_treasury(loan_id)
+    if not success:
+        return jsonify({"error": message}), 500
+
+    return jsonify({"message": "Loan approved and disbursed"})
 
 
 

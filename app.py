@@ -908,6 +908,9 @@ def handle_offramp_withdrawal(user_id, text):
     except:
         return True, "I couldn't understand the amount. Please try again."
 
+    if amount <= 0:
+        return True, "Please enter a valid amount greater than zero."
+
     # Check if user has linked a Spenda USDC address
     user_facts = get_user_facts(user_id)
     crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
@@ -1139,6 +1142,13 @@ def process_user_command(user_id, text):
             amount_str = amount_match.group(1).replace(',', '')
             multiplier = 1000 if amount_match.group(2) else 1
             amount = float(amount_str) * multiplier
+
+            if amount <= 0:
+                pending_transaction.pop(user_id, None)
+                return jsonify({
+                    "message": "Please enter a valid amount greater than zero.",
+                    "tone": "neutral"
+                })
 
             # Check for linked Spenda USDC address
             user_facts = get_user_facts(user_id)

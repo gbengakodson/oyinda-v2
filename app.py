@@ -1123,6 +1123,11 @@ def process_user_command(user_id, text):
         groq_result = None
 
     # ===== HANDLE PENDING OFFRAMP STATES =====
+    # Cancel any lingering offramp state if message has no digits
+    if pending_transaction.get(user_id, {}).get('state', '').startswith('offramp_'):
+        if not re.search(r'\d', text):
+            pending_transaction.pop(user_id, None)
+
     offramp_state = pending_transaction.get(user_id, {}).get('state')
     if offramp_state and offramp_state.startswith('offramp_'):
         # Universal cancel

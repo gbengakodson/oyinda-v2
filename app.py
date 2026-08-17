@@ -1354,13 +1354,22 @@ def process_user_command(user_id, text):
         if any(phrase in text_lower_wallet for phrase in ['wallet balance', 'check my wallet', 'my wallet']):
             try:
                 wallet = ensure_wallet(user_id)
+                user_facts = get_user_facts(user_id)
+                spenda_address = user_facts.get('crypto_wallet_address', '').strip()
+
+                message = f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
+                if spenda_address:
+                    message += f"Spenda wallet: linked ({spenda_address[:8]}...)\n"
+                else:
+                    message += "Spenda wallet: not linked\n"
+
+                message += (
+                    "To withdraw: 'withdraw 5000' (sent to your Spenda wallet)\n"
+                    "To send to another Oyinda user: 'send 500 to 080xxxx'"
+                )
+
                 save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"💰 Your Oyinda wallet balance is ₦{wallet['balance']:,.2f}\n"
-                               f"Account number: {wallet['account_number']} ({wallet['bank_name']})\n"
-                               f"Send money: 'send 500 to 080xxxx' | Withdraw: 'withdraw 5000 to 058 0123456789'",
-                    "tone": "neutral"
-                })
+                return jsonify({"message": message, "tone": "neutral"})
             except Exception as e:
                 return jsonify({"message": str(e), "tone": "warning"})
 
@@ -1369,172 +1378,85 @@ def process_user_command(user_id, text):
         # ---- UNIFIED WITHDRAWAL / TRANSFER (AI‑first, then guided) ----
         # Try to extract withdrawal details using Groq
         # If the user just says "withdraw" (no amount/details yet), start a guided flow
-        if text_lower.strip() == 'withdraw':
-            pending_transaction[user_id] = {
-                "state": "collect_withdrawal_amount",
-                "data": {},
-                "category": None
-            }
+        # Otherwise, it's a withdrawal to Spenda (no bank details needed)
+        wallet = ensure_wallet(user_id)
+        if wallet['balance'] < amount:
+            return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
+
+        # Get linked Spenda USDC address
+        user_facts = get_user_facts(user_id)
+        crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
+        if not crypto_wallet_address:
             return jsonify({
-                "message": "How much do you want to withdraw? (e.g., 5000)",
-                "tone": "neutral"
+                "message": "You haven't linked your Spenda USDC address yet. Please go to Profile → Edit and add it.",
+                "tone": "warning"
             })
 
-        groq_withdrawal = parse_intent_groq(text, user_id) if re.search(r'\d', text) else None
-        if groq_withdrawal and groq_withdrawal.get('intent') == 'withdrawal':
-            # Extract all fields the AI found
-            amount = groq_withdrawal.get('amount')
-            account_number = groq_withdrawal.get('account_number')
-            bank_name = groq_withdrawal.get('bank_name', '')
-            account_type = groq_withdrawal.get('account_type', '')
-            account_name = groq_withdrawal.get('account_name', '')
+        # Debit wallet immediately
+        new_balance = wallet['balance'] - amount
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_balance, user_id))
+        try:
+            append_event(user_id, user_id, 'WalletDebited', {
+                "amount": amount,
+                "reason": "offramp_payout_spenda",
+                "crypto_wallet_address": crypto_wallet_address
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")
+        conn.commit()
+        conn.close()
 
-            # If the account number looks like a phone number, treat as internal transfer
-            if account_number and len(account_number) == 11 and account_number.startswith('0'):
-                recipient_phone = account_number
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT id FROM users WHERE facts->>'phone' = %s", (recipient_phone,))
-                recip_row = cur.fetchone()
-                if not recip_row:
-                    conn.close()
-                    return jsonify(
-                        {"message": "User with that phone number not found. Ask them to join Oyinda first."})
-                recip_id = recip_row[0]
-                cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (recip_id,))
-                recip_wallet_row = cur.fetchone()
-                if not recip_wallet_row:
-                    conn.close()
-                    return jsonify({"message": "Recipient doesn't have an active wallet yet."})
-                sender_wallet = ensure_wallet(user_id)
-                if sender_wallet['balance'] < amount:
-                    conn.close()
-                    return jsonify({"message": "Insufficient wallet balance."})
-
-                new_sender_balance = sender_wallet['balance'] - amount
-                new_recip_balance = float(recip_wallet_row[0]) + amount
-                cur.execute(
-                    "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_sender_balance, user_id))
-                cur.execute(
-                    "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_recip_balance, recip_id))
-                conn.commit()
-                conn.close()
-
-                sender_phone = get_user_facts(user_id).get('phone', '')
-                append_event(user_id, user_id, 'WalletDebited', {"amount": amount, "to_phone": recipient_phone})
-                append_event(recip_id, recip_id, 'WalletCredited',
-                             {"amount": amount, "from_phone": sender_phone})
-                save_conversation(user_id, 'user', text)
-                return jsonify({
-                    "message": f"✅ Sent ₦{amount:,.2f} to {recipient_phone}. Your new balance: ₦{new_sender_balance:,.2f}",
-                    "tone": "income"
-                })
-
-            # Otherwise, it's a bank withdrawal – check required fields
-            missing_fields = []
-            if not amount: missing_fields.append('amount')
-            if not account_number: missing_fields.append('account number')
-            if not bank_name: missing_fields.append('bank name')
-
-            if missing_fields:
-                return jsonify({
-                    "message": f"I need a bit more info. Please provide: {', '.join(missing_fields)}.",
-                    "tone": "neutral"
-                })
-
-
-            # All required fields present – start offramp withdrawal
-            wallet = ensure_wallet(user_id)
-            if wallet['balance'] < amount:
-                return jsonify({"message": "Insufficient wallet balance.", "tone": "warning"})
-
-            # Debit wallet immediately
-            new_balance = wallet['balance'] - amount
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                        (new_balance, user_id))
-            cur.execute(
-                "INSERT INTO events (user_id, actor_id, event_type, payload, created_at) VALUES (%s, %s, %s, %s, now())",
-                (user_id, user_id, 'WalletDebited', json.dumps({
-                    "amount": amount,
-                    "bank_name": bank_name,
-                    "account_number": account_number,
-                    "account_name": account_name,
-                    "reason": "withdrawal_offramp"
-                })))
-            conn.commit()
-            conn.close()
-
-            # Offramp via crypto
-            from breet_client import BreetClient
-            client = BreetClient()
-
-            # Get or create Breet deposit address for this user
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT address, breet_subaccount_id FROM breet_deposit_addresses WHERE user_id = %s",
-                        (user_id,))
-            breet_row = cur.fetchone()
-            if breet_row:
-                breet_address = breet_row[0]
-                subaccount_id = breet_row[1]
-            else:
-                # Use the bank details from the withdrawal command
-                result = client.create_subaccount(user_id, bank_name, account_number, account_name)
-                breet_address = result['address']
-                subaccount_id = result['subaccount_id']
-                cur.execute("""
-                    INSERT INTO breet_deposit_addresses
-                    (user_id, address, network, breet_subaccount_id)
-                    VALUES (%s, %s, %s, %s)
-                """, (user_id, breet_address, 'BEP20', subaccount_id))
-                conn.commit()
-            conn.close()
-
-            # Fetch rate and calculate USDT amount
-            rate = client.get_rate()  # NGN per USDT
+        # Determine rate and USDT amount
+        if os.getenv("BREET_MOCK", "false").lower() == "true":
+            rate = 1500
             usdt_amount = round(amount / rate, 6)
+            import hashlib, time
+            fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
+            tx_hash = f"0x{fake_tx[:64]}"
+        else:
+            rate = 1500  # TODO: live rate
+            usdt_amount = round(amount / rate, 6)
+            from wallet_service import send_usdt
+            usdt_wei = int(usdt_amount * 10 ** 18)
+            tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
-            # Simulate USDT transfer (mock mode)
-            if os.getenv("BREET_MOCK", "true").lower() == "true":
-                import hashlib, time
-                fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
-                tx_hash = f"0x{fake_tx[:64]}"
-            else:
-                from wallet_service import send_usdt
-                usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
-                tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
+        # Insert disbursement log
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO disbursement_logs
+            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+            VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+        """, (user_id, amount, usdt_amount, rate, crypto_wallet_address, tx_hash))
+        conn.commit()
+        conn.close()
 
-            # Insert disbursement log
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO disbursement_logs
-                (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
-                VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
-            conn.commit()
-            conn.close()
-
-            # Log event (optional)
-            try:
-                append_event(user_id, user_id, 'OfframpInitiated', {
-                    "amount_ngn": amount,
-                    "usdt_amount": usdt_amount,
-                    "rate": rate,
-                    "tx_hash": tx_hash
-                })
-            except Exception as e:
-                print(f"EVENT LOG WARNING: {e}")
-
-            return jsonify({
-                "message": f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. "
-                           f"Reference: {tx_hash[:10]}...",
-                "tone": "income"
+        # Log event
+        try:
+            append_event(user_id, user_id, 'OfframpInitiated', {
+                "amount_ngn": amount,
+                "usdt_amount": usdt_amount,
+                "rate": rate,
+                "tx_hash": tx_hash
             })
+            append_event(user_id, user_id, 'ExpenseLogged', {
+                "amount": amount,
+                "currency": "NGN",
+                "category": "withdrawal",
+                "date": datetime.utcnow().strftime('%Y-%m-%d'),
+                "description": f"Withdrawal to Spenda ({crypto_wallet_address[:8]}...)",
+                "reason": "offramp_payout_spenda"
+            })
+        except Exception as e:
+            print(f"EVENT LOG WARNING: {e}")
+
+        return jsonify({
+            "message": f"₦{amount:,.2f} is on its way to your Spenda wallet. It will appear as Naira in your Spenda account. Reference: {tx_hash[:10]}...",
+            "tone": "income"
+        })
 
 
 
@@ -9390,139 +9312,93 @@ def upload_file():
 
 
 # ---------- CRYPTO OFF-RAMP LOAN WITHDRAWAL ----------
-@app.route('/withdraw', methods=['POST'])
+@app.route('/withdraw', methods=['POST', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
-def withdraw_loan_crypto():
+def withdraw_wallet_crypto():
     user_id = get_jwt_identity()
     data = request.get_json()
-    loan_id = data.get('loan_id')
     amount_ngn = float(data.get('amount_ngn', 0))
 
-    if not loan_id or amount_ngn <= 0:
-        return jsonify({"error": "loan_id and amount_ngn required"}), 400
+    if amount_ngn <= 0:
+        return jsonify({"error": "amount_ngn required"}), 400
 
+    # Check for linked Spenda USDC address
+    user_facts = get_user_facts(user_id)
+    crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
+    if not crypto_wallet_address:
+        return jsonify({"error": "Spenda USDC address not linked"}), 400
+
+    # Check wallet balance
+    wallet = ensure_wallet(user_id)
+    if wallet['balance'] < amount_ngn:
+        return jsonify({"error": "Insufficient wallet balance"}), 400
+
+    # Debit wallet
+    new_balance = wallet['balance'] - amount_ngn
     conn = get_conn()
     cur = conn.cursor()
-
     try:
-        # 1. Fetch loan and verify ownership
-        cur.execute("""
-            SELECT id, user_id, status, approved_amount, disbursed, breet_reference
-            FROM inventory_loans
-            WHERE id = %s
-        """, (loan_id,))
-        loan = cur.fetchone()
-        if not loan:
-            return jsonify({"error": "Loan not found"}), 404
-        if loan[1] != user_id:
-            return jsonify({"error": "Unauthorized"}), 403
-        if loan[2] not in ('approved', 'disbursed'):   # adjust to your actual status values
-            return jsonify({"error": "Loan not approved yet"}), 400
-        if loan[3] and loan[4] is not None:   # already disbursed via crypto
-            return jsonify({"error": "Loan already disbursed"}), 400
-
-        # 2. Fetch primary bank account
-        cur.execute("""
-            SELECT bank_name, account_number, account_name
-            FROM user_banks
-            WHERE user_id = %s AND is_primary = true
-            LIMIT 1
-        """, (user_id,))
-        bank = cur.fetchone()
-        if not bank:
-            return jsonify({"error": "No primary bank account. Please add one first."}), 400
-
-        bank_name, account_number, account_name = bank
-
-        # 3. Get or create Breet deposit address
-        cur.execute("""
-            SELECT address, breet_subaccount_id
-            FROM breet_deposit_addresses
-            WHERE user_id = %s
-        """, (user_id,))
-        breet_row = cur.fetchone()
-        if breet_row:
-            breet_address = breet_row[0]
-            subaccount_id = breet_row[1]
-        else:
-            # Use mock Breet client
-            from breet_client import BreetClient
-            client = BreetClient()
-            result = client.create_subaccount(user_id, bank_name, account_number, account_name)
-            breet_address = result['address']
-            subaccount_id = result['subaccount_id']
-            cur.execute("""
-                INSERT INTO breet_deposit_addresses
-                (user_id, address, network, breet_subaccount_id)
-                VALUES (%s, %s, %s, %s)
-            """, (user_id, breet_address, 'BEP20', subaccount_id))
-
-        # 4. Fetch current USDT/NGN rate
-        from breet_client import BreetClient
-        client = BreetClient()
-        rate = client.get_rate()   # NGN per USDT
-        usdt_amount = round(amount_ngn / rate, 6)
-
-        # 5. Simulate USDT transfer from hot wallet
-        # In mock mode, generate a fake tx hash
-        if os.getenv("BREET_MOCK", "true").lower() == "true":
-            import hashlib, time
-            fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
-            tx_hash = f"0x{fake_tx[:64]}"
-        else:
-            from wallet_service import send_usdt
-            usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
-            tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
-
-        # 6. Insert disbursement log
-        cur.execute("""
-            INSERT INTO disbursement_logs
-            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
-            RETURNING id
-        """, (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash))
-        disbursement_id = cur.fetchone()[0]
-
-        # 7. Update loan: mark as disbursed and store breet reference
-        cur.execute("""
-            UPDATE inventory_loans
-            SET disbursement_method = 'crypto',
-                breet_reference = %s,
-                disbursed = true,
-                status = 'disbursed'
-            WHERE id = %s
-        """, (subaccount_id, loan_id))
-
-        conn.commit()
-
-        # 8. Create a LoanDisbursed event (if you have append_event)
-        try:
-            append_event(user_id, user_id, 'LoanDisbursed', {
-                "loan_id": loan_id,
-                "amount_ngn": amount_ngn,
-                "usdt_amount": usdt_amount,
-                "rate": rate,
-                "tx_hash": tx_hash
-            })
-        except Exception as e:
-            print(f"EVENT LOG WARNING: {e}")   # non-fatal
-
-        return jsonify({
-            "message": f"₦{amount_ngn:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. " 
-                       f"Reference: {tx_hash[:10]}...",
-            "disbursement_id": str(disbursement_id),
-            "tx_hash": tx_hash,
-            "rate": rate,
-            "usdt_amount": usdt_amount
+        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                    (new_balance, user_id))
+        append_event(user_id, user_id, 'WalletDebited', {
+            "amount": amount_ngn,
+            "reason": "offramp_payout_spenda",
+            "crypto_wallet_address": crypto_wallet_address
         })
-
+        conn.commit()
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+    # Determine rate and USDT amount
+    if os.getenv("BREET_MOCK", "false").lower() == "true":
+        rate = 1500  # mock rate
+        usdt_amount = round(amount_ngn / rate, 6)
+        import hashlib, time
+        fake_tx = hashlib.sha256(f"{user_id}{amount_ngn}{time.time()}".encode()).hexdigest()
+        tx_hash = f"0x{fake_tx[:64]}"
+    else:
+        rate = 1500  # TODO: replace with live rate when ready
+        usdt_amount = round(amount_ngn / rate, 6)
+        from wallet_service import send_usdt
+        usdt_wei = int(usdt_amount * 10**18)  # BSC USDT uses 18 decimals
+        tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
+
+    # Insert disbursement log
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO disbursement_logs
+            (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+            VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+        """, (user_id, amount_ngn, usdt_amount, rate, crypto_wallet_address, tx_hash))
+        conn.commit()
+
+        # Log expense for sidebar history
+        append_event(user_id, user_id, 'ExpenseLogged', {
+            "amount": amount_ngn,
+            "currency": "NGN",
+            "category": "withdrawal",
+            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+            "description": f"Withdrawal to Spenda ({crypto_wallet_address[:8]}...)",
+            "reason": "offramp_payout_spenda"
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify({
+        "message": f"₦{amount_ngn:,.2f} is on its way to your Spenda wallet.",
+        "tx_hash": tx_hash,
+        "rate": rate,
+        "usdt_amount": usdt_amount
+    })
 
 
 

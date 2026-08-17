@@ -1053,6 +1053,7 @@ def process_user_command(user_id, text):
     from core import get_user_facts
     text_lower = text.lower().strip()
 
+
     # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====
     handled, response = handle_offramp_withdrawal(user_id, text)
     if handled:
@@ -1119,6 +1120,7 @@ def process_user_command(user_id, text):
     # ===== HANDLE PENDING OFFRAMP STATES =====
     offramp_state = pending_transaction.get(user_id, {}).get('state')
     if offramp_state and offramp_state.startswith('offramp_'):
+        # Universal cancel
         if text.strip().lower() in ['cancel', 'stop', 'abort', 'quit']:
             pending_transaction.pop(user_id, None)
             return jsonify({"message": "Process cancelled.", "tone": "neutral"})
@@ -1127,27 +1129,33 @@ def process_user_command(user_id, text):
             amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
             if not amount_match:
                 pending_transaction.pop(user_id, None)
-                return jsonify({"message": "I didn't understand the amount. Please type 'withdraw' to start again.",
-                                "tone": "neutral"})
+                return jsonify({
+                    "message": "I didn't understand the amount. Please type 'withdraw' to start again.",
+                    "tone": "neutral"
+                })
 
             amount_str = amount_match.group(1).replace(',', '')
             multiplier = 1000 if amount_match.group(2) else 1
             amount = float(amount_str) * multiplier
 
+            # Check for linked Spenda USDC address
             user_facts = get_user_facts(user_id)
             crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
             if not crypto_wallet_address:
                 pending_transaction.pop(user_id, None)
                 return jsonify({
-                                   "message": "You haven't linked your Spenda USDC address yet. Please go to Profile → Edit and add it.",
-                                   "tone": "warning"})
+                    "message": "You haven't linked your Spenda USDC address yet. Please go to Profile → Edit and add it.",
+                    "tone": "warning"
+                })
 
+            # Debit wallet
             wallet = ensure_wallet(user_id)
             if wallet['balance'] < amount:
                 pending_transaction.pop(user_id, None)
-                return jsonify(
-                    {"message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
-                     "tone": "warning"})
+                return jsonify({
+                    "message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
+                    "tone": "warning"
+                })
 
             new_balance = wallet['balance'] - amount
             conn = get_conn()
@@ -1163,7 +1171,8 @@ def process_user_command(user_id, text):
             except Exception as e:
                 print(f"EVENT LOG WARNING: {e}")
 
-            if os.getenv("BREET_MOCK", "true").lower() == "true":
+            # Determine rate and USDT amount
+            if os.getenv("BREET_MOCK", "false").lower() == "true":
                 rate = 1500
                 usdt_amount = round(amount / rate, 6)
                 import hashlib, time
@@ -1176,6 +1185,7 @@ def process_user_command(user_id, text):
                 usdt_wei = int(usdt_amount * 10 ** 18)
                 tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
+            # Insert disbursement log
             cur.execute("""
                 INSERT INTO disbursement_logs
                 (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
@@ -1184,6 +1194,7 @@ def process_user_command(user_id, text):
             conn.commit()
             conn.close()
 
+            # Log expense for sidebar
             try:
                 append_event(user_id, user_id, 'ExpenseLogged', {
                     "amount": amount,
@@ -1201,6 +1212,7 @@ def process_user_command(user_id, text):
                 "message": f"₦{amount:,.2f} is on its way to your Spenda wallet. It will appear as Naira in your Spenda account. Reference: {tx_hash[:10]}...",
                 "tone": "income"
             })
+
 
     # ===== HANDLE REPAY LOAN COMMAND =====
     if 'repay loan' in text.lower() or 'repay my loan' in text.lower():

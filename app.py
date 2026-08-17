@@ -1050,8 +1050,10 @@ def login():
 
 
 def process_user_command(user_id, text):
+
     from core import get_user_facts
     text_lower = text.lower().strip()
+    amount = 0
 
 
     # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====

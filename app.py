@@ -8563,7 +8563,8 @@ def daily_data_reward():
     return jsonify({"rewarded": rewarded})
 
 
-@app.route('/admin/pending-loans', methods=['GET'])
+@app.route('/admin/pending-loans', methods=['GET', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
 def admin_pending_loans():
     user_id = get_jwt_identity()
@@ -8597,7 +8598,8 @@ def admin_pending_loans():
 
     return jsonify({"loans": loans})
 
-@app.route('/admin/confirm-loan', methods=['POST'])
+@app.route('/admin/confirm-loan', methods=['POST', 'OPTIONS'])
+@cross_origin()
 @jwt_required()
 def admin_confirm_loan():
     user_id = get_jwt_identity()
@@ -8610,29 +8612,47 @@ def admin_confirm_loan():
     if not loan_id:
         return jsonify({"error": "loan_id required"}), 400
 
-    # Mark the pending loan as approved
+    # Mark as approved
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE pending_loans
-        SET status = 'approved'
-        WHERE id = %s AND status = 'pending'
-        RETURNING id
-    """, (loan_id,))
-    row = cur.fetchone()
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute("""
+            UPDATE pending_loans
+            SET status = 'approved'
+            WHERE id = %s AND status = 'pending'
+            RETURNING id
+        """, (loan_id,))
+        row = cur.fetchone()
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
 
     if not row:
         return jsonify({"error": "Loan not found or already processed"}), 404
 
-    # Auto‑disburse from treasury
-    success, message = disburse_loan_from_treasury(loan_id)
-    if not success:
-        return jsonify({"error": message}), 500
+    # Auto-disburse from treasury
+    try:
+        success, message = disburse_loan_from_treasury(loan_id)
+        if not success:
+            return jsonify({"error": message}), 500
+        return jsonify({"message": "Loan approved and disbursed"})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Disbursement error: {str(e)}"}), 500
 
-    return jsonify({"message": "Loan approved and disbursed"})
 
+@app.route('/admin/pending-withdrawals', methods=['GET', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def admin_pending_withdrawals():
+    # Withdrawals are now handled via off-ramp; return empty list for now.
+    return jsonify({"withdrawals": []})
 
 
 @app.route('/cron/remind', methods=['POST'])

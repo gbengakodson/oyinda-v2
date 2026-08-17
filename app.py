@@ -951,8 +951,9 @@ def handle_offramp_withdrawal(user_id, text):
         fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
         tx_hash = f"0x{fake_tx[:64]}"
     else:
-        # TODO: real USDT transfer to crypto_wallet_address
-        tx_hash = None
+        from wallet_service import send_usdt
+        usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+        tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
     # Insert disbursement log
     cur.execute("""
@@ -1222,7 +1223,9 @@ def process_user_command(user_id, text):
                 fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
                 tx_hash = f"0x{fake_tx[:64]}"
             else:
-                tx_hash = None
+                from wallet_service import send_usdt
+                usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+                tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
             cur.execute("""
                 INSERT INTO disbursement_logs
@@ -1552,8 +1555,9 @@ def process_user_command(user_id, text):
                 fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
                 tx_hash = f"0x{fake_tx[:64]}"
             else:
-                # TODO: real web3 transfer
-                tx_hash = None
+                from wallet_service import send_usdt
+                usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+                tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
             # Insert disbursement log
             conn = get_conn()
@@ -7996,62 +8000,105 @@ def deduct_loans():
     conn = get_conn()
     cur = conn.cursor()
     today = datetime.utcnow().date()
-    cur.execute("""
-        SELECT id, user_id, daily_amount, weekly_amount, remaining_balance,
-               start_date, payment_frequency, grace_days
-        FROM inventory_loans
-        WHERE status = 'active' AND end_date >= %s
-    """, (today,))
-    loans = cur.fetchall()
+    processed = 0
 
-    for loan in loans:
-        loan_id, user_id, daily_amt, weekly_amt, remaining, start_date, freq, grace_days = loan
-        grace_end = start_date + timedelta(days=grace_days)
+    try:
+        cur.execute("""
+            SELECT id, user_id, daily_amount, weekly_amount,
+                   COALESCE(remaining_balance, principal) AS remaining_balance,
+                   start_date, payment_frequency, grace_days
+            FROM inventory_loans
+            WHERE status = 'active' AND end_date >= %s
+        """, (today,))
+        loans = cur.fetchall()
 
-        # Skip deduction during grace period
-        if today <= grace_end:
-            continue
+        for loan in loans:
+            loan_id, user_id, daily_amt, weekly_amt, remaining, start_date, freq, grace_days = loan
 
-        # Determine the deduction amount and whether to deduct today
-        if freq == 'weekly':
-            days_after_grace = (today - grace_end).days
-            if days_after_grace % 7 != 0:
+            # Skip if start_date or grace_days is null (should not happen)
+            if not start_date:
                 continue
-            deduction = weekly_amt
-        else:
-            deduction = daily_amt
 
-        if deduction is None or deduction <= 0:
-            continue
+            grace_end = start_date + timedelta(days=grace_days or 0)
 
-        # Check user wallet balance
-        cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
-        wallet_row = cur.fetchone()
-        if not wallet_row or wallet_row[0] < deduction:
-            continue
+            # Still in grace period
+            if today <= grace_end:
+                continue
 
-        # Perform deduction
-        new_balance = wallet_row[0] - deduction
-        cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
-                    (new_balance, user_id))
-        new_remaining = remaining - deduction
-        cur.execute("UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s",
-                    (new_remaining, loan_id))
-        cur.execute("INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'auto')",
-                    (loan_id, deduction))
-        append_event(user_id, user_id, 'LoanRepaid', {
-            "loan_id": str(loan_id),
-            "amount": deduction,
-            "method": "auto"
-        })
-        update_credit_score(conn, user_id)
+            # Determine deduction
+            if freq == 'weekly':
+                days_after_grace = (today - grace_end).days
+                if days_after_grace % 7 != 0:
+                    continue
+                deduction = weekly_amt
+            else:
+                deduction = daily_amt
 
-        if new_remaining <= 0:
-            cur.execute("UPDATE inventory_loans SET status = 'completed', remaining_balance = 0 WHERE id = %s", (loan_id,))
+            if deduction is None or deduction <= 0:
+                continue
 
-    conn.commit()
-    conn.close()
-    return jsonify({"processed": len(loans)})
+            # Fetch wallet balance
+            cur.execute("SELECT balance FROM user_wallets WHERE user_id = %s", (user_id,))
+            wallet_row = cur.fetchone()
+
+            if not wallet_row or wallet_row[0] < deduction:
+                # Insufficient funds – log missed payment but don't deduct
+                try:
+                    append_event(user_id, user_id, 'RepaymentMissed', {
+                        "loan_id": str(loan_id),
+                        "amount_due": deduction,
+                        "reason": "insufficient_wallet_balance"
+                    })
+                except Exception as e:
+                    print(f"EVENT LOG WARNING: {e}")
+                continue
+
+            # Perform deduction
+            new_balance = wallet_row[0] - deduction
+            cur.execute(
+                "UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                (new_balance, user_id)
+            )
+
+            new_remaining = remaining - deduction
+            cur.execute(
+                "UPDATE inventory_loans SET remaining_balance = %s WHERE id = %s",
+                (new_remaining, loan_id)
+            )
+
+            cur.execute(
+                "INSERT INTO loan_repayments (loan_id, amount, method) VALUES (%s, %s, 'auto')",
+                (loan_id, deduction)
+            )
+
+            try:
+                append_event(user_id, user_id, 'LoanRepaid', {
+                    "loan_id": str(loan_id),
+                    "amount": deduction,
+                    "method": "auto"
+                })
+                update_credit_score(conn, user_id)
+            except Exception as e:
+                print(f"EVENT LOG WARNING: {e}")
+
+            processed += 1
+
+            if new_remaining <= 0:
+                cur.execute(
+                    "UPDATE inventory_loans SET status = 'repaid', remaining_balance = 0 WHERE id = %s",
+                    (loan_id,)
+                )
+
+        conn.commit()
+        return jsonify({"processed": processed})
+
+    except Exception as e:
+        conn.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route('/link/bank/callback', methods=['GET'])
@@ -9450,12 +9497,13 @@ def withdraw_loan_crypto():
         # 5. Simulate USDT transfer from hot wallet
         # In mock mode, generate a fake tx hash
         if os.getenv("BREET_MOCK", "true").lower() == "true":
-            import hashlib
-            fake_tx = hashlib.sha256(f"{loan_id}{amount_ngn}{time.time()}".encode()).hexdigest()
+            import hashlib, time
+            fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
             tx_hash = f"0x{fake_tx[:64]}"
         else:
-            # TODO: Real transfer via web3 (we'll implement later)
-            tx_hash = None   # replace with actual tx_hash
+            from wallet_service import send_usdt
+            usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+            tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
         # 6. Insert disbursement log
         cur.execute("""

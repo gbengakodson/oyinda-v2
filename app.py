@@ -939,20 +939,22 @@ def handle_offramp_withdrawal(user_id, text):
     except Exception as e:
         print(f"EVENT LOG WARNING: {e}")
 
-    # Use mock Breet client to get a rate (or replace with real rate provider later)
-    from breet_client import BreetClient
-    client = BreetClient()
-    rate = client.get_rate()
-    usdt_amount = round(amount / rate, 6)
-
-    # Simulate USDT transfer to the user's Spenda address
+    # Determine USDT amount using a rate
+    # For mock mode, use a fixed rate; for real mode, you can later replace with live rate API.
     if os.getenv("BREET_MOCK", "true").lower() == "true":
+        rate = 1500  # mock rate
+        usdt_amount = round(amount / rate, 6)
+        # Simulate USDT transfer
         import hashlib, time
         fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
         tx_hash = f"0x{fake_tx[:64]}"
     else:
+        # Real USDT transfer using the hot wallet
+        # Use a fixed rate for now; replace with live rate when ready
+        rate = 1500  # TODO: use live rate from CoinGecko/Binance
+        usdt_amount = round(amount / rate, 6)
         from wallet_service import send_usdt
-        usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+        usdt_wei = int(usdt_amount * 10**18)  # BSC USDT has 18 decimals
         tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
     # Insert disbursement log
@@ -1114,88 +1116,38 @@ def process_user_command(user_id, text):
         # If no digits or skip_ai, ensure groq_result is defined (it may be used later)
         groq_result = None
 
-
     # ===== HANDLE PENDING OFFRAMP STATES =====
     offramp_state = pending_transaction.get(user_id, {}).get('state')
     if offramp_state and offramp_state.startswith('offramp_'):
-        # Universal cancel
         if text.strip().lower() in ['cancel', 'stop', 'abort', 'quit']:
             pending_transaction.pop(user_id, None)
             return jsonify({"message": "Process cancelled.", "tone": "neutral"})
 
         if offramp_state == 'offramp_collect_amount':
             amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text)
-            if amount_match:
-                amount_str = amount_match.group(1).replace(',', '')
-                multiplier = 1000 if amount_match.group(2) else 1
-                amount = float(amount_str) * multiplier
-                pending_transaction[user_id] = {
-                    "state": "offramp_collect_account",
-                    "data": {"amount": amount}
-                }
-                return jsonify({
-                    "message": "Got it! Now provide the bank account number (and optionally bank name).",
-                    "tone": "neutral"
-                })
-            else:
-                # Invalid amount – cancel and give message
+            if not amount_match:
+                pending_transaction.pop(user_id, None)
+                return jsonify({"message": "I didn't understand the amount. Please type 'withdraw' to start again.",
+                                "tone": "neutral"})
+
+            amount_str = amount_match.group(1).replace(',', '')
+            multiplier = 1000 if amount_match.group(2) else 1
+            amount = float(amount_str) * multiplier
+
+            user_facts = get_user_facts(user_id)
+            crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
+            if not crypto_wallet_address:
                 pending_transaction.pop(user_id, None)
                 return jsonify({
-                    "message": "I didn't understand the amount. Please type 'withdraw' to start again.",
-                    "tone": "neutral"
-                })
+                                   "message": "You haven't linked your Spenda USDC address yet. Please go to Profile → Edit and add it.",
+                                   "tone": "warning"})
 
-        elif offramp_state == 'offramp_collect_account':
-            amount = pending_transaction[user_id]['data'].get('amount')
-            if not amount:
-                pending_transaction.pop(user_id, None)
-                return jsonify({"message": "Missing amount. Please start again.", "tone": "warning"})
-
-            account_match = re.search(r'(?<!\d)(\d{10,11})(?!\d)', text)
-            if not account_match:
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": "No valid account number found. Please type 'withdraw' to start again.",
-                    "tone": "neutral"
-                })
-            account_number = account_match.group(1)
-
-            if len(account_number) == 11 and account_number.startswith('0'):
-                pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": "This looks like a phone number. Use 'send 500 to 08012345678' for wallet transfer.",
-                    "tone": "neutral"
-                })
-
-            # Determine bank name (simplified)
-            bank_name = None
-            parts = text.lower().split(account_number)
-            if len(parts) > 1:
-                rest = parts[1].strip()
-                rest = re.sub(r'^(and|,|\s)*', '', rest)
-                rest = rest.strip().rstrip('.').strip()
-                if rest:
-                    bank_name = rest.title()
-            if not bank_name:
-                known_banks = ['zenith', 'uba', 'gtbank', 'gt bank', 'access', 'first bank', 'fidelity', 'union',
-                               'stanbic', 'keystone', 'polaris', 'wema', 'heritage', 'providus']
-                for bank in known_banks:
-                    if bank in text.lower():
-                        bank_name = bank.title()
-                        break
-            if not bank_name:
-                bank_name = "Unknown Bank"
-
-            # Execute offramp (same as before, copy from existing code)
-            from breet_client import BreetClient
-            client = BreetClient()
             wallet = ensure_wallet(user_id)
             if wallet['balance'] < amount:
                 pending_transaction.pop(user_id, None)
-                return jsonify({
-                    "message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
-                    "tone": "warning"
-                })
+                return jsonify(
+                    {"message": f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available.",
+                     "tone": "warning"})
 
             new_balance = wallet['balance'] - amount
             conn = get_conn()
@@ -1205,33 +1157,30 @@ def process_user_command(user_id, text):
             try:
                 append_event(user_id, user_id, 'WalletDebited', {
                     "amount": amount,
-                    "bank_name": bank_name,
-                    "account_number": account_number,
-                    "reason": "offramp_payout"
+                    "reason": "offramp_payout_spenda",
+                    "crypto_wallet_address": crypto_wallet_address
                 })
             except Exception as e:
                 print(f"EVENT LOG WARNING: {e}")
 
-            result = client.create_subaccount(user_id, bank_name, account_number, "Oyinda User")
-            breet_address = result['address']
-            subaccount_id = result['subaccount_id']
-            rate = client.get_rate()
-            usdt_amount = round(amount / rate, 6)
-
             if os.getenv("BREET_MOCK", "true").lower() == "true":
+                rate = 1500
+                usdt_amount = round(amount / rate, 6)
                 import hashlib, time
                 fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
                 tx_hash = f"0x{fake_tx[:64]}"
             else:
+                rate = 1500  # TODO: live rate
+                usdt_amount = round(amount / rate, 6)
                 from wallet_service import send_usdt
-                usdt_wei = int(usdt_amount * 10 ** 18)  # BSC USDT uses 18 decimals
+                usdt_wei = int(usdt_amount * 10 ** 18)
                 tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
 
             cur.execute("""
                 INSERT INTO disbursement_logs
                 (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
                 VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
-            """, (user_id, amount, usdt_amount, rate, breet_address, tx_hash))
+            """, (user_id, amount, usdt_amount, rate, crypto_wallet_address, tx_hash))
             conn.commit()
             conn.close()
 
@@ -1241,15 +1190,15 @@ def process_user_command(user_id, text):
                     "currency": "NGN",
                     "category": "withdrawal",
                     "date": datetime.utcnow().strftime('%Y-%m-%d'),
-                    "description": f"Withdrawal to {bank_name} ({account_number[-4:]})",
-                    "reason": "offramp_payout"
+                    "description": f"Withdrawal to Spenda ({crypto_wallet_address[:8]}...)",
+                    "reason": "offramp_payout_spenda"
                 })
             except Exception as e:
                 print(f"EVENT LOG WARNING: {e}")
 
             pending_transaction.pop(user_id, None)
             return jsonify({
-                "message": f"₦{amount:,.2f} is on its way to your {bank_name} account ending in {account_number[-4:]}. Reference: {tx_hash[:10]}...",
+                "message": f"₦{amount:,.2f} is on its way to your Spenda wallet. It will appear as Naira in your Spenda account. Reference: {tx_hash[:10]}...",
                 "tone": "income"
             })
 

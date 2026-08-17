@@ -39,5 +39,5 @@ def send_usdt(to_address, amount_wei):
     })
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     return w3.to_hex(tx_hash)

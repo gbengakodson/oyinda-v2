@@ -190,6 +190,87 @@ pending_transaction = {}
 _live_rates_cache = {"data": {}, "last_fetched": None}
 
 
+def handle_withdraw_command(user_id, text):
+    import re
+    text_lower = text.lower().strip()
+    if not any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out']):
+        return False, None
+
+    amount_match = re.search(r'(?:₦|N)?\s*([\d,]+)\s*(k|K)?', text_lower)
+    if not amount_match:
+        return True, "How much do you want to withdraw? (e.g., withdraw 5000)"
+
+    amount_str = amount_match.group(1).replace(',', '')
+    multiplier = 1000 if amount_match.group(2) else 1
+    amount = float(amount_str) * multiplier
+    if amount <= 0:
+        return True, "Please enter a valid amount greater than zero."
+
+    user_facts = get_user_facts(user_id)
+    crypto_wallet_address = user_facts.get('crypto_wallet_address', '').strip()
+    if not crypto_wallet_address:
+        return True, "You haven't linked your Spenda USDC address yet. Please go to Profile → Edit and add it."
+
+    wallet = ensure_wallet(user_id)
+    if wallet['balance'] < amount:
+        return True, f"Insufficient wallet balance. You have ₦{wallet['balance']:,.2f} available."
+
+    # Debit wallet
+    new_balance = wallet['balance'] - amount
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE user_wallets SET balance = %s, last_balance_update = now() WHERE user_id = %s",
+                (new_balance, user_id))
+    try:
+        append_event(user_id, user_id, 'WalletDebited', {
+            "amount": amount,
+            "reason": "offramp_payout_spenda",
+            "crypto_wallet_address": crypto_wallet_address
+        })
+    except Exception as e:
+        print(f"EVENT LOG WARNING: {e}")
+    conn.commit()
+
+    # Determine rate and USDT amount
+    if os.getenv("BREET_MOCK", "false").lower() == "true":
+        rate = 1500
+        usdt_amount = round(amount / rate, 6)
+        import hashlib, time
+        fake_tx = hashlib.sha256(f"{user_id}{amount}{time.time()}".encode()).hexdigest()
+        tx_hash = f"0x{fake_tx[:64]}"
+    else:
+        rate = 1500  # TODO: live rate
+        usdt_amount = round(amount / rate, 6)
+        from wallet_service import send_usdt
+        usdt_wei = int(usdt_amount * 10**18)
+        tx_hash = send_usdt(crypto_wallet_address, usdt_wei)
+
+    # Insert disbursement log
+    cur.execute("""
+        INSERT INTO disbursement_logs
+        (loan_id, user_id, amount_ngn, usdt_amount, rate, breet_address, tx_hash, status)
+        VALUES (NULL, %s, %s, %s, %s, %s, %s, 'pending')
+    """, (user_id, amount, usdt_amount, rate, crypto_wallet_address, tx_hash))
+    conn.commit()
+    conn.close()
+
+    # Log expense for sidebar
+    try:
+        append_event(user_id, user_id, 'ExpenseLogged', {
+            "amount": amount,
+            "currency": "NGN",
+            "category": "withdrawal",
+            "date": datetime.utcnow().strftime('%Y-%m-%d'),
+            "description": f"Withdrawal to Spenda ({crypto_wallet_address[:8]}...)",
+            "reason": "offramp_payout_spenda"
+        })
+    except Exception as e:
+        print(f"EVENT LOG WARNING: {e}")
+
+    return True, (f"₦{amount:,.2f} is on its way to your Spenda wallet. "
+                  f"It will appear as Naira in your Spenda account. Reference: {tx_hash[:10]}...")
+
+
 def get_loan_terms(amount, credit_score):
     """
     Returns (max_duration_days, grace_days, monthly_interest_rate)
@@ -707,16 +788,29 @@ def disburse_loan_from_treasury(loan_id):
 
     # Fetch pending loan details
     cur.execute("""
-        SELECT user_id, amount
+        SELECT user_id, supplier_id, product, amount, interest, total_repayable,
+               daily_amount, duration_days, grace_days, supplier_name, supplier_phone,
+               status, created_at
         FROM pending_loans
-        WHERE id = %s AND status = 'approved'
+        WHERE id = %s
     """, (loan_id,))
     loan = cur.fetchone()
     if not loan:
         conn.close()
-        return False, "Loan not found or not approved"
+        return False, "Loan not found"
 
-    user_id, amount = loan
+    user_id = loan[0]
+    supplier_id = loan[1]
+    product = loan[2]
+    amount = loan[3]
+    interest = loan[4]
+    total_repayable = loan[5]
+    daily_amount = loan[6]
+    duration_days = loan[7]
+    grace_days = loan[8]
+    supplier_name = loan[9]
+    supplier_phone = loan[10]
+    status = loan[11]
 
     # Check treasury balance
     treasury_balance = get_treasury_balance()
@@ -736,6 +830,30 @@ def disburse_loan_from_treasury(loan_id):
         SET balance = balance + %s, last_balance_update = now()
         WHERE user_id = %s
     """, (amount, user_id))
+
+    # Calculate start_date and end_date
+    start_date = datetime.utcnow().date()
+    end_date = start_date + timedelta(days=duration_days)
+
+    # Insert into inventory_loans (active loan)
+    cur.execute("""
+        INSERT INTO inventory_loans
+        (user_id, supplier_id, product, principal, flat_fee, total_repayable,
+         daily_amount, remaining_balance, start_date, end_date, status, created_at,
+         payment_frequency, weekly_amount, grace_days, disbursement_method)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', now(), 'daily', NULL, %s, 'crypto')
+    """, (
+        user_id, supplier_id, product, amount, interest, total_repayable,
+        daily_amount, total_repayable, start_date, end_date, grace_days
+    ))
+
+    # Update pending_loans status to disbursed
+    cur.execute("""
+        UPDATE pending_loans
+        SET status = 'disbursed'
+        WHERE id = %s
+    """, (loan_id,))
+
     conn.commit()
     conn.close()
 
@@ -749,18 +867,6 @@ def disburse_loan_from_treasury(loan_id):
         "loan_id": str(loan_id),
         "amount": amount
     })
-
-    # Mark pending loan as disbursed (or move to inventory_loans)
-    # For simplicity, update status to 'disbursed'
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE pending_loans
-        SET status = 'disbursed'
-        WHERE id = %s
-    """, (loan_id,))
-    conn.commit()
-    conn.close()
 
     return True, "Loan disbursed"
 
@@ -977,6 +1083,12 @@ def process_user_command(user_id, text):
         else:
             history_text += "Keep logging transactions to build your score."
         return jsonify({"message": history_text, "tone": "neutral"})
+
+
+    # ===== EARLY WITHDRAWAL CHECK =====
+    handled, response = handle_withdraw_command(user_id, text)
+    if handled:
+        return jsonify({"message": response, "tone": "income"})
 
 
     # ===== SKIP AI PARSING FOR WITHDRAWAL / TRANSFER COMMANDS =====

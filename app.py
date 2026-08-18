@@ -1081,11 +1081,10 @@ def process_user_command(user_id, text):
             history_text += "Keep logging transactions to build your score."
         return jsonify({"message": history_text, "tone": "neutral"})
 
-
-    # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====
-    handled, response = handle_offramp_withdrawal(user_id, text)
-    if handled:
-        return jsonify({"message": response, "tone": "income"})
+    # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (TEMPORARILY DISABLED) =====
+    # handled, response = handle_offramp_withdrawal(user_id, text)
+    # if handled:
+    #     return jsonify({"message": response, "tone": "income"})
     # ===== SKIP AI PARSING FOR WITHDRAWAL / TRANSFER COMMANDS =====
     text_lower = text.lower()
     skip_ai = any(keyword in text_lower for keyword in ['withdraw', 'pull out', 'take out', 'withdrawal'])
@@ -1147,12 +1146,12 @@ def process_user_command(user_id, text):
 
     # ===== HANDLE PENDING OFFRAMP STATES =====
     # Cancel any lingering offramp state if message has no digits
-    if pending_transaction.get(user_id, {}).get('state', '').startswith('offramp_'):
-        if not re.search(r'\d', text):
-            pending_transaction.pop(user_id, None)
+    #if pending_transaction.get(user_id, {}).get('state', '').startswith('offramp_'):
+        #if not re.search(r'\d', text):
+            #pending_transaction.pop(user_id, None)
 
     offramp_state = pending_transaction.get(user_id, {}).get('state')
-    if offramp_state and offramp_state.startswith('offramp_'):
+    if False and offramp_state and offramp_state.startswith('offramp_'):
         # Universal cancel
         if text.strip().lower() in ['cancel', 'stop', 'abort', 'quit']:
             pending_transaction.pop(user_id, None)

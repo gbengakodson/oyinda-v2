@@ -175,7 +175,6 @@ def update_credit_score(conn, user_id):
     today = datetime.utcnow().date()
 
     # ---------- 1. Payment History (35%) ----------
-    # Count loan repayments and loan disbursements/loans taken.
     cur.execute("""
         SELECT COUNT(*) FROM events
         WHERE user_id = %s AND event_type = 'LoanRepaid'
@@ -196,7 +195,6 @@ def update_credit_score(conn, user_id):
         payment_score = 100 if repaid_count >= loan_count else max(30, 100 - (loan_count - repaid_count) * 15)
 
     # ---------- 2. Credit Utilisation (30%) ----------
-    # Fallback to events if transactions_view is unavailable
     try:
         cur.execute("""
             SELECT COALESCE(SUM(amount),0)
@@ -212,7 +210,6 @@ def update_credit_score(conn, user_id):
         """, (user_id,))
         total_loans = cur.fetchone()[0]
     except Exception:
-        # If transactions_view missing, use events directly
         cur.execute("""
             SELECT COALESCE(SUM((payload->>'amount')::numeric),0)
             FROM events
@@ -300,20 +297,6 @@ def update_credit_score(conn, user_id):
     else:
         logo = 'eagle'
 
-    # Store breakdown (optional)
-    breakdown = {
-        "fico": fico,
-        "logo": logo,
-        "pillars": {
-            "payment_history": {"score": payment_score, "weight": "35%", "note": "Based on your loan repayments"},
-            "credit_utilization": {"score": util_score, "weight": "30%", "note": "How much debt vs income"},
-            "credit_age": {"score": length_score, "weight": "15%", "note": "How long you've tracked money with Oyinda"},
-            "credit_mix": {"score": mix_score, "weight": "10%", "note": "Different types of transactions"},
-            "new_credit": {"score": new_credit_score, "weight": "10%", "note": "Recent new loans"}
-        }
-    }
-
-    # Insert new credit score row
     cur.execute("""
         INSERT INTO credit_scores (id, user_id, score, logo, updated_at)
         VALUES (gen_random_uuid(), %s, %s, %s, now())
@@ -321,7 +304,7 @@ def update_credit_score(conn, user_id):
 
     conn.commit()
     cur.close()
-    return breakdown   # so it can be used by the query handler
+    return {"fico": fico, "logo": logo}
 
 
 
@@ -671,50 +654,3 @@ def calculate_daily_budget(user_id):
         "other_wants": round(wants * 0.2, 2)
     }
 
-def update_credit_score(conn, user_id):
-    cur = conn.cursor()
-
-    # 1. Cash‑flow metrics (last 90 days)
-    three_months_ago = (datetime.utcnow() - timedelta(days=90)).date()
-    cur.execute("SELECT total_income, total_expense FROM behavior_log WHERE user_id=%s AND date >= %s", (user_id, three_months_ago))
-    rows = cur.fetchall()
-    income_sum = sum(r[0] for r in rows)
-    expense_sum = sum(r[1] for r in rows)
-    savings_rate = (income_sum - expense_sum) / income_sum if income_sum > 0 else 0
-
-    # 2. Net worth (assets – liabilities)
-    try:
-        net_worth_str = calculate_net_worth(user_id)
-        # Extract the final net worth number from the string
-        import re
-        match = re.search(r'Net Worth: ₦([\d,]+\.?\d*)', net_worth_str)
-        if match:
-            net_worth = float(match.group(1).replace(',', ''))
-        else:
-            net_worth = 0
-    except:
-        net_worth = 0
-
-    # 3. Composite score (0‑100)
-    # – Savings rate (0‑1) → 50 points max
-    # – Positive net worth → 30 points
-    # – Regular income (≥2 months) → 20 points
-    income_months = len(set(r[0] for r in rows if r[0] > 0))   # distinct months with income
-    regularity = min(1, income_months / 3)
-
-    score = int(
-        savings_rate * 50 +
-        (30 if net_worth > 0 else max(0, 30 + net_worth / 10000)) +   # scale down if negative
-        regularity * 20
-    )
-    score = max(0, min(100, score))
-
-    # Logo: <40 butterfly, 40‑69 transition, ≥70 eagle
-    logo = 'butterfly' if score < 40 else ('eagle' if score >= 70 else 'transition')
-
-    cur.execute(
-        "INSERT INTO credit_scores (user_id, score, logo, updated_at) VALUES (%s, %s, %s, now())",
-        (user_id, score, logo)
-    )
-    conn.commit()
-    cur.close()

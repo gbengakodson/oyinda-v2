@@ -867,6 +867,15 @@ def disburse_loan_from_treasury(loan_id):
         "loan_id": str(loan_id),
         "amount": amount
     })
+    # Log as IncomeReceived so it shows in the transaction history
+    append_event(user_id, user_id, 'IncomeReceived', {
+        "amount": amount,
+        "currency": "NGN",
+        "category": "loan",
+        "date": datetime.utcnow().strftime('%Y-%m-%d'),
+        "description": "Loan disbursement",
+        "source": "treasury"
+    })
 
     return True, "Loan disbursed"
 

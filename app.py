@@ -6909,7 +6909,7 @@ def get_active_loan():
     try:
         cur.execute("""
             SELECT id, principal, remaining_balance, start_date, end_date,
-                   grace_days, payment_frequency, duration_days, total_repayable
+                   grace_days, payment_frequency, total_repayable
             FROM inventory_loans
             WHERE user_id = %s
               AND status = 'active'
@@ -6930,11 +6930,15 @@ def get_active_loan():
         end_date = row[4]
         grace_days = row[5]
         payment_frequency = row[6]
-        duration_days = row[7]
-        total_repayable = row[8] if row[8] else (principal + (total_repayable - principal))  # fallback
+        total_repayable = row[7] if row[7] is not None else (principal + 0)  # fallback to principal if missing
 
-        # Calculate interest
-        interest = (total_repayable - principal) if total_repayable else 0
+        # Calculate duration from dates
+        duration_days = None
+        if start_date and end_date:
+            duration_days = (end_date - start_date).days
+
+        # Calculate interest as difference
+        interest = max(0, (total_repayable - principal)) if total_repayable else 0
 
         from datetime import datetime, timedelta
         next_repayment_date = None

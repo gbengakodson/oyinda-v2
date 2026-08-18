@@ -6068,35 +6068,49 @@ def account_balance():
 
 
 # --------------- TRANSACTION LIST (paginated) ---------------
+# --------------- TRANSACTION LIST (paginated) ---------------
 @app.route('/transactions', methods=['GET'])
+@cross_origin()
 @jwt_required()
 def list_transactions():
     user_id = get_jwt_identity()
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 50, type=int)
-    type_filter = request.args.get('type', '')
-    date_from = request.args.get('date_from', '1900-01-01')
-    date_to = request.args.get('date_to', datetime.utcnow().strftime('%Y-%m-%d'))
-    category = request.args.get('category', '')
-
     conn = get_conn()
     cur = conn.cursor()
-    query = "SELECT date, type, amount, currency, category, description FROM transactions_view WHERE user_id=%s AND date BETWEEN %s AND %s"
-    params = [user_id, date_from, date_to]
-    if type_filter:
-        query += " AND type = %s"
-        params.append(type_filter)
-    if category:
-        query += " AND category = %s"
-        params.append(category)
-    query += " ORDER BY date DESC LIMIT %s OFFSET %s"
-    params.append(per_page)
-    params.append((page-1)*per_page)
-    cur.execute(query, params)
+    cur.execute("""
+        SELECT event_type, payload, created_at
+        FROM events
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 50
+    """, (user_id,))
     rows = cur.fetchall()
     conn.close()
-    tx = [{"date": r[0], "type": r[1], "amount": r[2], "currency": r[3], "category": r[4], "description": r[5]} for r in rows]
-    return jsonify({"page": page, "transactions": tx})
+
+    transactions = []
+    for event_type, payload, created_at in rows:
+        payload = payload or {}
+
+        # Determine type: income/expense
+        if event_type in ('IncomeReceived', 'WalletCredited', 'LoanDisbursed'):
+            tx_type = 'income'
+        elif event_type in ('ExpenseLogged', 'WalletDebited', 'LoanRepaid'):
+            tx_type = 'expense'
+        else:
+            tx_type = 'expense' if 'Expense' in event_type else 'income'
+
+        amount = payload.get('amount', 0)
+        description = payload.get('description') or payload.get('source') or event_type
+
+        transactions.append({
+            "date": created_at.strftime('%Y-%m-%dT%H:%M:%S'),
+            "type": tx_type,
+            "amount": amount,
+            "currency": payload.get('currency', 'NGN'),
+            "category": payload.get('category', ''),
+            "description": description
+        })
+
+    return jsonify({"transactions": transactions})
 
 # --------------- MONO & EXCHANGE & WALLET ENDPOINTS (as before) ---------------
 # ... (include /link/mono, /sync/mono, /link/exchange, /sync/exchange, /crypto/order, /crypto/withdraw, /link/wallet, /crypto/wallet/prepare, /crypto/wallet/submit)

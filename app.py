@@ -6899,6 +6899,72 @@ def update_products():
         conn.close()
 
 
+@app.route('/api/active-loan', methods=['GET'])
+@cross_origin()
+@jwt_required()
+def get_active_loan():
+    user_id = get_jwt_identity()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, principal, remaining_balance, start_date, end_date,
+                   grace_days, payment_frequency, duration_days, total_repayable
+            FROM inventory_loans
+            WHERE user_id = %s
+              AND status = 'active'
+              AND (remaining_balance IS NULL OR remaining_balance > 0)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"active_loan": None})
+
+        loan_id = row[0]
+        principal = row[1]
+        remaining_balance = row[2] if row[2] is not None else principal
+        start_date = row[3]
+        end_date = row[4]
+        grace_days = row[5]
+        payment_frequency = row[6]
+        duration_days = row[7]
+        total_repayable = row[8] if row[8] else (principal + (total_repayable - principal))  # fallback
+
+        # Calculate interest
+        interest = (total_repayable - principal) if total_repayable else 0
+
+        from datetime import datetime, timedelta
+        next_repayment_date = None
+        if payment_frequency == 'weekly':
+            next_repayment_date = (datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')
+        else:
+            next_repayment_date = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+
+        return jsonify({
+            "active_loan": {
+                "loan_id": str(loan_id),
+                "principal": principal,
+                "remaining_balance": remaining_balance,
+                "total_repayable": total_repayable,
+                "interest": interest,
+                "duration_days": duration_days,
+                "start_date": start_date.strftime('%Y-%m-%d') if start_date else None,
+                "end_date": end_date.strftime('%Y-%m-%d') if end_date else None,
+                "grace_days": grace_days,
+                "payment_frequency": payment_frequency,
+                "next_repayment_date": next_repayment_date
+            }
+        })
+    except Exception as e:
+        conn.close()
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 
 @app.route('/api/notifications', methods=['GET'])
 @cross_origin()

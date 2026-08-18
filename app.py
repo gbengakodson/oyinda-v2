@@ -6264,6 +6264,43 @@ def bank_transfer():
 
 
 
+
+@app.route('/admin/recalc-credit-score', methods=['POST', 'OPTIONS'])
+@cross_origin()
+@jwt_required()
+def admin_recalc_credit_score():
+    user_id = get_jwt_identity()
+    facts = get_user_facts(user_id)
+    if not facts.get('is_admin'):
+        return jsonify({"error": "unauthorized"}), 403
+
+    data = request.get_json()
+    target_user_id = data.get('user_id')
+    if not target_user_id:
+        return jsonify({"error": "user_id required"}), 400
+
+    conn = get_conn()
+    try:
+        update_credit_score(conn, target_user_id)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT score FROM credit_scores WHERE user_id = %s ORDER BY updated_at DESC LIMIT 1", (target_user_id,))
+    row = cur.fetchone()
+    conn.close()
+    score = row[0] if row else 0
+
+    return jsonify({"message": f"Credit score recalculated: {score}", "score": score})
+
+
+
+
 @app.route('/tax/receipt', methods=['POST'])
 @jwt_required()
 def tax_receipt():

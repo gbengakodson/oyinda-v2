@@ -175,22 +175,61 @@ def update_credit_score(conn, user_id):
     today = datetime.utcnow().date()
 
     # ---------- 1. Payment History (35%) ----------
-    # For now we treat all loans as “not yet repaid” — no late marks.
-    # If LoanRepaid events exist, the user gets full points.
-    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='LoanRepaid'", (user_id,))
+    # Count loan repayments and loan disbursements/loans taken.
+    cur.execute("""
+        SELECT COUNT(*) FROM events
+        WHERE user_id = %s AND event_type = 'LoanRepaid'
+    """, (user_id,))
     repaid_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='ExpenseLogged' AND payload->>'category' = 'loan'", (user_id,))
+
+    cur.execute("""
+        SELECT COUNT(*) FROM events
+        WHERE user_id = %s
+          AND event_type IN ('LoanDisbursed', 'ExpenseLogged')
+          AND payload->>'category' = 'loan'
+    """, (user_id,))
     loan_count = cur.fetchone()[0]
+
     if loan_count == 0:
-        payment_score = 100   # no loans, full points
+        payment_score = 100
     else:
         payment_score = 100 if repaid_count >= loan_count else max(30, 100 - (loan_count - repaid_count) * 15)
 
     # ---------- 2. Credit Utilisation (30%) ----------
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND type='income' AND date >= %s", (user_id, today - timedelta(days=365)))
-    annual_income = cur.fetchone()[0]
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM transactions_view WHERE user_id=%s AND type='expense' AND category='loan'", (user_id,))
-    total_loans = cur.fetchone()[0]
+    # Fallback to events if transactions_view is unavailable
+    try:
+        cur.execute("""
+            SELECT COALESCE(SUM(amount),0)
+            FROM transactions_view
+            WHERE user_id = %s AND type = 'income' AND date >= %s
+        """, (user_id, today - timedelta(days=365)))
+        annual_income = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COALESCE(SUM(amount),0)
+            FROM transactions_view
+            WHERE user_id = %s AND type = 'expense' AND category = 'loan'
+        """, (user_id,))
+        total_loans = cur.fetchone()[0]
+    except Exception:
+        # If transactions_view missing, use events directly
+        cur.execute("""
+            SELECT COALESCE(SUM((payload->>'amount')::numeric),0)
+            FROM events
+            WHERE user_id = %s AND event_type = 'IncomeReceived'
+              AND created_at >= %s
+        """, (user_id, today - timedelta(days=365)))
+        annual_income = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COALESCE(SUM((payload->>'amount')::numeric),0)
+            FROM events
+            WHERE user_id = %s
+              AND event_type IN ('LoanDisbursed', 'ExpenseLogged')
+              AND payload->>'category' = 'loan'
+        """, (user_id,))
+        total_loans = cur.fetchone()[0]
+
     util_ratio = (total_loans / annual_income) if annual_income > 0 else 1.0
     if util_ratio <= 0.30:
         util_score = 100
@@ -200,12 +239,13 @@ def update_credit_score(conn, user_id):
         util_score = int(100 - (util_ratio - 0.30) * 150)
 
     # ---------- 3. Length of Credit History (15%) ----------
-    cur.execute("SELECT MIN(created_at) FROM events WHERE user_id=%s", (user_id,))
+    cur.execute("SELECT MIN(created_at) FROM events WHERE user_id = %s", (user_id,))
     first_event = cur.fetchone()[0]
     if first_event:
         months = max(1, (today - first_event.date()).days // 30)
     else:
         months = 0
+
     if months > 24:
         length_score = 100
     elif months > 12:
@@ -218,14 +258,27 @@ def update_credit_score(conn, user_id):
         length_score = 20
 
     # ---------- 4. Credit Mix (10%) ----------
-    cur.execute("SELECT COUNT(DISTINCT CASE WHEN event_type IN ('ExpenseLogged','IncomeReceived','LoanRepaid','InvestmentMade','GoalSet') THEN event_type ELSE NULL END) FROM events WHERE user_id=%s", (user_id,))
+    cur.execute("""
+        SELECT COUNT(DISTINCT event_type)
+        FROM events
+        WHERE user_id = %s
+          AND event_type IN ('ExpenseLogged', 'IncomeReceived', 'LoanRepaid', 'InvestmentMade', 'GoalSet', 'LoanDisbursed')
+    """, (user_id,))
     distinct_types = cur.fetchone()[0]
     mix_score = min(100, distinct_types * 25)
 
     # ---------- 5. New Credit (10%) ----------
     six_months_ago = today - timedelta(days=180)
-    cur.execute("SELECT COUNT(*) FROM events WHERE user_id=%s AND event_type='ExpenseLogged' AND payload->>'category' = 'loan' AND created_at >= %s", (user_id, six_months_ago))
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM events
+        WHERE user_id = %s
+          AND event_type IN ('LoanDisbursed', 'ExpenseLogged')
+          AND payload->>'category' = 'loan'
+          AND created_at >= %s
+    """, (user_id, six_months_ago))
     new_loans = cur.fetchone()[0]
+
     if new_loans == 0:
         new_credit_score = 100
     elif new_loans <= 2:
@@ -247,7 +300,7 @@ def update_credit_score(conn, user_id):
     else:
         logo = 'eagle'
 
-    # Store breakdown
+    # Store breakdown (optional)
     breakdown = {
         "fico": fico,
         "logo": logo,
@@ -260,10 +313,12 @@ def update_credit_score(conn, user_id):
         }
     }
 
-    cur.execute(
-        "INSERT INTO credit_scores (id, user_id, score, logo, updated_at) VALUES (gen_random_uuid(), %s, %s, %s, now())",
-        (user_id, fico, logo)
-    )
+    # Insert new credit score row
+    cur.execute("""
+        INSERT INTO credit_scores (id, user_id, score, logo, updated_at)
+        VALUES (gen_random_uuid(), %s, %s, %s, now())
+    """, (user_id, fico, logo))
+
     conn.commit()
     cur.close()
     return breakdown   # so it can be used by the query handler
@@ -273,7 +328,13 @@ def update_credit_score(conn, user_id):
 def get_credit_score(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT score, logo FROM credit_scores WHERE user_id=%s", (user_id,))
+    cur.execute("""
+        SELECT score, logo
+        FROM credit_scores
+        WHERE user_id = %s
+        ORDER BY updated_at DESC
+        LIMIT 1
+    """, (user_id,))
     row = cur.fetchone()
     conn.close()
     if row:

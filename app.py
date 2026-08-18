@@ -7394,35 +7394,24 @@ def get_current_notification():
 @jwt_required()
 def credit_summary():
     user_id = get_jwt_identity()
-    conn = get_conn()
-    cur = conn.cursor()
     try:
-        # Get latest credit score (order by updated_at)
-        cur.execute("""
-            SELECT score
-            FROM credit_scores
-            WHERE user_id = %s
-            ORDER BY updated_at DESC
-            LIMIT 1
-        """, (user_id,))
-        row = cur.fetchone()
-        score = row[0] if row else 0
+        credit = get_credit_score(user_id)
+        score = credit.get('score', 0)
 
-        # Define tiers (score threshold, min amount, max amount)
         tiers = [
-            (20, 5000, 10000),
-            (50, 10000, 50000),
-            (100, 51000, 100000),
-            (250, 101000, 200000),
-            (350, 201000, 500000),
-            (500, 501000, 1000000),
-            (700, 1100000, 5000000)
+            (5000, 10000, 21, 3, 0.10, 20),
+            (10001, 50000, 28, 7, 0.10, 50),
+            (51000, 100000, 56, 14, 0.08, 100),
+            (101000, 200000, 90, 21, 0.08, 250),
+            (201000, 500000, 180, 30, 0.06, 350),
+            (501000, 1000000, 240, 60, 0.06, 500),
+            (1100000, 5000000, 365, 90, 0.06, 700)
         ]
 
         tier_num = 0
         tier_min = 0
         tier_max = 0
-        for i, (min_score, min_amt, max_amt) in enumerate(tiers, start=1):
+        for i, (min_amt, max_amt, dur, grace, rate, min_score) in enumerate(tiers, start=1):
             if score >= min_score:
                 tier_num = i
                 tier_min = min_amt
@@ -7435,15 +7424,12 @@ def credit_summary():
             "tier": tier_num,
             "tier_min_amount": tier_min,
             "tier_max_amount": tier_max,
-            "credit_limit": tier_max  # maximum borrowable within tier
+            "credit_limit": tier_max
         })
     except Exception as e:
         import traceback
         traceback.print_exc()
-        conn.rollback()
         return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 
 @app.route('/api/update-business-info', methods=['POST', 'OPTIONS'])

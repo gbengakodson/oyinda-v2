@@ -1058,6 +1058,18 @@ def process_user_command(user_id, text):
     text_lower = text.lower().strip()
     amount = 0
 
+    # ===== EARLY ADMIN CHECK =====
+    if text.strip().lower() in ['am i admin', 'admin check', 'check admin']:
+        facts = get_user_facts(user_id)
+        is_admin = facts.get('is_admin', False)
+        display_name = facts.get('business_name', '')
+        return jsonify({
+            "message": "You are an admin." if is_admin else "You are not an admin.",
+            "is_admin": bool(is_admin),
+            "display_name": display_name,
+            "tone": "neutral"
+        })
+
 
     # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====
     handled, response = handle_offramp_withdrawal(user_id, text)

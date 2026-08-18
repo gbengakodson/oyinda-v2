@@ -7061,12 +7061,8 @@ def get_active_loan():
         # Calculate interest as difference
         interest = max(0, (total_repayable - principal)) if total_repayable else 0
 
-        from datetime import datetime, timedelta
-        next_repayment_date = None
-        if payment_frequency == 'weekly':
-            next_repayment_date = (datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')
-        else:
-            next_repayment_date = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+        # Use loan end_date as the due date
+        next_repayment_date = end_date.strftime('%Y-%m-%d') if end_date else None
 
         return jsonify({
             "active_loan": {
@@ -7599,18 +7595,13 @@ def get_wallet():
             payment_frequency = loan_row[6]
             status = loan_row[7]
 
-            # Calculate duration in days from start_date and end_date (fallback 0)
+            # Calculate duration in days from start_date and end_date
             duration_days = 0
             if start_date and end_date:
                 duration_days = (end_date - start_date).days
 
-            # Calculate next repayment date (simple: today + 1 day for daily, +7 for weekly)
-            from datetime import datetime, timedelta
-            next_date = None
-            if payment_frequency == 'weekly':
-                next_date = (datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')
-            else:
-                next_date = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+            # Use loan end_date as the due date
+            next_date = end_date.strftime('%Y-%m-%d') if end_date else None
 
             outstanding_loan = {
                 "loan_id": str(loan_id),

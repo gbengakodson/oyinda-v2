@@ -1070,6 +1070,17 @@ def process_user_command(user_id, text):
             "tone": "neutral"
         })
 
+    # ===== EARLY CREDIT HISTORY COMMAND =====
+    if any(phrase in text.lower() for phrase in ['show my credit history', 'credit history']):
+        credit = get_credit_score(user_id)
+        score = credit['score']
+        history_text = f"Your credit score is {score}/850.\n"
+        if score >= 20:
+            history_text += "You qualify for a loan tier based on this score."
+        else:
+            history_text += "Keep logging transactions to build your score."
+        return jsonify({"message": history_text, "tone": "neutral"})
+
 
     # ===== EARLY OFF-RAMP WITHDRAWAL CHECK (bypass AI and rule-based parsing) =====
     handled, response = handle_offramp_withdrawal(user_id, text)
